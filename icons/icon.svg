@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Audi Connect - Plugin-Symbol
+
+  Hausstandard: runde Scheibe in LoxBerry-Gruen #6dac20, Motiv am echten
+  Gegenstand orientiert. Bewusst KEINE fremde Wortmarke und kein Logo, auch
+  nicht angedeutet - insbesondere keine Ringe. Gezeigt wird eine allgemeine
+  Stufenheck-Silhouette und darueber ein Ladestecker mit Kabel; das Plugin
+  bedient e-tron, Hybride und Verbrenner, der Stecker steht fuer die
+  Fernsteuerung des Ladens.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <circle cx="64" cy="64" r="64" fill="#6dac20"/>
+
+  <!-- Ladekabel -->
+  <path d="M 36 44 C 34 26 44 18 55 17" fill="none" stroke="#ffffff"
+        stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Stecker: Kontakte, Koerper -->
+  <rect x="61" y="9" width="5" height="9" rx="2.5" fill="#ffffff"/>
+  <rect x="71" y="9" width="5" height="9" rx="2.5" fill="#ffffff"/>
+  <rect x="55" y="18" width="27" height="17" rx="5" fill="#ffffff"/>
+  <rect x="63" y="35" width="11" height="7" rx="2.5" fill="#ffffff"/>
+
+  <!-- Karosserie: Stufenheck, laengeres Heck als bei einem Schraegheck -->
+  <path d="M 15 89
+           C 15 79 17 75 25 73
+           L 36 71
+           L 46 58
+           C 48 54 52 53 57 53
+           L 82 53
+           C 87 53 90 55 92 59
+           L 99 71
+           L 113 73
+           C 120 75 121 79 121 89
+           Z"
+        fill="#ffffff"/>
+
+  <!-- Fenster -->
+  <path d="M 55 57 L 65 57 L 65 69 L 44 69 Z" fill="#6dac20"/>
+  <path d="M 70 57 L 81 57 L 89 69 L 70 69 Z" fill="#6dac20"/>
+
+  <!-- Radkaesten und Raeder -->
+  <circle cx="40" cy="89" r="15" fill="#6dac20"/>
+  <circle cx="96" cy="89" r="15" fill="#6dac20"/>
+  <circle cx="40" cy="89" r="11" fill="#ffffff"/>
+  <circle cx="96" cy="89" r="11" fill="#ffffff"/>
+  <circle cx="40" cy="89" r="4.5" fill="#6dac20"/>
+  <circle cx="96" cy="89" r="4.5" fill="#6dac20"/>
+</svg>
