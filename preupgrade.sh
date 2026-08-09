@@ -12,9 +12,26 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 if [ -f "$PID" ]; then
-    kill "$(cat "$PID")" 2>/dev/null || true
-    sleep 2
-    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    # Frueher: kill, zwei Sekunden, dann BEDINGUNGSLOS kill -9. Zwei Fehler.
+    # Erstens sind zwei Sekunden zu knapp: carconnectivity setzt HTTP-Anfragen
+    # an myAudi ab, die bei ueberlasteten Servern zehn bis zwanzig Sekunden
+    # haengen koennen - ein SIGKILL mittendrin hinterlaesst abgerissene
+    # Verbindungen und halbe Dateien. Zweitens ging kill -9 auch dann hinaus,
+    # wenn der Prozess laengst weg war; Prozessnummern werden wiederverwendet,
+    # im unguenstigen Fall trifft es einen fremden Prozess.
+    P=$(cat "$PID" 2>/dev/null)
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
+        kill "$P" 2>/dev/null || true
+        i=0
+        while [ $i -lt 15 ] && kill -0 "$P" 2>/dev/null; do
+            sleep 1
+            i=$((i + 1))
+        done
+        # Nur hart beenden, wenn er noch lebt UND es wirklich unser Dienst ist.
+        if kill -0 "$P" 2>/dev/null && grep -qa "audi.py" "/proc/$P/cmdline" 2>/dev/null; then
+            kill -9 "$P" 2>/dev/null || true
+        fi
+    fi
     rm -f "$PID"
     echo "<INFO> Laufender Dienst angehalten."
 fi

@@ -101,15 +101,85 @@ $au_ampere   = au_param('ampere', '/^[0-9]{1,2}$/', '');
 /* ---------------- Hilfsausgabe ---------------- */
 function au_w($v)
 {
-    if ($v === null || $v === '' || !is_numeric($v)) {
+    if ($v === null || $v === '') {
         return '-';
     }
-    return (string) (0 + $v);
+    if (is_numeric($v)) {
+        return (string) (0 + $v);
+    }
+    // Weicher zweiter Versuch: liefert die Bibliothek einen Wert mit Einheit
+    // oder Komma ("54,5" oder "312 km"), waere die harte Pruefung ein '-' -
+    // und in Loxone stuende dann nichts, obwohl die Zahl da ist. Nur wenn
+    // wirklich keine Ziffer am Anfang steht, wird aufgegeben.
+    $t = str_replace(',', '.', trim((string) $v));
+    if (preg_match('/^-?\d+(\.\d+)?/', $t, $m)) {
+        return (string) (0 + $m[0]);
+    }
+    return '-';
 }
 
 $au_lox = au_loxone();
 $au_alter = au_alter();
 $au_ok = (!empty($au_lox['ok']) && $au_alter >= 0) ? 1 : 0;
+
+/**
+ * Kurzer Fehlergrund fuer Loxone - als Zahl UND als Text.
+ *
+ * Bisher bekam der Miniserver nur OK=0. Er wusste damit, dass die Werte alt
+ * sind, aber nicht warum: Wartung bei Audi, Passwort geaendert, oder das
+ * Konto wegen zu vieler Anfragen fuer 24 Stunden gesperrt. Der Unterschied
+ * entscheidet, ob man warten oder etwas tun muss - und stand bisher nur im
+ * Protokoll des LoxBerry, wo ihn niemand sucht.
+ *
+ * GRUND ist eine Zahl fuer den Statusbaustein, FEHLERTEXT die Klartextfassung
+ * fuer eine Textanzeige in der App. Der Text wird von Semikolon und
+ * Zeilenumbruch befreit - beides wuerde die Zeile zerreissen, die Loxone
+ * auswertet.
+ */
+function au_fehlergrund($zustand, $ok, $alter)
+{
+    if ($ok) {
+        return array(0, '');
+    }
+    $text = trim((string) (isset($zustand['fehler']) ? $zustand['fehler'] : ''));
+    $klein = mb_strtolower($text, 'UTF-8');
+    $code = 9;                                            // 9 = unbekannt
+    if ($text === '' && $alter < 0) {
+        $code = 1;                                        // noch nie gelaufen
+        $text = 'Es hat noch kein Abruf stattgefunden. Laeuft der Dienst?';
+    } elseif (strpos($klein, 'zugangsdaten') !== false || strpos($klein, '401') !== false
+              || strpos($klein, 'unauthorized') !== false || strpos($klein, 'login') !== false) {
+        $code = 2;                                        // Anmeldung abgelehnt
+    } elseif (strpos($klein, '429') !== false || strpos($klein, 'too many') !== false
+              || strpos($klein, 'rate') !== false) {
+        $code = 3;                                        // Konto gedrosselt
+    } elseif (strpos($klein, 'timeout') !== false || strpos($klein, 'timed out') !== false
+              || strpos($klein, 'connection') !== false || strpos($klein, 'name or service') !== false) {
+        $code = 4;                                        // Audi nicht erreichbar
+    } elseif (strpos($klein, '5') === 0 || strpos($klein, 'http 5') !== false
+              || strpos($klein, 'server error') !== false) {
+        $code = 5;                                        // Stoerung bei Audi
+    }
+    // Semikolon und Zeilenumbruch heraus: die Statuszeile trennt mit ';'.
+    $text = str_replace(array(';', "\r", "\n"), array(',', ' ', ' '), $text);
+    if (function_exists('mb_substr')) {
+        $text = mb_substr($text, 0, 160, 'UTF-8');
+    } else {
+        $text = substr($text, 0, 160);
+    }
+    return array($code, trim($text));
+}
+
+list($au_grund, $au_fehlertext) = au_fehlergrund(au_zustand(), $au_ok, $au_alter);
+
+/** Anhang fuer jede Statuszeile: Grund und Klartext, nur wenn es hakt. */
+function au_grund_anhang($grund, $text)
+{
+    if ((int) $grund === 0) {
+        return ';GRUND=0';
+    }
+    return ';GRUND=' . (int) $grund . ';FEHLERTEXT=' . $text;
+}
 $au_alle = au_fahrzeuge();
 
 /** Findet das Fahrzeug zur laufenden Nummer oder zur VIN. */
@@ -130,7 +200,22 @@ function au_waehlen($alle, $schluessel)
 
 if ($au_aktion === 'roh') {
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($au_lox, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $au_json = json_encode($au_lox, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($au_json === false) {
+        // json_encode gibt bei ungueltigem UTF-8 false zurueck - echo false
+        // schreibt nichts, und der Abrufer bekommt eine leere Seite ohne
+        // jeden Hinweis. Fahrzeugnamen und Ausstattungsbezeichnungen kommen
+        // von myAudi; auf deren Kodierung ist kein Verlass.
+        http_response_code(500);
+        echo json_encode(array(
+            'ok' => 0,
+            'fehler' => 'Die Rohdaten liessen sich nicht in JSON wandeln: ' . json_last_error_msg(),
+            'hinweis' => 'Vermutlich enthaelt eine Bezeichnung aus der Audi-Antwort '
+                       . 'ungueltige Zeichen. Die uebrigen Endpunkte sind davon nicht betroffen.',
+        ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+    echo $au_json;
     exit;
 }
 
@@ -163,7 +248,7 @@ function au_v($f, $name)
 if ($au_aktion === 'status') {
     printf("AUDI;OK=%d;SOC=%s;TANK=%s;REICHW=%s;KM=%s;VERR=%s;TUEREN=%s;FENSTER=%s;"
          . "LICHT=%s;HANDBR=%s;KLIMA=%s;ZIELTEMP=%s;AUSSEN=%s;SCHEIBE=%s;ZUSTAND=%s;"
-         . "ERREICH=%s;ALTER=%d\n",
+         . "ERREICH=%s;ALTER=%d%s\n",
         $au_ok,
         au_w(au_v($au_f, 'soc')), au_w(au_v($au_f, 'tank_prozent')),
         au_w(au_v($au_f, 'reichweite_km')), au_w(au_v($au_f, 'kilometerstand')),
@@ -172,7 +257,7 @@ if ($au_aktion === 'status') {
         au_w(au_v($au_f, 'handbremse')), au_w(au_v($au_f, 'klima_an')),
         au_w(au_v($au_f, 'zieltemperatur')), au_w(au_v($au_f, 'aussentemperatur')),
         au_w(au_v($au_f, 'scheibenheizung')), au_w(au_v($au_f, 'zustand')),
-        au_w(au_v($au_f, 'erreichbar')), $au_alter);
+        au_w(au_v($au_f, 'erreichbar')), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
     exit;
 }
 
@@ -186,28 +271,28 @@ if ($au_aktion === 'laden') {
         $au_restmin = (int) ceil(((int) $au_fertig - time()) / 60);
     }
     printf("LADEN;OK=%d;SOC=%s;LAEDT=%s;LADEKW=%s;TEMPO=%s;LADEGR=%s;LADESTROM=%s;"
-         . "KABEL=%s;STECKER=%s;REICHWBAT=%s;FERTIGMIN=%s;ALTER=%d\n",
+         . "KABEL=%s;STECKER=%s;REICHWBAT=%s;FERTIGMIN=%s;ALTER=%d%s\n",
         $au_ok,
         au_w(au_v($au_f, 'soc')), au_w(au_v($au_f, 'laedt')),
         au_w(au_v($au_f, 'ladeleistung_kw')), au_w(au_v($au_f, 'ladetempo_kmh')),
         au_w(au_v($au_f, 'ladegrenze')), au_w(au_v($au_f, 'ladestrom_a')),
         au_w(au_v($au_f, 'kabel_verbunden')), au_w(au_v($au_f, 'stecker_verriegelt')),
-        au_w(au_v($au_f, 'reichweite_elektro_km')), au_w($au_restmin), $au_alter);
+        au_w(au_v($au_f, 'reichweite_elektro_km')), au_w($au_restmin), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
     exit;
 }
 
 if ($au_aktion === 'wartung') {
-    printf("WARTUNG;OK=%d;INSPTAGE=%s;INSPKM=%s;OELTAGE=%s;OELKM=%s;KM=%s;ALTER=%d\n",
+    printf("WARTUNG;OK=%d;INSPTAGE=%s;INSPKM=%s;OELTAGE=%s;OELKM=%s;KM=%s;ALTER=%d%s\n",
         $au_ok,
         au_w(au_v($au_f, 'inspektion_tage')), au_w(au_v($au_f, 'inspektion_km')),
         au_w(au_v($au_f, 'oelservice_tage')), au_w(au_v($au_f, 'oelservice_km')),
-        au_w(au_v($au_f, 'kilometerstand')), $au_alter);
+        au_w(au_v($au_f, 'kilometerstand')), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
     exit;
 }
 
 if ($au_aktion === 'position') {
-    printf("POSITION;OK=%d;BREITE=%s;LAENGE=%s;ALTER=%d\n",
-        $au_ok, au_w(au_v($au_f, 'breite')), au_w(au_v($au_f, 'laenge')), $au_alter);
+    printf("POSITION;OK=%d;BREITE=%s;LAENGE=%s;ALTER=%d%s\n",
+        $au_ok, au_w(au_v($au_f, 'breite')), au_w(au_v($au_f, 'laenge')), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
     // Die Anschrift steht in einer zweiten Zeile, damit die erste Zeile fuer
     // Loxone rein aus Zahlen besteht.
     echo 'ADRESSE;' . str_replace(array("\r", "\n", ';'), ' ',

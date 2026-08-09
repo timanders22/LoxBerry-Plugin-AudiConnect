@@ -123,6 +123,37 @@ function au_config()
     return array_merge(au_vorgaben(), $cfg);
 }
 
+/**
+ * Eine Datei unteilbar schreiben: erst daneben, dann umbenennen.
+ *
+ * file_put_contents kuerzt die Zieldatei sofort auf null und fuellt sie erst
+ * danach. Faellt der Strom dazwischen - oder stuerzt der LoxBerry ab -, ist
+ * die Konfiguration weg, und bei zugang.json waeren das die myAudi-
+ * Zugangsdaten. rename() ist auf demselben Dateisystem unteilbar: der Leser
+ * sieht entweder die alte oder die neue Fassung, nie eine halbe.
+ *
+ * Die Rechte werden auf der Nebendatei gesetzt, bevor sie an ihren Platz
+ * rueckt - sonst gaebe es einen Augenblick, in dem die Zugangsdaten mit den
+ * Vorgaberechten dastuenden.
+ */
+function au_datei_schreiben($pfad, $inhalt, $rechte = 0644)
+{
+    if ($inhalt === false || $inhalt === null) {
+        return false;
+    }
+    $neben = $pfad . '.' . getmypid() . '.neu';
+    if (@file_put_contents($neben, $inhalt) !== strlen($inhalt)) {
+        @unlink($neben);
+        return false;
+    }
+    @chmod($neben, $rechte);
+    if (!@rename($neben, $pfad)) {
+        @unlink($neben);
+        return false;
+    }
+    return true;
+}
+
 function au_config_speichern($cfg)
 {
     $p = au_paths();
@@ -132,7 +163,7 @@ function au_config_speichern($cfg)
     $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
     // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    if ($json === false || @file_put_contents($p['config'], $json) === false) {
+    if (!au_datei_schreiben($p['config'], $json, 0644)) {
         return false;
     }
     @copy($p['config'], $p['sicherung']);
@@ -181,9 +212,10 @@ function au_zugang_speichern($email, $passwort, $spin)
                       : (isset($alt['spin']) ? $alt['spin'] : ''),
     );
     $json = json_encode($neu, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    $ok = @file_put_contents($p['zugang'], $json) !== false;
-    @chmod($p['zugang'], 0600);
-    return $ok;
+    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+    // schriebe dann eine LEERE Datei - hier waeren das die Zugangsdaten.
+    // 0600 schon auf der Nebendatei - siehe au_datei_schreiben().
+    return au_datei_schreiben($p['zugang'], $json, 0600);
 }
 
 /** Zufallstoken fuer den unangemeldeten Endpunkt. */
@@ -197,14 +229,54 @@ function au_token_erzeugen($laenge = 24)
     return $t;
 }
 
-/** Sorgt dafuer, dass ein Token vorhanden ist, und gibt es zurueck. */
+/**
+ * Sorgt dafuer, dass ein Token vorhanden ist, und gibt es zurueck.
+ *
+ * WARUM HIER EINE SPERRE STEHT
+ * Nach einem Neustart des Miniservers laufen dessen virtuelle Eingaenge in
+ * derselben Sekunde los - status, laden, wartung, position. Jeder Aufruf
+ * landet in einem eigenen PHP-Prozess, und wenn noch kein Token in der
+ * Konfiguration steht, wuerde jeder ein eigenes erzeugen und die Datei
+ * ueberschreiben. Uebrig bliebe eines; die Adressen in Loxone Config trugen
+ * dann teils ein anderes, und der Endpunkt antwortete mit 403. Ein Fehler,
+ * den man beim Suchen nicht findet, weil das Token ja "da" ist.
+ *
+ * Die Sperre haelt genau einen Prozess in der erzeugenden Stelle. Wer
+ * danach hereinkommt, liest die Konfiguration erneut und findet das gerade
+ * geschriebene Token vor.
+ */
 function au_token()
 {
+    $cfg = au_config();
+    if (trim((string) $cfg['aktionstoken']) !== '') {
+        return (string) $cfg['aktionstoken'];
+    }
+
+    $p = au_paths();
+    if (!is_dir($p['configdir'])) {
+        @mkdir($p['configdir'], 0775, true);
+    }
+    $sperre = $p['configdir'] . '/token.lock';
+    $fh = @fopen($sperre, 'c');
+    if ($fh === false) {
+        // Ohne Sperre lieber ein Token erzeugen als gar keines - ein
+        // beschreibbares Verzeichnis vorausgesetzt, kommt dieser Fall nicht vor.
+        $cfg['aktionstoken'] = au_token_erzeugen();
+        au_config_speichern($cfg);
+        return (string) $cfg['aktionstoken'];
+    }
+    @flock($fh, LOCK_EX);
+
+    // Zweite Pruefung hinter der Sperre: waehrend des Wartens hat ein
+    // anderer Prozess vermutlich schon eines geschrieben.
     $cfg = au_config();
     if (trim((string) $cfg['aktionstoken']) === '') {
         $cfg['aktionstoken'] = au_token_erzeugen();
         au_config_speichern($cfg);
     }
+
+    @flock($fh, LOCK_UN);
+    @fclose($fh);
     return (string) $cfg['aktionstoken'];
 }
 
@@ -268,7 +340,10 @@ function au_dienst($befehl)
     }
     $ausgabe = array();
     $code = 0;
-    @exec(escapeshellcmd($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
+    // escapeshellarg statt escapeshellcmd: letzteres maskiert Metazeichen,
+    // laesst Leerzeichen aber unberuehrt - ein Pfad mit Leerzeichen zerfiele
+    // in zwei Argumente, und der Dienst startete stillschweigend nicht.
+    @exec(escapeshellarg($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 }
 
@@ -290,7 +365,7 @@ function au_bibliothek_fassungen()
         return $leer;
     }
     $ausgabe = array();
-    @exec(escapeshellcmd($py) . ' -c ' . escapeshellarg(
+    @exec(escapeshellarg($py) . ' -c ' . escapeshellarg(
         'import importlib.metadata as m' . "\n"
         . 'for p in ("carconnectivity", "carconnectivity-connector-audi"):' . "\n"
         . '    try: print(m.version(p))' . "\n"
@@ -321,7 +396,7 @@ function au_python_fassung()
         return '';
     }
     $ausgabe = array();
-    @exec(escapeshellcmd($py) . ' -c ' . escapeshellarg(
+    @exec(escapeshellarg($py) . ' -c ' . escapeshellarg(
         'import sys; print("%d.%d.%d" % sys.version_info[:3])'
     ) . ' 2>/dev/null', $ausgabe);
     return trim(implode('', $ausgabe));
@@ -340,7 +415,7 @@ function au_selbsttest()
              . "       Abhilfe: Plugin neu installieren; die Installation legt beides an.";
     }
     $ausgabe = array();
-    @exec(escapeshellcmd($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1', $ausgabe);
+    @exec(escapeshellarg($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1', $ausgabe);
     return implode("\n", $ausgabe);
 }
 
@@ -354,14 +429,37 @@ function au_selbsttest()
  * 2 eingereiht, aber ohne Antwort in der Wartezeit - also Ergebnis unbekannt.
  * Es wird bewusst kein Erfolg gemeldet, den niemand geprueft hat.
  */
+/**
+ * Wie lange lohnt das Warten auf die Antwort - je nach Befehl?
+ *
+ * Ein Abruf ist in Sekunden durch. Das Aufwecken eines geparkten Fahrzeugs
+ * und der Start der Klimatisierung dauern bei Audi aber regelmaessig zwanzig
+ * bis fuenfundvierzig Sekunden - das Auto muss erst geweckt werden und
+ * antwortet ueber Mobilfunk. Mit der Vorgabe von acht Sekunden gab die
+ * Oberflaeche fast immer "Eingereiht, aber Ergebnis unbekannt" aus, obwohl
+ * der Befehl kurz darauf sauber lief. Wer das zweimal erlebt, drueckt beim
+ * dritten Mal mehrfach - und handelt sich bei Audi ein HTTP 429 ein.
+ */
+function au_wartezeit_fuer($aktion, $vorgabe)
+{
+    $lang = array('klima_start', 'klima_stop', 'wecken', 'standheizung_start',
+                  'standheizung_stop', 'laden_start', 'laden_stop');
+    if (in_array((string) $aktion, $lang, true)) {
+        return max(30, (int) $vorgabe);
+    }
+    return (int) $vorgabe;
+}
+
 function au_befehl_absetzen($befehl, $wartezeit = null)
 {
     $p = au_paths();
     $cfg = au_config();
     if ($wartezeit === null) {
-        $wartezeit = (int) $cfg['wartezeit'];
+        $wartezeit = au_wartezeit_fuer(isset($befehl['aktion']) ? $befehl['aktion'] : '',
+                                       (int) $cfg['wartezeit']);
     }
-    $wartezeit = max(0, min(30, (int) $wartezeit));
+    // Obergrenze 45 statt 30: siehe au_wartezeit_fuer().
+    $wartezeit = max(0, min(45, (int) $wartezeit));
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
@@ -383,7 +481,11 @@ function au_befehl_absetzen($befehl, $wartezeit = null)
         }
         usleep(100000);
     }
-    return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht geantwortet.');
+    return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht '
+                  . 'geantwortet. Bei Audi dauert das Wecken eines geparkten Fahrzeugs oft laenger '
+                  . '- der Befehl laeuft vermutlich trotzdem. Im Reiter Test zeigt "Zustand holen", '
+                  . 'ob er angekommen ist. Bitte nicht mehrfach ausloesen: Audi sperrt das Konto '
+                  . 'bei zu vielen Anfragen.');
 }
 
 /* ---------------- Verlauf ---------------- */

@@ -1,0 +1,10 @@
+# Von Python beim Ausfuehren erzeugt.
+__pycache__/
+*.pyc
+
+# Betriebssystem-Beiwerk
+.DS_Store
+Thumbs.db
+
+# Protokolle
+*.log

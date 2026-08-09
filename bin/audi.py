@@ -263,7 +263,12 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
         for k, v in paare.items():
             if v is None:
                 continue
-            s.sendto(f"publish {praefix}/{k} {v}".encode("utf-8"), ("127.0.0.1", z["udpport"]))
+            # Zeilenumbrueche zerreissen die Syntax des UDP-Gateways: es liest
+            # Zeile fuer Zeile, ein \n im Wert waere der Anfang eines neuen
+            # Befehls. Genau das trifft den Fall, in dem es zaehlt - der Wert
+            # ist dann oft ein Fehlertext von myAudi, und der ist mehrzeilig.
+            sauber = str(v).replace("\r", " ").replace("\n", " ").strip()
+            s.sendto(f"publish {praefix}/{k} {sauber}".encode("utf-8"), ("127.0.0.1", z["udpport"]))
     except OSError as err:
         melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
     finally:
@@ -728,10 +733,24 @@ def befehl_ausfuehren(fahrzeuge: list, cfg: dict, b: dict) -> tuple[int, str, di
         attr = getattr(einst, "target_level", None)
         if attr is None:
             return fehlt("Ladegrenze")
-        attr.value = float(p)
-        return (1, f"Ladegrenze {p} % gesetzt (Audi rundet auf die Stufen, die das "
-                   f"Fahrzeug kennt - meist Zehnerschritte)." + nachsatz,
-                {"prozent": p, "vin": vin})
+
+        # Auf Zehnerschritte runden, bevor der Wert hinausgeht.
+        #
+        # Das Fahrzeug kennt nur feste Stufen. Bisher stand im Ergebnistext
+        # nur der Hinweis, dass Audi rundet - geschickt wurde trotzdem der
+        # krumme Wert, und myAudi antwortete darauf mit HTTP 400. In Loxone
+        # kommt so ein Wert leicht zustande: ein Schieberegler liefert eben
+        # 83 statt 80. Besser die eine Zahl anpassen, die das Fahrzeug
+        # ohnehin annehmen wuerde, als die Anfrage scheitern lassen.
+        gerundet = int(round(p / 10.0) * 10)
+        gerundet = max(10, min(100, gerundet))
+        attr.value = float(gerundet)
+        if gerundet != int(p):
+            text = (f"Ladegrenze {gerundet} % gesetzt (von {int(p)} % auf die naechste "
+                    f"Stufe gerundet - das Fahrzeug kennt nur Zehnerschritte).")
+        else:
+            text = f"Ladegrenze {gerundet} % gesetzt."
+        return (1, text + nachsatz, {"prozent": gerundet, "angefordert": int(p), "vin": vin})
 
     if aktion == "ladestrom":
         a = wert_zahl(b.get("ampere"))

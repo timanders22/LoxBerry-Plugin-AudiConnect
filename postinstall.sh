@@ -118,8 +118,15 @@ echo "<INFO> (benoetigt eine Internetverbindung) ..."
 if ! "$VENV/bin/python3" -m pip install --no-cache-dir \
         "carconnectivity==$KERN" "carconnectivity-connector-audi==$CONNECTOR"; then
     echo "<INFO> Feste Fassungen nicht installierbar - versuche die neuesten."
-    if ! "$VENV/bin/python3" -m pip install --no-cache-dir \
-            "carconnectivity-connector-audi"; then
+    # BEIDE Pakete nennen, nicht nur den Connector.
+    #
+    # Frueher stand hier allein "carconnectivity-connector-audi". pip haette
+    # dann die neueste Fassung geholt und als Abhaengigkeit gleich die neueste
+    # carconnectivity mitgezogen - genau das Geruest, dessen Fassung oben mit
+    # KERN festgenagelt wird. Der Ersatzweg haette die Festlegung also
+    # ausgehebelt, ohne dass es jemand merkt.
+    if ! "$VENV/bin/python3" -m pip install --no-cache-dir --prefer-binary \
+            "carconnectivity" "carconnectivity-connector-audi"; then
         echo "<FAIL> carconnectivity konnte nicht installiert werden."
         echo "<FAIL> Haeufigste Ursachen: keine Internetverbindung, oder PyPI war"
         echo "<FAIL> nicht erreichbar."

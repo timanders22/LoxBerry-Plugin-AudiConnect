@@ -30,8 +30,16 @@ function au_pruefungen()
     $pyv = au_python_fassung();
     $pyok = 0;
     if ($pyv !== '') {
+        // Nicht blind auf $teile[1] zugreifen. Fehlt die virtuelle Umgebung,
+        // liefert die Abfrage keine Fassungsnummer, sondern einen Fehlertext
+        // wie "python3: not found" - explode ergibt dann ein Feld mit einem
+        // einzigen Element, und der Zugriff auf [1] setzt unter PHP 8 eine
+        // Warnung ab. Ausgerechnet in der Selbstpruefung, die den Fehler
+        // erklaeren soll.
         $teile = explode('.', $pyv);
-        $pyok = ((int) $teile[0] > 3 || ((int) $teile[0] === 3 && (int) $teile[1] >= 9)) ? 1 : 0;
+        $haupt = isset($teile[0]) ? (int) $teile[0] : 0;
+        $neben = isset($teile[1]) ? (int) $teile[1] : 0;
+        $pyok = ($haupt > 3 || ($haupt === 3 && $neben >= 9)) ? 1 : 0;
     }
     $zeilen[] = au_pruefzeile($pyv === '' ? 0 : $pyok, au_t('TEST.F_PYTHON'),
         $pyv !== '' ? au_e($pyv) . ($pyok ? '' : ' &mdash; ' . au_t('TEST.A_PYTHON_ZU_ALT'))
@@ -214,8 +222,15 @@ function au_soc_svg($punkte)
         if ($anteil < 0 || $anteil > 1) {
             continue;
         }
+        // Hart auf Fliesskomma wandeln. PHP 8 wirft bei einer Rechnung mit
+        // einer nicht-numerischen Zeichenkette einen TypeError - unter PHP 7
+        // war das nur eine Warnung. Die Messpunkte kommen aus einer
+        // CSV-Datei; bricht der Strom mitten im Schreiben ab, steht dort eine
+        // halbe Zeile, und der Reiter Einstellungen liesse sich nicht mehr
+        // oeffnen, weil die Tagesgrafik ihn mitreisst.
+        $wert = isset($pt[1]) && is_numeric($pt[1]) ? (float) $pt[1] : 0.0;
         $poly[] = round($x0 + $pw * $anteil, 1) . ','
-                . round($y0 + $ph - $ph * max(0, min(100, $pt[1])) / 100, 1);
+                . round($y0 + $ph - $ph * max(0.0, min(100.0, $wert)) / 100, 1);
     }
     if (count($poly) >= 2) {
         $erst = explode(',', $poly[0]);
