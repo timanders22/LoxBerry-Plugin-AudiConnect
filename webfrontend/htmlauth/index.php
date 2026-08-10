@@ -481,7 +481,7 @@ if ($au_rahmen) {
 </div>
 
 <div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
 
