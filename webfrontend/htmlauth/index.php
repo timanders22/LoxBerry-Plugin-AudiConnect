@@ -105,15 +105,8 @@ if ($au_post && isset($_POST['speichern'])) {
         $au_fehler[] = au_t('EINST.FEHLER_TEMP_TAUSCH');
     }
 
-    $au_cfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     $au_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
 
-    $au_topic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['mqtt_topic']));
-    if ($au_topic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $au_topic)) {
-        $au_fehler[] = au_t('EINST.FEHLER_TOPIC');
-    } else {
-        $au_cfg['mqtt_topic'] = trim($au_topic, '/');
-    }
 
     /* Zugangsdaten: eigene Datei mit Rechten 0600. Ein leer zurueckgegebenes
      * Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
@@ -146,6 +139,37 @@ if ($au_post && isset($_POST['speichern'])) {
         }
     }
     $au_tab = 'tab-settings';
+
+    /* mqtt_ein und mqtt_topic werden hier bewusst NICHT angefasst: sie wohnen im
+     * Reiter MQTT und haben dort ein eigenes Formular. Die Konfiguration
+     * kommt aus au_config(), die Werte ueberleben also unveraendert. Stuende
+     * hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0", wuerde jedes Speichern
+     * der Einstellungen MQTT stillschweigend abschalten. */
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+ *
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
+ * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
+ * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
+ * ruehrt ausschliesslich die MQTT-Werte an. */
+if ($au_post && isset($_POST['save_mqtt'])) {
+    $au_mcfg = au_config();
+    $au_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $au_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    if ($au_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $au_mtopic)) {
+        $au_fehler[] = au_t('EINST.FEHLER_TOPIC');
+    } else {
+        $au_mcfg['mqtt_topic'] = trim($au_mtopic, '/');
+    }
+    if (!$au_fehler) {
+        if (au_config_speichern($au_mcfg)) {
+        $au_meldungen[] = au_t('EINST.GESPEICHERT');
+        }
+    }
+    $au_tab = 'tab-mqtt';
 }
 
 /* ---------------- Dienst starten, anhalten, neu starten ---------------- */
@@ -467,18 +491,8 @@ if ($au_rahmen) {
   <div class="sm-hilfe"><?= au_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
-<h2>MQTT</h2>
-<div class="sm-feld">
-  <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($au_cfg['mqtt_ein']) ? 'checked' : '' ?>>
-    <?= au_e(au_t('EINST.L_MQTT_EIN')) ?>
-  </label>
-</div>
-<div class="sm-feld">
-  <label for="mqtt_topic"><?= au_e(au_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= au_e($au_cfg['mqtt_topic']) ?>" placeholder="vw">
-  <div class="sm-hilfe"><?= au_t('EINST.H_MQTT_TOPIC') ?></div>
-</div>
+<?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
+         vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
@@ -509,6 +523,27 @@ if ($au_rahmen) {
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite" id="tab-mqtt">
+
+<h2>MQTT</h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($au_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_MQTT_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label for="mqtt_topic"><?= au_e(au_t('EINST.L_MQTT_TOPIC')) ?></label>
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= au_e($au_cfg['mqtt_topic']) ?>" placeholder="vw">
+  <div class="sm-hilfe"><?= au_t('EINST.H_MQTT_TOPIC') ?></div>
+</div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= au_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
 <h2><?= au_e(au_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= au_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 
