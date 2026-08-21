@@ -52,6 +52,19 @@ function au_pruefungen()
         $f['connector'] !== '' ? 'carconnectivity-connector-audi ' . au_e($f['connector'])
                                : au_t('TEST.A_CONNECTOR_FEHLT'));
 
+    /* paho-mqtt braucht NUR der Horcher. Ist kein fremdes Thema abonniert,
+     * ist sein Fehlen kein Mangel - dann steht hier ein Hinweis und kein
+     * Kreuz. Ein Kreuz fuer etwas, das gar nicht gebraucht wird, macht die
+     * Selbstpruefung stumpf. */
+    $themen = au_horcher_themen($cfg);
+    if ($themen) {
+        $zeilen[] = au_pruefzeile($f['paho'] !== '' ? 1 : 0, au_t('TEST.F_PAHO'),
+            $f['paho'] !== '' ? 'paho-mqtt ' . au_e($f['paho']) : au_t('TEST.A_PAHO_FEHLT'));
+    } else {
+        $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_PAHO'),
+            $f['paho'] !== '' ? 'paho-mqtt ' . au_e($f['paho']) : au_t('TEST.A_PAHO_UNNOETIG'));
+    }
+
     $pid = au_dienst_pid();
     $zeilen[] = au_pruefzeile($pid > 0 ? 1 : 0, au_t('TEST.F_DIENST'),
         $pid > 0 ? au_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
@@ -65,6 +78,16 @@ function au_pruefungen()
     // Wert anzeigen.
     $zeilen[] = au_pruefzeile($z['laenge'] > 0 ? 1 : 0, au_t('TEST.F_PASSWORT'),
         $z['laenge'] > 0 ? sprintf(au_t('TEST.A_PASSWORT_DA'), $z['laenge']) : au_t('TEST.A_PASSWORT_FEHLT'));
+
+    /* Die S-PIN ist nur dann Pflicht, wenn eingreifende Befehle freigegeben
+     * sind: ohne sie weist der Connector Ver- und Entriegeln ab. */
+    if (!empty($cfg['gefahr_ein'])) {
+        $zeilen[] = au_pruefzeile($z['spin_laenge'] === 4 ? 1 : 0, au_t('TEST.F_SPIN'),
+            $z['spin_laenge'] === 4 ? au_t('TEST.A_SPIN_DA') : au_t('TEST.A_SPIN_FEHLT'));
+    } else {
+        $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_SPIN'),
+            $z['spin_laenge'] > 0 ? au_t('TEST.A_SPIN_DA') : au_t('TEST.A_SPIN_UNNOETIG'));
+    }
 
     $rechte = is_file($p['zugang']) ? (fileperms($p['zugang']) & 0777) : -1;
     $zeilen[] = au_pruefzeile(($rechte >= 0 && ($rechte & 0077) === 0) ? 1 : 0,
@@ -83,6 +106,18 @@ function au_pruefungen()
         $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_MARKE'), au_t('TEST.A_MARKE_FEHLT'));
     }
 
+    /* Zwei getrennte Token. Sind sie gleich, ist die Trennung wirkungslos -
+     * das kann nur von Hand in der audi.json kommen. */
+    $lese = (string) $cfg['aktionstoken'];
+    $schalt = (string) $cfg['schalttoken'];
+    if ($lese === '' || $schalt === '') {
+        $zeilen[] = au_pruefzeile(0, au_t('TEST.F_TOKEN'), au_t('TEST.A_TOKEN_FEHLT'));
+    } elseif ($lese === $schalt) {
+        $zeilen[] = au_pruefzeile(0, au_t('TEST.F_TOKEN'), au_t('TEST.A_TOKEN_GLEICH'));
+    } else {
+        $zeilen[] = au_pruefzeile(1, au_t('TEST.F_TOKEN'), au_t('TEST.A_TOKEN_OK'));
+    }
+
     $fahrzeuge = au_fahrzeuge();
     $zeilen[] = au_pruefzeile(count($fahrzeuge) > 0 ? 1 : 0, au_t('TEST.F_FAHRZEUGE'),
         count($fahrzeuge) > 0 ? sprintf(au_t('TEST.A_FAHRZEUGE'), count($fahrzeuge))
@@ -92,9 +127,9 @@ function au_pruefungen()
     // Fahrzeug, das die Klimasteuerung nicht kennt, ist kein Fehler - ein
     // stillschweigend leeres Feld dagegen schon.
     $aus = array();
-    foreach ($fahrzeuge as $nr => $f) {
-        if (!empty($f['ausfaelle']) && is_array($f['ausfaelle'])) {
-            foreach (array_keys($f['ausfaelle']) as $name) {
+    foreach ($fahrzeuge as $nr => $f2) {
+        if (!empty($f2['ausfaelle']) && is_array($f2['ausfaelle'])) {
+            foreach (array_keys($f2['ausfaelle']) as $name) {
                 $aus[] = $nr . ':' . $name;
             }
         }
@@ -129,8 +164,63 @@ function au_pruefungen()
         $zeilen[] = au_pruefzeile(0, au_t('TEST.F_MQTT'), au_t('TEST.A_MQTT_AUS'));
     }
 
+    /* Der Horcher: erwartete Themen gegen die tatsaechlich abonnierten.
+     *
+     * Genau dafuer steht die Themenliste an ZWEI Stellen - hier und in
+     * bin/audi.py. Weichen sie ab, hat der Dienst eine Aenderung der
+     * Einstellungen nicht nachgezogen; die Vorklimatisierung loest dann nie
+     * aus, und das sieht aus wie ein Fehler des Abfahrtsassistenten. */
+    if ($themen) {
+        $h = au_horcher_zustand();
+        $fehlend = array_diff($themen, $h['themen']);
+        if ($h['fehler'] !== '') {
+            $zeilen[] = au_pruefzeile(0, au_t('TEST.F_HORCHER'), au_e($h['fehler']));
+        } elseif (!$h['verbunden']) {
+            $zeilen[] = au_pruefzeile(0, au_t('TEST.F_HORCHER'), au_t('TEST.A_HORCHER_AUS'));
+        } elseif ($fehlend) {
+            $zeilen[] = au_pruefzeile(0, au_t('TEST.F_HORCHER'),
+                sprintf(au_t('TEST.A_HORCHER_FEHLT'), au_e(implode(', ', $fehlend))));
+        } else {
+            $zeilen[] = au_pruefzeile(1, au_t('TEST.F_HORCHER'),
+                au_e(implode(', ', $h['themen'])));
+        }
+    }
+
     $zeilen[] = au_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, au_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? au_t('TEST.A_STEUERUNG_EIN') : au_t('TEST.A_STEUERUNG_AUS'));
+    $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_GEFAHR'),
+        !empty($cfg['gefahr_ein']) ? au_t('TEST.A_GEFAHR_EIN') : au_t('TEST.A_GEFAHR_AUS'));
+    if (!empty($cfg['probe_ein'])) {
+        $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_PROBE'), au_t('TEST.A_PROBE_EIN'));
+    }
+
+    /* Drosselung: hier steht, was gerade gilt - und wie viele Befehle in der
+     * letzten Stunde wirklich hinausgingen. Ohne diese Zahl merkt niemand,
+     * dass ein Baustein in Loxone flattert, bevor Audi das Konto sperrt. */
+    $bisher = isset($zu['befehle_stunde']) ? (int) $zu['befehle_stunde'] : 0;
+    $grenze = (int) $cfg['befehle_stunde'];
+    $zeilen[] = au_pruefzeile(($grenze === 0 || $bisher < $grenze) ? 1 : 0,
+        au_t('TEST.F_DROSSEL'),
+        sprintf(au_t('TEST.A_DROSSEL'), $bisher, $grenze === 0 ? au_t('TEST.A_OHNE_GRENZE') : $grenze,
+                (int) $cfg['abruf_abstand'], (int) $cfg['strom_abstand']));
+
+    /* Die Zutaten der gerechneten Groessen. Fehlen sie, entstehen die Werte
+     * nicht - das ist kein Fehler, aber es gehoert gesagt. */
+    $zeilen[] = au_pruefzeile((int) $cfg['kapazitaet'] > 0 ? 1 : -1, au_t('TEST.F_KAPAZITAET'),
+        (int) $cfg['kapazitaet'] > 0 ? ((int) $cfg['kapazitaet']) . ' kWh'
+                                     : au_t('TEST.A_KAPAZITAET_LEER'));
+    $heim = (trim((string) $cfg['heim_breite']) !== '' && trim((string) $cfg['heim_laenge']) !== '');
+    $zeilen[] = au_pruefzeile($heim ? 1 : -1, au_t('TEST.F_HEIM'),
+        $heim ? sprintf(au_t('TEST.A_HEIM_DA'), (int) $cfg['heim_radius'])
+              : au_t('TEST.A_HEIM_LEER'));
+    if (empty($cfg['gps_ein'])) {
+        $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_GPS'), au_t('TEST.A_GPS_AUS'));
+    }
+
+    $ladungen = au_ladungen_lesen(500);
+    $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_LADUNGEN'),
+        $ladungen ? sprintf(au_t('TEST.A_LADUNGEN'), count($ladungen))
+                  : au_t('TEST.A_KEINE_LADUNGEN'));
 
     return $zeilen;
 }
@@ -138,67 +228,111 @@ function au_pruefungen()
 /**
  * Fuehrt eine Aktion des Reiters Test aus.
  * Rueckgabe: array(stand, Meldung) - stand wie bei au_befehl_absetzen.
+ *
+ * SEIT 0.9.8 WIRD ZUERST GEPRUEFT, OB DER DIENST LAEUFT.
+ * Der Endpunkt hatte diesen Riegel (HTTP 503 DIENST_LAEUFT_NICHT), der Reiter
+ * Test nicht. Bei gestopptem Dienst blockierte er je nach Aktion acht bis
+ * dreissig Sekunden und meldete dann "Eingereiht, aber Ergebnis unbekannt" -
+ * die Datei blieb liegen und wurde beim naechsten Start ausgefuehrt. Genau
+ * dieselbe Regression beschreibt au_lib.php in au_dienst_pid() als behoben.
  */
 function au_test_aktion($aktion)
 {
+    $cfg = au_config();
+    $befehle = au_befehle();
+    if (!isset($befehle[$aktion])) {
+        return array(0, au_t('TEST.M_UNBEKANNT'));
+    }
+    $eig = $befehle[$aktion];
+
+    if (au_dienst_pid() === 0) {
+        return array(0, au_t('TEST.M_DIENST_TOT'));
+    }
+    if ($aktion !== 'abruf' && empty($cfg['steuerung_ein'])) {
+        return array(0, au_t('TEST.M_STEUERUNG_AUS'));
+    }
+    if ($eig['gefahr'] && empty($cfg['gefahr_ein'])) {
+        return array(0, au_t('TEST.M_EINGRIFF_GESPERRT'));
+    }
+
     $nr = isset($_POST['test_fahrzeug']) ? (string) $_POST['test_fahrzeug'] : '1';
     if (!preg_match('/^[0-9]{1,2}$/', $nr)) {
         return array(0, au_t('TEST.M_FAHRZEUG_UNGUELTIG'));
     }
 
-    switch ($aktion) {
-        case 'abruf':
-            return au_befehl_absetzen(array('aktion' => 'abruf'), 10);
-
-        case 'klima_start':
-            $temp = isset($_POST['test_temp']) ? str_replace(',', '.', (string) $_POST['test_temp']) : '';
-            if (!preg_match('/^[0-9]{1,2}(\.[05])?$/', $temp)) {
-                return array(0, au_t('TEST.M_TEMP_UNGUELTIG'));
-            }
-            return au_befehl_absetzen(array('aktion' => 'klima_start', 'fahrzeug' => $nr, 'temp' => $temp));
-
-        case 'klima_stop':
-            return au_befehl_absetzen(array('aktion' => 'klima_stop', 'fahrzeug' => $nr));
-
-        case 'laden_start':
-            return au_befehl_absetzen(array('aktion' => 'laden_start', 'fahrzeug' => $nr));
-
-        case 'laden_stop':
-            return au_befehl_absetzen(array('aktion' => 'laden_stop', 'fahrzeug' => $nr));
-
-        case 'ladegrenze':
-            $p = isset($_POST['test_prozent']) ? (string) $_POST['test_prozent'] : '';
-            if (!preg_match('/^[0-9]{1,3}$/', $p)) {
-                return array(0, au_t('TEST.M_PROZENT_UNGUELTIG'));
-            }
-            return au_befehl_absetzen(array('aktion' => 'ladegrenze', 'fahrzeug' => $nr, 'prozent' => (int) $p));
-
-        case 'ladestrom':
-            $a = isset($_POST['test_ampere']) ? (string) $_POST['test_ampere'] : '';
-            if (!preg_match('/^[0-9]{1,2}$/', $a)) {
-                return array(0, au_t('TEST.M_AMPERE_UNGUELTIG'));
-            }
-            return au_befehl_absetzen(array('aktion' => 'ladestrom', 'fahrzeug' => $nr, 'ampere' => (int) $a));
-
-        case 'scheibe_ein':
-            return au_befehl_absetzen(array('aktion' => 'scheibe_ein', 'fahrzeug' => $nr));
-
-        case 'scheibe_aus':
-            return au_befehl_absetzen(array('aktion' => 'scheibe_aus', 'fahrzeug' => $nr));
-
-        case 'wecken':
-            return au_befehl_absetzen(array('aktion' => 'wecken', 'fahrzeug' => $nr));
-
-        default:
-            return array(0, au_t('TEST.M_UNBEKANNT'));
+    $befehl = array('aktion' => $aktion);
+    if (!$eig['ohne_fz']) {
+        $befehl['fahrzeug'] = $nr;
     }
+    // Der Probelauf-Knopf des Reiters Test setzt diese Marke. Sie wirkt
+    // zusaetzlich zum dauerhaften Probelauf aus den Einstellungen.
+    if (!empty($_POST['test_probe'])) {
+        $befehl['probe'] = 1;
+    }
+
+    if ($eig['zusatz'] === 'temp') {
+        $temp = isset($_POST['test_temp']) ? str_replace(',', '.', (string) $_POST['test_temp']) : '';
+        if (!preg_match('/^[0-9]{1,2}(\.[05])?$/', $temp)) {
+            return array(0, au_t('TEST.M_TEMP_UNGUELTIG'));
+        }
+        $befehl['temp'] = $temp;
+    } elseif ($eig['zusatz'] === 'prozent') {
+        $pz = isset($_POST['test_prozent']) ? (string) $_POST['test_prozent'] : '';
+        if (!preg_match('/^[0-9]{1,3}$/', $pz)) {
+            return array(0, au_t('TEST.M_PROZENT_UNGUELTIG'));
+        }
+        $befehl['prozent'] = (int) $pz;
+    } elseif ($eig['zusatz'] === 'ampere') {
+        $a = isset($_POST['test_ampere']) ? (string) $_POST['test_ampere'] : '';
+        if (!preg_match('/^[0-9]{1,2}$/', $a)) {
+            return array(0, au_t('TEST.M_AMPERE_UNGUELTIG'));
+        }
+        $befehl['ampere'] = (int) $a;
+    } elseif ($eig['zusatz'] === 'dauer') {
+        $d = isset($_POST['test_dauer']) ? (string) $_POST['test_dauer'] : '';
+        if ($d !== '' && !preg_match('/^[0-9]{1,2}$/', $d)) {
+            return array(0, au_t('TEST.M_DAUER_UNGUELTIG'));
+        }
+        if ($d !== '') {
+            $befehl['dauer'] = (int) $d;
+        }
+    } elseif ($eig['zusatz'] === 'einstellung') {
+        $bekannt = au_einstellungen();
+        $name = isset($_POST['test_einstellung']) ? (string) $_POST['test_einstellung'] : '';
+        if (!isset($bekannt[$name])) {
+            return array(0, au_t('TEST.M_EINSTELLUNG_UNGUELTIG'));
+        }
+        $wert = isset($_POST['test_ewert']) ? (string) $_POST['test_ewert'] : '';
+        if ($wert !== '0' && $wert !== '1') {
+            return array(0, au_t('TEST.M_EWERT_UNGUELTIG'));
+        }
+        $befehl['name'] = $name;
+        $befehl['wert'] = $wert;
+    }
+
+    // Der Abruf ist in Sekunden durch - da lohnt kein langes Warten.
+    return au_befehl_absetzen($befehl, $aktion === 'abruf' ? 10 : null);
 }
 
-/** Mini-SVG: Fuellstand ueber den heutigen Tag (0 bis 24 h, 0 bis 100 %). */
-function au_soc_svg($punkte)
+/**
+ * Mini-SVG: Fuellstand ueber einen Tag (0 bis 24 h, 0 bis 100 %).
+ *
+ * $tag ist 'Ymd'; leer bedeutet heute. Bis 0.9.7 gab es nur heute - die
+ * Messpunkte der uebrigen bis zu 90 Tage wurden geschrieben, aufgeraeumt und
+ * nie gezeigt.
+ */
+function au_soc_svg($punkte, $tag = '')
 {
     $w = 720; $h = 120; $x0 = 34; $y0 = 8; $pw = $w - $x0 - 8; $ph = $h - $y0 - 20;
-    $tag0 = strtotime('today 00:00');
+    if ($tag === '') {
+        $tag0 = strtotime('today 00:00');
+    } else {
+        $tag0 = strtotime(substr($tag, 0, 4) . '-' . substr($tag, 4, 2) . '-' . substr($tag, 6, 2)
+                          . ' 00:00');
+        if ($tag0 === false) {
+            $tag0 = strtotime('today 00:00');
+        }
+    }
     $svg = '<svg viewBox="0 0 ' . $w . ' ' . $h . '" style="width:100%;max-width:' . $w
          . 'px;height:auto;background:#fafafa;border:1px solid #e0e0e0;border-radius:8px;"'
          . ' xmlns="http://www.w3.org/2000/svg">';
@@ -245,4 +379,24 @@ function au_soc_svg($punkte)
               . au_e(au_t('TEST.KEINE_MESSPUNKTE')) . '</text>';
     }
     return $svg . '</svg>';
+}
+
+/**
+ * Der Verlauf als CSV zum Herunterladen.
+ *
+ * Die Tagesdateien liegen bis zu 90 Tage; bis 0.9.7 kam man an sie nur ueber
+ * die Kommandozeile. Hier werden sie zu einer Datei zusammengefasst, mit
+ * lesbarem Zeitstempel und Kopfzeile.
+ */
+function au_verlauf_csv($nummer)
+{
+    $aus = "zeit;unixzeit;fuellstand_prozent;reichweite_km;kilometerstand\n";
+    foreach (array_reverse(au_verlauf_tage($nummer)) as $tag) {
+        foreach (au_verlauf_lesen($nummer, $tag) as $pt) {
+            $aus .= date('Y-m-d H:i:s', (int) $pt[0]) . ';' . (int) $pt[0] . ';'
+                  . $pt[1] . ';' . ($pt[2] === 0 ? '' : $pt[2]) . ';'
+                  . ($pt[3] === null ? '' : $pt[3]) . "\n";
+        }
+    }
+    return $aus;
 }

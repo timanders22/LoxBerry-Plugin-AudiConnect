@@ -1,0 +1,174 @@
+#!/bin/bash
+# AudiConnect - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
+# 1 = Warnung (die Deinstallation laeuft weiter).
+#
+# ===================================================================
+# WARUM ES DIESE DATEI GIBT - und warum sie bis 0.9.6 FEHLTE
+# ===================================================================
+#
+# Aufgefallen am 20.08.2026 beim Vergleich mit der Schwesterlinie: diese
+# Linie hatte gar kein Deinstallationsskript. Drei Dinge blieben damit
+# nach dem Entfernen des Plugins liegen.
+#
+# LoxBerry raeumt beim Deinstallieren alle Ordner weg, die dem Plugin
+# gehoeren: bin/, data/, log/, config/, templates/ und die beiden
+# webfrontend-Ordner. Die virtuelle Python-Umgebung liegt in
+# bin/plugins/<ordner>/venv und geht damit mit.
+#
+# AUSSERHALB dieser Ordner liegt:
+#
+#   1. Die beiden Sicherungsdateien
+#        config/plugins/<ordner>.backup.audi.json
+#        config/plugins/<ordner>.backup.zugang.json
+#      Sie liegen bewusst NEBEN dem Plugin-Konfigordner, damit sie ein
+#      Update und sogar eine Neuinstallation ueberstehen (preupgrade.sh
+#      legt sie an, postinstall.sh spielt sie zurueck). Beim
+#      Deinstallieren ist genau das falsch: in zugang.json stehen
+#      Benutzername, Passwort und die Steuer-PIN des Audi-Kontos. Wer
+#      das Plugin entfernt, erwartet nicht, dass seine Zugangsdaten auf
+#      der Karte bleiben.
+#
+#   2. Der Merker config/plugins/<ordner>.lief_vorher. Er sagt dem
+#      postinstall, dass der Dienst vor einem Upgrade lief. Bleibt er
+#      liegen, startet eine spaetere Installation den Dienst ungefragt.
+#
+#   3. Der laufende Abrufdienst. Er wurde mit nohup gestartet und haengt
+#      an keinem Elternprozess, den LoxBerry beenden wuerde. Ohne diese
+#      Datei laeuft er nach der Deinstallation weiter - bis zum
+#      naechsten Neustart, und meldet sich dabei weiter bei Audi an.
+#
+# Was NICHT aufgeraeumt werden muss: MQTT. Der Dienst sendet mit
+# "publish", nicht mit "retain". Im Broker bleibt nichts stehen.
+
+PDIR=$3                      # Installationsordner des Plugins
+[ -n "$PDIR" ] || PDIR="audiconnect"
+BASE="${5:-$LBHOMEDIR}"
+# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
+# Systempfad - LoxBerry laesst sich anderswohin installieren.
+# Diese Datei liegt unter <home>/data/plugins/<ordner>/uninstall/
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
+fi
+
+PDATA="$BASE/data/plugins/$PDIR"
+PBIN="$BASE/bin/plugins/$PDIR"
+PCONFIG="$BASE/config/plugins"
+
+# Fail-closed: sieht die Lage nicht wie ein LoxBerry aus, wird NICHTS
+# geloescht. Ein Loeschskript, das sich im Pfad irrt, ist schlimmer als
+# eines, das nicht laeuft.
+if [ ! -d "$PCONFIG" ]; then
+    echo "<FAIL> $PCONFIG gibt es nicht - es wurde nichts geloescht."
+    echo "<FAIL> Bitte von Hand nachsehen: config/plugins/$PDIR.backup.*"
+    exit 1
+fi
+
+# ---------------------------------------------------------------
+# 1. Dienst anhalten
+# ---------------------------------------------------------------
+# Erst ueber die PID-Datei. Die Nummer allein genuegt nicht: sie kann
+# nach einem Neustart einem voellig anderen Programm gehoeren. Geprueft
+# wird deshalb die Befehlszeile - und zwar ARGUMENTWEISE. /proc/<pid>/
+# cmdline trennt die Argumente mit Nullbytes; ein "grep audi.py"
+# darueber wuerde auch einen Editor treffen, in dem die Datei gerade
+# offen ist. Geprueft wird das ZWEITE Argument gegen den vollen Pfad -
+# der Dienst wird immer als "<python> <pfad>/audi.py" gestartet. Der
+# volle Pfad statt nur des Dateinamens, damit die Deinstallation des
+# einen Exemplars nicht den Dienst eines zweiten abschiesst (LoxBerry
+# haengt bei Namenskonflikt 01, 02 ... an den Ordnernamen an).
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    [ "$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n '2p')" = "$PBIN/audi.py" ]
+}
+
+beenden() {
+    P="$1"
+    kill "$P" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$P" 2>/dev/null || return 0
+        sleep 1
+    done
+    kill -9 "$P" 2>/dev/null
+    sleep 1
+    return 0
+}
+
+GEFUNDEN=0
+PIDDATEI="$PDATA/dienst.pid"
+if [ -f "$PIDDATEI" ]; then
+    P=$(cat "$PIDDATEI" 2>/dev/null)
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && ist_unser_dienst "$P"; then
+        beenden "$P"
+        GEFUNDEN=1
+        echo "<OK> Laufender Abrufdienst beendet (PID $P)."
+    fi
+fi
+
+# Zweiter Durchgang ohne PID-Datei: sie kann fehlen, wenn der Dienst von
+# Hand gestartet oder die Datei geloescht wurde.
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    if ist_unser_dienst "$P" && kill -0 "$P" 2>/dev/null; then
+        beenden "$P"
+        GEFUNDEN=1
+        echo "<OK> Weiterer Abrufdienst beendet (PID $P)."
+    fi
+done
+
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
+rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
+
+# ---------------------------------------------------------------
+# 2. Sicherungsdateien ausserhalb der Plugin-Ordner
+# ---------------------------------------------------------------
+# UEBERSCHRIEBEN, dann geloescht. Auf einem Journaling-Dateisystem und
+# auf Flash-Speicher ist das kein sicheres Loeschen - es ist der
+# Unterschied zwischen "steht noch da" und "muss man suchen". Behauptet
+# wird hier nicht mehr, als getan wird.
+FEHL=0
+for f in audi.json zugang.json; do
+    BK="$PCONFIG/$PDIR.backup.$f"
+    [ -f "$BK" ] || continue
+    GROESSE=$(wc -c < "$BK" 2>/dev/null || echo 0)
+    if [ "$GROESSE" -gt 0 ] 2>/dev/null; then
+        dd if=/dev/zero of="$BK" bs=1 count="$GROESSE" conv=notrunc status=none 2>/dev/null || true
+        sync 2>/dev/null || true
+    fi
+    if rm -f "$BK"; then
+        echo "<OK> Sicherung ueberschrieben und entfernt: $PDIR.backup.$f"
+    else
+        FEHL=1
+        echo "<FAIL> Sicherung liess sich NICHT entfernen: $BK"
+    fi
+done
+
+# ---------------------------------------------------------------
+# 3. Der Merker aus dem Upgrade
+# ---------------------------------------------------------------
+# Bleibt er liegen, startet eine spaetere Installation den Dienst
+# ungefragt - auch dann, wenn er absichtlich abgeschaltet worden war.
+rm -f "$PCONFIG/$PDIR.lief_vorher" 2>/dev/null
+
+# ---------------------------------------------------------------
+# 4. Was noch da ist, und was LoxBerry selbst wegraeumt
+# ---------------------------------------------------------------
+# Gesagt wird, was WIRKLICH gilt. Ein "alles entfernt" nach einem
+# fehlgeschlagenen rm waere die schlechteste Zeile dieser Datei.
+UEBRIG=$(ls "$PCONFIG/$PDIR.backup."* 2>/dev/null | wc -l)
+if [ "$FEHL" -eq 0 ] && [ "$UEBRIG" -eq 0 ]; then
+    echo "<INFO> Die Zugangsdaten des Audi-Kontos sind damit vom LoxBerry entfernt."
+else
+    echo "<FAIL> Es liegen noch $UEBRIG Sicherungsdatei(en) unter $PCONFIG."
+    echo "<FAIL> Sie enthalten Zugangsdaten - bitte von Hand entfernen."
+fi
+
+echo "<INFO> Die virtuelle Python-Umgebung ($PBIN/venv) wird mit dem bin-Ordner"
+echo "<INFO> des Plugins entfernt - dafuer ist nichts zu tun."
+
+# Rueckgabewert 1 nur als WARNUNG: die Deinstallation soll weiterlaufen,
+# aber der Fehlschlag darf nicht im Log verschwinden.
+[ "$FEHL" -eq 0 ] || exit 1
+exit 0

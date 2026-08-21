@@ -9,11 +9,19 @@
  *
  *   /plugins/<ordner>/index.php?token=<TOKEN>&aktion=<Befehl>
  *
+ * ZWEI TOKEN SEIT 0.9.8
+ * Das Lesetoken steht in jeder Adresse eines virtuellen Eingangs und damit in
+ * jeder Loxone-Projektdatei, die weitergegeben wird. Bis 0.9.7 konnte man mit
+ * genau diesem Token auch die Klimaanlage starten. Schaltende Aufrufe
+ * verlangen jetzt das SCHALTTOKEN; lesende nehmen beide an.
+ *
  * Lesende Aktionen:
  *   status   [&fahrzeug=N]   Hauptwerte des Fahrzeugs
  *   laden    [&fahrzeug=N]   Ladewerte (nur bei Elektro und Hybrid belegt)
- *   wartung  [&fahrzeug=N]   Inspektion, Oelservice, Warnleuchten
+ *   wartung  [&fahrzeug=N]   Inspektion und Oelservice
  *   position [&fahrzeug=N]   Standort
+ *   text     [&fahrzeug=N]   Klartexte fuer virtuelle Texteingaenge
+ *   ladungen [&fahrzeug=N]   die letzten protokollierten Ladevorgaenge
  *   fahrzeuge                Liste der erkannten Fahrzeuge
  *   roh                      vollstaendiges Abbild als JSON (Fehlersuche)
  *
@@ -25,7 +33,16 @@
  *   ladestrom &ampere=<A>
  *   scheibe_ein                 scheibe_aus
  *   wecken
+ *   einstellung &name=<Name>&wert=<0|1>
+ *   spin_pruefen
  *   abruf                       sofortiger Abruf statt Warten auf den Takt
+ *
+ * Eingreifende Aktionen - brauchen ZUSAETZLICH den zweiten Haken:
+ *   verriegeln                  entriegeln
+ *   hupe [&dauer=<s>]           lichthupe [&dauer=<s>]
+ *
+ * Jeder schaltende Aufruf vertraegt &probe=1: dann wird der ganze Weg samt
+ * aller Wachen gegangen, aber NICHTS an das Fahrzeug gesendet.
  *
  * Der Endpunkt spricht NIE selbst mit der Audi-Schnittstelle. Lesende Aktionen
  * beantwortet er aus dem Zwischenspeicher, schaltende legt er in einer
@@ -44,31 +61,67 @@ header('Content-Type: text/plain; charset=utf-8');
 $au_cfg = au_config();
 $au_p = au_paths();
 
-/* ---------------- Token ---------------- */
-$au_soll = (string) $au_cfg['aktionstoken'];
-$au_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
-if ($au_soll === '') {
-    http_response_code(403);
-    echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
-    echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
-    exit;
-}
-if (!hash_equals($au_soll, $au_ist)) {
-    http_response_code(403);
-    echo "FEHLER;OK=0;GRUND=TOKEN\n";
-    exit;
-}
-
-/* ---------------- Aktion (Weissliste) ---------------- */
-$au_lesend = array('status', 'laden', 'wartung', 'position', 'fahrzeuge', 'roh');
-$au_schaltend = array('klima_start', 'klima_stop', 'zieltemperatur', 'laden_start',
-                      'laden_stop', 'ladegrenze', 'ladestrom', 'scheibe_ein',
-                      'scheibe_aus', 'wecken', 'abruf');
+/* ---------------- Aktion (Weissliste) ----------------
+ * Zuerst die Aktion, dann das Token: die Weissliste entscheidet, WELCHES
+ * Token verlangt wird. */
+$au_lesend = array('status', 'laden', 'wartung', 'position', 'text', 'ladungen',
+                   'fahrzeuge', 'roh');
+$au_schaltend = array_keys(au_befehle());
 $au_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
 if (!in_array($au_aktion, array_merge($au_lesend, $au_schaltend), true)) {
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
     echo 'Erlaubt sind: ' . implode(', ', array_merge($au_lesend, $au_schaltend)) . "\n";
+    exit;
+}
+$au_schaltet = in_array($au_aktion, $au_schaltend, true);
+
+/* ---------------- Beschraenkung auf den Miniserver ----------------
+ * Ab Werk aus. Eingeschaltet nimmt der Endpunkt nur noch Aufrufe von den
+ * Adressen an, die LoxBerry als Miniserver kennt. Findet sich keine, bleibt
+ * die Beschraenkung wirkungslos - eine leere Liste wuerde sonst JEDEN Zugriff
+ * abweisen, auch den berechtigten, und niemand fuende den Grund. */
+if (!empty($au_cfg['nur_miniserver'])) {
+    $au_erlaubt = au_miniserver_adressen();
+    $au_woher = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+    if ($au_erlaubt && !in_array($au_woher, $au_erlaubt, true)
+        && $au_woher !== '127.0.0.1' && $au_woher !== '::1') {
+        http_response_code(403);
+        echo "FEHLER;OK=0;GRUND=FREMDE_ADRESSE\n";
+        echo 'Der Aufruf kam von ' . $au_woher . '. Zugelassen sind nur die Miniserver '
+           . 'dieses LoxBerry. Der Haken steht im Reiter Einstellungen.' . "\n";
+        exit;
+    }
+}
+
+/* ---------------- Token ----------------
+ * Lesende Aufrufe nehmen beide Token an, schaltende nur das Schalttoken. */
+$au_lesetoken = (string) $au_cfg['aktionstoken'];
+$au_schalttoken = (string) $au_cfg['schalttoken'];
+$au_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+if ($au_lesetoken === '' && $au_schalttoken === '') {
+    http_response_code(403);
+    echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
+    echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
+    exit;
+}
+$au_passt = false;
+if ($au_schalttoken !== '' && hash_equals($au_schalttoken, $au_ist)) {
+    $au_passt = true;
+} elseif (!$au_schaltet && $au_lesetoken !== '' && hash_equals($au_lesetoken, $au_ist)) {
+    $au_passt = true;
+}
+if (!$au_passt) {
+    http_response_code(403);
+    // Wenn das LESEtoken stimmt, aber geschaltet werden soll, wird der Grund
+    // benannt. Sonst sucht man an der falschen Stelle: das Token "stimmt" ja.
+    if ($au_schaltet && $au_lesetoken !== '' && hash_equals($au_lesetoken, $au_ist)) {
+        echo "FEHLER;OK=0;GRUND=LESETOKEN_SCHALTET_NICHT\n";
+        echo "Das ist das Lesetoken. Schaltende Aufrufe brauchen das Schalttoken aus dem "
+           . "Reiter 'Einbindung in Loxone'.\n";
+    } else {
+        echo "FEHLER;OK=0;GRUND=TOKEN\n";
+    }
     exit;
 }
 
@@ -97,89 +150,16 @@ $au_fahrzeug = au_param('fahrzeug', '/^([0-9]{1,2}|[A-Za-z0-9]{17})$/', '1');
 $au_temp     = au_param('temp', '/^[0-9]{1,2}([.,][05])?$/', '');
 $au_prozent  = au_param('prozent', '/^[0-9]{1,3}$/', '');
 $au_ampere   = au_param('ampere', '/^[0-9]{1,2}$/', '');
-
-/* ---------------- Hilfsausgabe ---------------- */
-function au_w($v)
-{
-    if ($v === null || $v === '') {
-        return '-';
-    }
-    if (is_numeric($v)) {
-        return (string) (0 + $v);
-    }
-    // Weicher zweiter Versuch: liefert die Bibliothek einen Wert mit Einheit
-    // oder Komma ("54,5" oder "312 km"), waere die harte Pruefung ein '-' -
-    // und in Loxone stuende dann nichts, obwohl die Zahl da ist. Nur wenn
-    // wirklich keine Ziffer am Anfang steht, wird aufgegeben.
-    $t = str_replace(',', '.', trim((string) $v));
-    if (preg_match('/^-?\d+(\.\d+)?/', $t, $m)) {
-        return (string) (0 + $m[0]);
-    }
-    return '-';
-}
+$au_dauer    = au_param('dauer', '/^[0-9]{1,2}$/', '');
+$au_name     = au_param('name', '/^[a-z_]{1,32}$/', '');
+$au_wert     = au_param('wert', '/^[01]$/', '');
+$au_probe    = au_param('probe', '/^[01]$/', '0');
+$au_tag      = au_param('tag', '/^[0-9]{8}$/', '');
 
 $au_lox = au_loxone();
 $au_alter = au_alter();
 $au_ok = (!empty($au_lox['ok']) && $au_alter >= 0) ? 1 : 0;
-
-/**
- * Kurzer Fehlergrund fuer Loxone - als Zahl UND als Text.
- *
- * Bisher bekam der Miniserver nur OK=0. Er wusste damit, dass die Werte alt
- * sind, aber nicht warum: Wartung bei Audi, Passwort geaendert, oder das
- * Konto wegen zu vieler Anfragen fuer 24 Stunden gesperrt. Der Unterschied
- * entscheidet, ob man warten oder etwas tun muss - und stand bisher nur im
- * Protokoll des LoxBerry, wo ihn niemand sucht.
- *
- * GRUND ist eine Zahl fuer den Statusbaustein, FEHLERTEXT die Klartextfassung
- * fuer eine Textanzeige in der App. Der Text wird von Semikolon und
- * Zeilenumbruch befreit - beides wuerde die Zeile zerreissen, die Loxone
- * auswertet.
- */
-function au_fehlergrund($zustand, $ok, $alter)
-{
-    if ($ok) {
-        return array(0, '');
-    }
-    $text = trim((string) (isset($zustand['fehler']) ? $zustand['fehler'] : ''));
-    $klein = mb_strtolower($text, 'UTF-8');
-    $code = 9;                                            // 9 = unbekannt
-    if ($text === '' && $alter < 0) {
-        $code = 1;                                        // noch nie gelaufen
-        $text = 'Es hat noch kein Abruf stattgefunden. Laeuft der Dienst?';
-    } elseif (strpos($klein, 'zugangsdaten') !== false || strpos($klein, '401') !== false
-              || strpos($klein, 'unauthorized') !== false || strpos($klein, 'login') !== false) {
-        $code = 2;                                        // Anmeldung abgelehnt
-    } elseif (strpos($klein, '429') !== false || strpos($klein, 'too many') !== false
-              || strpos($klein, 'rate') !== false) {
-        $code = 3;                                        // Konto gedrosselt
-    } elseif (strpos($klein, 'timeout') !== false || strpos($klein, 'timed out') !== false
-              || strpos($klein, 'connection') !== false || strpos($klein, 'name or service') !== false) {
-        $code = 4;                                        // Audi nicht erreichbar
-    } elseif (strpos($klein, '5') === 0 || strpos($klein, 'http 5') !== false
-              || strpos($klein, 'server error') !== false) {
-        $code = 5;                                        // Stoerung bei Audi
-    }
-    // Semikolon und Zeilenumbruch heraus: die Statuszeile trennt mit ';'.
-    $text = str_replace(array(';', "\r", "\n"), array(',', ' ', ' '), $text);
-    if (function_exists('mb_substr')) {
-        $text = mb_substr($text, 0, 160, 'UTF-8');
-    } else {
-        $text = substr($text, 0, 160);
-    }
-    return array($code, trim($text));
-}
-
-list($au_grund, $au_fehlertext) = au_fehlergrund(au_zustand(), $au_ok, $au_alter);
-
-/** Anhang fuer jede Statuszeile: Grund und Klartext, nur wenn es hakt. */
-function au_grund_anhang($grund, $text)
-{
-    if ((int) $grund === 0) {
-        return ';GRUND=0';
-    }
-    return ';GRUND=' . (int) $grund . ';FEHLERTEXT=' . $text;
-}
+list($au_grund, $au_fehlertext) = au_fehlergrund($au_lox, $au_ok, $au_alter);
 $au_alle = au_fahrzeuge();
 
 /** Findet das Fahrzeug zur laufenden Nummer oder zur VIN. */
@@ -194,6 +174,12 @@ function au_waehlen($alle, $schluessel)
         }
     }
     return null;
+}
+
+/** Semikolon und Zeilenumbruch heraus - beides zerreisst die Zeile. */
+function au_sauber($s)
+{
+    return str_replace(array("\r", "\n", ';'), array(' ', ' ', ','), (string) $s);
 }
 
 /* ================= Lesende Aktionen ================= */
@@ -220,92 +206,121 @@ if ($au_aktion === 'roh') {
 }
 
 if ($au_aktion === 'fahrzeuge') {
-    echo 'FAHRZEUGE;OK=' . $au_ok . ';N=' . count($au_alle) . ';ALTER=' . $au_alter . "\n";
+    echo 'FAHRZEUGE;OK=' . $au_ok . ';N=' . count($au_alle) . ';ALTER=' . $au_alter
+       . ';GRUND=' . (int) $au_grund . "\n";
     foreach ($au_alle as $au_nr => $au_f) {
-        echo $au_nr . ';' . (isset($au_f['modell']) ? $au_f['modell'] : '') . ';'
-           . (isset($au_f['kennzeichen']) ? $au_f['kennzeichen'] : '') . ';'
-           . (isset($au_f['vin']) ? $au_f['vin'] : '') . ';'
+        echo $au_nr . ';' . au_sauber(isset($au_f['modell']) ? $au_f['modell'] : '') . ';'
+           . au_sauber(isset($au_f['kennzeichen']) ? $au_f['kennzeichen'] : '') . ';'
+           . au_sauber(isset($au_f['vin']) ? $au_f['vin'] : '') . ';'
+           . 'FZOK=' . (isset($au_f['ok']) ? (int) $au_f['ok'] : 0) . ';'
            . 'Ausfaelle=' . (isset($au_f['ausfaelle']) && is_array($au_f['ausfaelle'])
                              ? count($au_f['ausfaelle']) : 0) . "\n";
     }
     exit;
 }
 
+if ($au_aktion === 'ladungen') {
+    /* Die protokollierten Ladevorgaenge. Fuer Loxone selten brauchbar - dafuer
+     * fuer eine Auswertung von Hand und fuer die Fehlersuche: hier steht
+     * schwarz auf weiss, wann wie lange geladen wurde. */
+    $au_l = au_ladungen_lesen(200);
+    echo 'LADUNGEN;OK=' . $au_ok . ';N=' . count($au_l) . ";\n";
+    echo "# fahrzeug;start;ende;dauer_min;soc_start;soc_ende;km;kwh\n";
+    foreach ($au_l as $au_z) {
+        if ($au_fahrzeug !== '' && (string) $au_z['fahrzeug'] !== (string) $au_fahrzeug
+            && $au_fahrzeug !== '1') {
+            continue;
+        }
+        echo $au_z['fahrzeug'] . ';' . $au_z['start'] . ';' . $au_z['ende'] . ';'
+           . ($au_z['dauer'] === null ? '' : $au_z['dauer']) . ';'
+           . ($au_z['soc_start'] === null ? '' : $au_z['soc_start']) . ';'
+           . ($au_z['soc_ende'] === null ? '' : $au_z['soc_ende']) . ';'
+           . ($au_z['km'] === null ? '' : $au_z['km']) . ';'
+           . ($au_z['kwh'] === null ? '' : $au_z['kwh']) . "\n";
+    }
+    exit;
+}
+
 $au_f = au_waehlen($au_alle, $au_fahrzeug);
 
-if (in_array($au_aktion, array('status', 'laden', 'wartung', 'position'), true) && $au_f === null) {
+if (in_array($au_aktion, array('status', 'laden', 'wartung', 'position', 'text'), true)
+    && $au_f === null) {
     printf("%s;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d\n",
         strtoupper($au_aktion), count($au_alle), $au_alter);
     exit;
 }
 
-/** Ein Wert aus dem Abbild, oder null. */
-function au_v($f, $name)
-{
-    return isset($f[$name]) ? $f[$name] : null;
-}
-
 if ($au_aktion === 'status') {
-    printf("AUDI;OK=%d;SOC=%s;TANK=%s;REICHW=%s;KM=%s;VERR=%s;TUEREN=%s;FENSTER=%s;"
-         . "LICHT=%s;HANDBR=%s;KLIMA=%s;ZIELTEMP=%s;AUSSEN=%s;SCHEIBE=%s;ZUSTAND=%s;"
-         . "ERREICH=%s;ALTER=%d%s\n",
-        $au_ok,
-        au_w(au_v($au_f, 'soc')), au_w(au_v($au_f, 'tank_prozent')),
-        au_w(au_v($au_f, 'reichweite_km')), au_w(au_v($au_f, 'kilometerstand')),
-        au_w(au_v($au_f, 'verriegelt')), au_w(au_v($au_f, 'tueren_offen')),
-        au_w(au_v($au_f, 'fenster_offen')), au_w(au_v($au_f, 'licht_an')),
-        au_w(au_v($au_f, 'handbremse')), au_w(au_v($au_f, 'klima_an')),
-        au_w(au_v($au_f, 'zieltemperatur')), au_w(au_v($au_f, 'aussentemperatur')),
-        au_w(au_v($au_f, 'scheibenheizung')), au_w(au_v($au_f, 'zustand')),
-        au_w(au_v($au_f, 'erreichbar')), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
+    echo au_zeile('AUDI', 'status', $au_f, $au_ok, $au_alter, $au_grund, $au_fehlertext);
     exit;
 }
 
 if ($au_aktion === 'laden') {
-    // Der Fertigzeitpunkt kommt als Unix-Zeit aus dem Dienst. Loxone kann mit
-    // einer Restzeit in Minuten mehr anfangen als mit einem Zeitstempel, also
-    // wird hier umgerechnet - und nur, wenn er in der Zukunft liegt.
-    $au_fertig = au_v($au_f, 'laden_fertig_um');
-    $au_restmin = null;
-    if (is_numeric($au_fertig) && (int) $au_fertig > time()) {
-        $au_restmin = (int) ceil(((int) $au_fertig - time()) / 60);
-    }
-    printf("LADEN;OK=%d;SOC=%s;LAEDT=%s;LADEKW=%s;TEMPO=%s;LADEGR=%s;LADESTROM=%s;"
-         . "KABEL=%s;STECKER=%s;REICHWBAT=%s;FERTIGMIN=%s;ALTER=%d%s\n",
-        $au_ok,
-        au_w(au_v($au_f, 'soc')), au_w(au_v($au_f, 'laedt')),
-        au_w(au_v($au_f, 'ladeleistung_kw')), au_w(au_v($au_f, 'ladetempo_kmh')),
-        au_w(au_v($au_f, 'ladegrenze')), au_w(au_v($au_f, 'ladestrom_a')),
-        au_w(au_v($au_f, 'kabel_verbunden')), au_w(au_v($au_f, 'stecker_verriegelt')),
-        au_w(au_v($au_f, 'reichweite_elektro_km')), au_w($au_restmin), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
+    echo au_zeile('LADEN', 'laden', $au_f, $au_ok, $au_alter, $au_grund, $au_fehlertext);
     exit;
 }
 
 if ($au_aktion === 'wartung') {
-    printf("WARTUNG;OK=%d;INSPTAGE=%s;INSPKM=%s;OELTAGE=%s;OELKM=%s;KM=%s;ALTER=%d%s\n",
-        $au_ok,
-        au_w(au_v($au_f, 'inspektion_tage')), au_w(au_v($au_f, 'inspektion_km')),
-        au_w(au_v($au_f, 'oelservice_tage')), au_w(au_v($au_f, 'oelservice_km')),
-        au_w(au_v($au_f, 'kilometerstand')), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
+    echo au_zeile('WARTUNG', 'wartung', $au_f, $au_ok, $au_alter, $au_grund, $au_fehlertext);
     exit;
 }
 
 if ($au_aktion === 'position') {
-    printf("POSITION;OK=%d;BREITE=%s;LAENGE=%s;ALTER=%d%s\n",
-        $au_ok, au_w(au_v($au_f, 'breite')), au_w(au_v($au_f, 'laenge')), $au_alter, au_grund_anhang($au_grund, $au_fehlertext));
+    echo au_zeile('POSITION', 'position', $au_f, $au_ok, $au_alter, $au_grund, $au_fehlertext);
     // Die Anschrift steht in einer zweiten Zeile, damit die erste Zeile fuer
     // Loxone rein aus Zahlen besteht.
-    echo 'ADRESSE;' . str_replace(array("\r", "\n", ';'), ' ',
-        (string) au_v($au_f, 'adresse')) . "\n";
+    echo 'ADRESSE;' . au_sauber(isset($au_f['adresse']) ? $au_f['adresse'] : '') . "\n";
+    exit;
+}
+
+if ($au_aktion === 'text') {
+    /* Klartexte fuer virtuelle TEXTeingaenge.
+     *
+     * Der Dienst kennt zu mehreren Zahlen den Klartext - ZUSTAND=1 heisst
+     * "parked", KLIMA=1 kann heizen, kuehlen oder lueften heissen, und
+     * TUEREN=1 sagt nicht, WELCHE Tuer offen steht. In der App will man das
+     * lesen koennen. Je Zeile ein Wert, damit eine Befehlserkennung sie
+     * einzeln greifen kann. */
+    $au_texte = array(
+        'ZUSTAND'  => isset($au_f['zustand_text']) ? $au_f['zustand_text'] : '',
+        'KLIMA'    => isset($au_f['klima_text']) ? $au_f['klima_text'] : '',
+        'LADEN'    => isset($au_f['ladezustand_text']) ? $au_f['ladezustand_text'] : '',
+        'TUEREN'   => isset($au_f['tueren_namen']) ? $au_f['tueren_namen'] : '',
+        'FENSTER'  => isset($au_f['fenster_namen']) ? $au_f['fenster_namen'] : '',
+        'LICHTER'  => isset($au_f['licht_namen']) ? $au_f['licht_namen'] : '',
+        'SCHEIBEN' => isset($au_f['scheibe_namen']) ? $au_f['scheibe_namen'] : '',
+        'ADRESSE'  => isset($au_f['adresse']) ? $au_f['adresse'] : '',
+        'SAEULE'   => isset($au_f['saeule_name']) ? $au_f['saeule_name'] : '',
+        'MODELL'   => isset($au_f['modell']) ? $au_f['modell'] : '',
+        'FEHLER'   => $au_fehlertext,
+    );
+    echo 'TEXT;OK=' . $au_ok . ';ALTER=' . $au_alter . ';GRUND=' . (int) $au_grund . "\n";
+    foreach ($au_texte as $au_k => $au_v) {
+        echo $au_k . '=' . au_sauber($au_v) . "\n";
+    }
     exit;
 }
 
 /* ================= Schaltende Aktionen ================= */
 
+$au_eig = au_befehle();
+$au_eig = $au_eig[$au_aktion];
+
 if ($au_aktion !== 'abruf' && empty($au_cfg['steuerung_ein'])) {
     http_response_code(403);
     echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
     echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
+    exit;
+}
+if ($au_eig['gefahr'] && empty($au_cfg['gefahr_ein'])) {
+    /* Der ZWEITE Haken. Ver- und Entriegeln, Hupe und Lichthupe wirken auf ein
+     * Fahrzeug, das im oeffentlichen Raum steht - ein versehentliches
+     * Entriegeln laesst es offen stehen, ohne dass es jemand merkt. Sie
+     * haengen deshalb nicht am allgemeinen Steuerungshaken. */
+    http_response_code(403);
+    echo "SET;OK=0;GRUND=EINGRIFF_GESPERRT\n";
+    echo "Dieser Befehl greift in ein Fahrzeug ein, das im oeffentlichen Raum steht. "
+       . "Reiter Einstellungen, zweiter Haken 'Eingreifende Befehle zulassen'.\n";
     exit;
 }
 if (au_dienst_pid() === 0) {
@@ -317,9 +332,15 @@ if (au_dienst_pid() === 0) {
     exit;
 }
 
-$au_befehl = array('aktion' => $au_aktion, 'fahrzeug' => $au_fahrzeug);
+$au_befehl = array('aktion' => $au_aktion);
+if (!$au_eig['ohne_fz']) {
+    $au_befehl['fahrzeug'] = $au_fahrzeug;
+}
+if ($au_probe === '1') {
+    $au_befehl['probe'] = 1;
+}
 
-if ($au_aktion === 'klima_start' || $au_aktion === 'zieltemperatur') {
+if ($au_eig['zusatz'] === 'temp') {
     if ($au_temp === '') {
         http_response_code(400);
         echo "SET;OK=0;GRUND=TEMP_FEHLT\n";
@@ -327,14 +348,15 @@ if ($au_aktion === 'klima_start' || $au_aktion === 'zieltemperatur') {
         exit;
     }
     $au_befehl['temp'] = str_replace(',', '.', $au_temp);
-} elseif ($au_aktion === 'ladegrenze') {
+} elseif ($au_eig['zusatz'] === 'prozent') {
     if ($au_prozent === '') {
         http_response_code(400);
         echo "SET;OK=0;GRUND=PROZENT_FEHLT\n";
+        echo "Der Parameter prozent fehlt (Ladegrenze, 10 bis 100).\n";
         exit;
     }
     $au_befehl['prozent'] = (int) $au_prozent;
-} elseif ($au_aktion === 'ladestrom') {
+} elseif ($au_eig['zusatz'] === 'ampere') {
     if ($au_ampere === '') {
         http_response_code(400);
         echo "SET;OK=0;GRUND=AMPERE_FEHLT\n";
@@ -342,11 +364,31 @@ if ($au_aktion === 'klima_start' || $au_aktion === 'zieltemperatur') {
         exit;
     }
     $au_befehl['ampere'] = (int) $au_ampere;
+} elseif ($au_eig['zusatz'] === 'dauer') {
+    if ($au_dauer !== '') {
+        $au_befehl['dauer'] = (int) $au_dauer;
+    }
+} elseif ($au_eig['zusatz'] === 'einstellung') {
+    $au_bekannt = au_einstellungen();
+    if ($au_name === '' || !isset($au_bekannt[$au_name])) {
+        http_response_code(400);
+        echo "SET;OK=0;GRUND=NAME_FEHLT\n";
+        echo 'Der Parameter name fehlt oder ist unbekannt. Bekannt sind: '
+           . implode(', ', array_keys($au_bekannt)) . "\n";
+        exit;
+    }
+    if ($au_wert === '') {
+        http_response_code(400);
+        echo "SET;OK=0;GRUND=WERT_FEHLT\n";
+        echo "Der Parameter wert fehlt (0 oder 1).\n";
+        exit;
+    }
+    $au_befehl['name'] = $au_name;
+    $au_befehl['wert'] = $au_wert;
 }
 
 list($au_erg, $au_meldung) = au_befehl_absetzen($au_befehl);
 if ($au_erg === 0) {
     http_response_code(500);
 }
-printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $au_erg, $au_aktion,
-    str_replace(array("\r", "\n", ';'), ' ', $au_meldung));
+printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $au_erg, $au_aktion, au_sauber($au_meldung));

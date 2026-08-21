@@ -15,6 +15,22 @@
  * Praefix 'au_', weil LBWeb::lbheader() SDK-Globale setzt und gleichnamige
  * Plugin-Variablen ueberschreiben wuerde.
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
+ *
+ * ==========================================================================
+ * NEU IN 0.9.8: EINE FELDLISTE STATT VIER
+ * ==========================================================================
+ * Bis 0.9.7 gab es au_status_felder(), au_laden_felder() und
+ * au_wartung_felder() - und daneben, in webfrontend/html/index.php, drei
+ * printf-Zeilen, die die Werte ausgaben. Die beiden Seiten sind
+ * auseinandergelaufen: ALTER stand in der Lade- und der Wartungszeile, aber
+ * in keiner der beiden Feldlisten; GRUND und FEHLERTEXT gingen an den
+ * Miniserver hinaus und kamen in keiner Tabelle, keiner Sprachdatei und
+ * keiner Loxone-Vorlage vor; fuer die Position gab es ueberhaupt keine Liste.
+ *
+ * Jetzt gibt es au_felder() als EINZIGE Quelle. Daraus entstehen die
+ * Endpunktzeile (au_zeile()), die Tabellen der Oberflaeche und die
+ * Loxone-Vorlagen. Eine Zeile, die es in die Antwort schafft, steht damit
+ * zwangslaeufig auch in der Tabelle.
  */
 
 if (!function_exists('au_e')) {
@@ -96,6 +112,11 @@ function au_paths()
         );
     } else {
         // Nicht installiert (Entwicklung, Attrappe): neben dem Plugin arbeiten.
+        //
+        // Die Sicherung hiess hier bis 0.9.7 'vw.backup.json' - ein Rest der
+        // Volkswagen-Schwesterlinie, aus der diese Datei stammt. Falsch war
+        // sie nur im Entwicklungszweig, aber ein falscher Name ist eine
+        // falsche Aussage, auch wenn ihn nie jemand liest.
         $basis = dirname(dirname(__DIR__));
         $p = array(
             'home'      => '',
@@ -103,7 +124,7 @@ function au_paths()
             'configdir' => $basis . '/config',
             'config'    => $basis . '/config/audi.json',
             'zugang'    => $basis . '/config/zugang.json',
-            'sicherung' => $basis . '/config/vw.backup.json',
+            'sicherung' => $basis . '/config/audi.backup.json',
             'datadir'   => $basis . '/data',
             'bindir'    => $basis . '/bin',
             'logdir'    => $basis . '/log',
@@ -113,7 +134,13 @@ function au_paths()
     return $p;
 }
 
-/** Voreinstellungen. Muessen zu VORGABEN in bin/audi.py passen. */
+/**
+ * Voreinstellungen. Muessen zu VORGABEN in bin/audi.py passen.
+ *
+ * Vier Schluessel gibt es NUR hier: aktionstoken, schalttoken, wartezeit und
+ * nur_miniserver. Sie betreffen den Endpunkt und die Oberflaeche; der Dienst
+ * liest sie nie.
+ */
 function au_vorgaben()
 {
     return array(
@@ -125,7 +152,37 @@ function au_vorgaben()
         'temp_min'          => 16,
         'temp_max'          => 29,
         'verlauf_tage'      => 8,
+        // Eingreifende Befehle: ZWEITER Haken, ab Werk aus.
+        'gefahr_ein'        => 0,
+        'probe_ein'         => 0,
+        'gps_ein'           => 1,
+        'melden_ein'        => 1,
+        // Drosselung
+        'abruf_abstand'     => 60,
+        'befehle_stunde'    => 30,
+        'strom_abstand'     => 300,
+        // Gerechnete Groessen
+        'kapazitaet'        => 0,
+        'heim_breite'       => '',
+        'heim_laenge'       => '',
+        'heim_radius'       => 150,
+        // Vorklimatisierung am Abfahrtsassistenten
+        'abfahrt_ein'       => 0,
+        'abfahrt_praefix'   => 'abfahrt',
+        'abfahrt_vorlauf'   => 20,
+        'abfahrt_temp'      => 21,
+        'abfahrt_alter'     => 300,
+        'abfahrt_fahrzeug'  => 1,
+        // Ladeempfehlung aus einem fremden Thema
+        'ladeempf_ein'      => 0,
+        'ladeempf_thema'    => '',
+        'ladeempf_grenze'   => 0,
+        'ladeempf_unter'    => 1,
+        'ladeempf_alter'    => 900,
+        // Nur hier, nicht im Dienst
         'aktionstoken'      => '',
+        'schalttoken'       => '',
+        'nur_miniserver'    => 0,
         'wartezeit'         => 8,
     );
 }
@@ -223,6 +280,11 @@ function au_zugang()
  * irgendwann ein leeres Passwort in der Datei, ohne dass es jemand merkt.
  * Genau dieser Fehler hat im ACTi-Plugin 21 vergebliche Anmeldeversuche
  * verursacht.
+ *
+ * Fuer die E-Mail gilt das NICHT in derselben Weise: sie steht sichtbar im
+ * Formular, ein leeres Feld ist dort also eine Absicht. Damit aber ein
+ * versehentlich geleertes Feld nicht das Konto verwaist, gibt der Aufrufer
+ * null statt Leerstring, wenn er nichts aendern will.
  */
 function au_zugang_speichern($email, $passwort, $spin)
 {
@@ -259,7 +321,16 @@ function au_token_erzeugen($laenge = 24)
 }
 
 /**
- * Sorgt dafuer, dass ein Token vorhanden ist, und gibt es zurueck.
+ * Sorgt dafuer, dass beide Token vorhanden sind, und gibt das gewuenschte
+ * zurueck. $art ist 'lesen' oder 'schalten'.
+ *
+ * WARUM ES SEIT 0.9.8 ZWEI SIND
+ * Das Token steht in JEDER Adresse, die in Loxone Config eingetragen wird -
+ * auch in den nur lesenden. Wer es dort abliest (und in Loxone Config liest
+ * jeder mit, der die Datei bekommt), konnte damit bis 0.9.7 auch die
+ * Klimaanlage starten und den Ladevorgang anhalten. Lesen und Eingreifen
+ * haben jetzt getrennte Token: das Lesetoken darf herumliegen, das
+ * Schalttoken gehoert nur in die virtuellen Ausgaenge.
  *
  * WARUM HIER EINE SPERRE STEHT
  * Nach einem Neustart des Miniservers laufen dessen virtuelle Eingaenge in
@@ -271,14 +342,16 @@ function au_token_erzeugen($laenge = 24)
  * den man beim Suchen nicht findet, weil das Token ja "da" ist.
  *
  * Die Sperre haelt genau einen Prozess in der erzeugenden Stelle. Wer
- * danach hereinkommt, liest die Konfiguration erneut und findet das gerade
- * geschriebene Token vor.
+ * danach hereinkommt, liest die Konfiguration erneut und findet die gerade
+ * geschriebenen Token vor.
  */
-function au_token()
+function au_token($art = 'lesen')
 {
+    $schluessel = ($art === 'schalten') ? 'schalttoken' : 'aktionstoken';
     $cfg = au_config();
-    if (trim((string) $cfg['aktionstoken']) !== '') {
-        return (string) $cfg['aktionstoken'];
+    if (trim((string) $cfg['aktionstoken']) !== ''
+        && trim((string) $cfg['schalttoken']) !== '') {
+        return (string) $cfg[$schluessel];
     }
 
     $p = au_paths();
@@ -288,25 +361,72 @@ function au_token()
     $sperre = $p['configdir'] . '/token.lock';
     $fh = @fopen($sperre, 'c');
     if ($fh === false) {
-        // Ohne Sperre lieber ein Token erzeugen als gar keines - ein
+        // Ohne Sperre lieber Token erzeugen als gar keine - ein
         // beschreibbares Verzeichnis vorausgesetzt, kommt dieser Fall nicht vor.
-        $cfg['aktionstoken'] = au_token_erzeugen();
+        $cfg = au_token_ergaenzen($cfg);
         au_config_speichern($cfg);
-        return (string) $cfg['aktionstoken'];
+        return (string) $cfg[$schluessel];
     }
     @flock($fh, LOCK_EX);
 
     // Zweite Pruefung hinter der Sperre: waehrend des Wartens hat ein
-    // anderer Prozess vermutlich schon eines geschrieben.
+    // anderer Prozess vermutlich schon geschrieben.
     $cfg = au_config();
-    if (trim((string) $cfg['aktionstoken']) === '') {
-        $cfg['aktionstoken'] = au_token_erzeugen();
+    $vorher = $cfg['aktionstoken'] . '|' . $cfg['schalttoken'];
+    $cfg = au_token_ergaenzen($cfg);
+    if ($cfg['aktionstoken'] . '|' . $cfg['schalttoken'] !== $vorher) {
         au_config_speichern($cfg);
     }
 
     @flock($fh, LOCK_UN);
     @fclose($fh);
-    return (string) $cfg['aktionstoken'];
+    return (string) $cfg[$schluessel];
+}
+
+/** Ergaenzt fehlende Token, ohne vorhandene anzufassen. */
+function au_token_ergaenzen($cfg)
+{
+    if (trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '')) === '') {
+        $cfg['aktionstoken'] = au_token_erzeugen();
+    }
+    if (trim((string) (isset($cfg['schalttoken']) ? $cfg['schalttoken'] : '')) === '') {
+        $cfg['schalttoken'] = au_token_erzeugen();
+    }
+    return $cfg;
+}
+
+/**
+ * Ein Formulartoken gegen fremde Absender.
+ *
+ * Die Oberflaeche liegt hinter der LoxBerry-Anmeldung, aber ein Formular, das
+ * jede POST-Anfrage ausfuehrt, laesst sich von einer anderen Seite aus
+ * abschicken, solange der Browser noch angemeldet ist. Betroffen waeren hier
+ * Dienststart, Tokenwechsel und - schlimmer - die schaltenden Knoepfe des
+ * Reiters Test.
+ *
+ * Abgeleitet aus dem Aktionstoken, damit es keine Sitzungsverwaltung braucht:
+ * dieselbe Anlage ergibt denselben Wert, eine fremde Seite kennt ihn nicht.
+ */
+function au_formtoken($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = au_config();
+    }
+    $basis = (string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '');
+    if ($basis === '') {
+        return '';
+    }
+    return hash_hmac('sha256', 'formular-v1', $basis);
+}
+
+function au_formtoken_pruefen($cfg = null)
+{
+    $soll = au_formtoken($cfg);
+    $ist = isset($_POST['formtoken']) ? (string) $_POST['formtoken'] : '';
+    if ($soll === '' || $ist === '') {
+        return false;
+    }
+    return hash_equals($soll, $ist);
 }
 
 /* ---------------- Zwischenspeicher lesen ---------------- */
@@ -347,9 +467,41 @@ function au_dienst_pid()
     if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
         return 0;
     }
-    // Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
+    /* Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
+     *
+     * Bis 0.9.6 stand hier strpos($cmd, 'audi.py'). Der Rahmen war schon
+     * richtig - geprueft wird nur die Nummer aus der eigenen PID-Datei, es
+     * wird nichts gesucht -, aber die Pruefung selbst zu weich:
+     * /proc/<pid>/cmdline enthaelt ALLE Argumente, durch Nullbytes getrennt.
+     * Hat die wiederverwendete Nummer einen Editor mit geoeffneter audi.py
+     * erwischt, galt der als laufender Dienst. Die Oberflaeche reihte dann
+     * Befehle ein, die niemand abarbeitet, und meldete "eingereiht" statt
+     * "laeuft nicht".
+     *
+     * Verglichen wird jetzt argumentweise gegen den vollen Pfad. Das trifft
+     * auch den Fall zweier Exemplare des Plugins: LoxBerry haengt bei
+     * Namenskonflikt 01, 02 ... an den Ordnernamen an.
+     *
+     * DIESELBE Pruefung steht seit 0.9.8 auch in bin/dienst.sh. Dort stand
+     * bis dahin weiterhin das weiche grep - und weil dienst.sh den
+     * minuetlichen Waechter traegt, entschied die WEICHE Fassung darueber,
+     * ob ein toter Dienst neu gestartet wird. Die Oberflaeche zeigte
+     * "gestoppt", der Waechter tat nichts. */
     $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    return strpos($cmd, 'audi.py') !== false ? $pid : 0;
+    $argv = explode("\0", $cmd);
+    $skript = au_paths()['bindir'] . '/audi.py';
+    /* Zwei Bedingungen, nicht eine:
+     *   argv[1] ist genau unser Skript UND
+     *   argv[0] ist ein Python.
+     * Die zweite braucht es, weil "nano /pfad/audi.py" ebenfalls den vollen
+     * Pfad als zweites Argument fuehrt. Der Dienst wird immer als
+     * "<venv>/bin/python3 <pfad>/audi.py" gestartet. */
+    if (isset($argv[0], $argv[1])
+        && $argv[1] === $skript
+        && preg_match('#(^|/)python[0-9.]*$#', $argv[0])) {
+        return $pid;
+    }
+    return 0;
 }
 
 function au_dienst_soll()
@@ -377,36 +529,38 @@ function au_dienst($befehl)
 }
 
 /**
- * Fassungen der beiden Python-Pakete in der virtuellen Umgebung.
+ * Fassungen der Python-Pakete in der virtuellen Umgebung.
  *
- * Es sind zwei: der Kern (carconnectivity) und der Audi-Connector. Beide
- * werden getrennt veroeffentlicht und koennen auseinanderlaufen - deshalb
- * stehen beide in der Oberflaeche.
+ * Es sind drei: der Kern (carconnectivity), der Audi-Connector und - seit
+ * 0.9.8 - paho-mqtt fuer den Horcher. Kern und Connector werden getrennt
+ * veroeffentlicht und koennen auseinanderlaufen; paho fehlt, wenn die
+ * Installation ohne Internetverbindung lief.
  *
- * Rueckgabe: array('kern' => '0.11.10', 'connector' => '0.10.6'); nicht
- * ermittelbare Werte bleiben ''.
+ * Rueckgabe: array('kern' => '0.11.10', 'connector' => '0.3.2',
+ *                  'paho' => '2.1.0'); nicht ermittelbare Werte bleiben ''.
  */
 function au_bibliothek_fassungen()
 {
     $py = au_paths()['bindir'] . '/venv/bin/python3';
-    $leer = array('kern' => '', 'connector' => '');
+    $leer = array('kern' => '', 'connector' => '', 'paho' => '');
     if (!is_file($py)) {
         return $leer;
     }
     $ausgabe = array();
     @exec(escapeshellarg($py) . ' -c ' . escapeshellarg(
         'import importlib.metadata as m' . "\n"
-        . 'for p in ("carconnectivity", "carconnectivity-connector-audi"):' . "\n"
+        . 'for p in ("carconnectivity", "carconnectivity-connector-audi", "paho-mqtt"):' . "\n"
         . '    try: print(m.version(p))' . "\n"
         . '    except Exception: print("")'
     ) . ' 2>/dev/null', $ausgabe);
     return array(
         'kern'      => isset($ausgabe[0]) ? trim($ausgabe[0]) : '',
         'connector' => isset($ausgabe[1]) ? trim($ausgabe[1]) : '',
+        'paho'      => isset($ausgabe[2]) ? trim($ausgabe[2]) : '',
     );
 }
 
-/** Kurzform fuer die Anzeige: 'Kern 0.11.10 / Connector 0.10.6' oder ''. */
+/** Kurzform fuer die Anzeige: 'Kern 0.11.10 / Connector 0.3.2' oder ''. */
 function au_bibliothek_fassung()
 {
     $f = au_bibliothek_fassungen();
@@ -448,6 +602,119 @@ function au_selbsttest()
     return implode("\n", $ausgabe);
 }
 
+/**
+ * Die letzten Zeilen der Logdatei - BLOCKWEISE vom Ende her.
+ *
+ * Bis 0.9.7 stand hier file(), also die ganze Datei im Arbeitsspeicher. Bei
+ * 512 KB und einem LoxBerry auf einem Raspberry Pi ist das kein Absturz, aber
+ * es ist unnoetig, und der Hausstandard verlangt ausdruecklich das Gegenteil.
+ * exec("tail") kommt nicht in Frage - ein Prozessaufruf je Seitenaufbau.
+ */
+function au_log_ende($datei, $anzahl = 400, $block = 8192)
+{
+    if (!is_file($datei)) {
+        return array();
+    }
+    $fh = @fopen($datei, 'rb');
+    if ($fh === false) {
+        return array();
+    }
+    $groesse = filesize($datei);
+    $puffer = '';
+    $pos = $groesse;
+    $zeilen = 0;
+    while ($pos > 0 && $zeilen <= $anzahl) {
+        $lese = min($block, $pos);
+        $pos -= $lese;
+        if (fseek($fh, $pos, SEEK_SET) !== 0) {
+            break;
+        }
+        $stueck = (string) fread($fh, $lese);
+        $puffer = $stueck . $puffer;
+        $zeilen = substr_count($puffer, "\n");
+    }
+    fclose($fh);
+    $alle = preg_split('/\r\n|\r|\n/', $puffer);
+    if (!is_array($alle)) {
+        return array();
+    }
+    $alle = array_values(array_filter($alle, function ($z) { return trim($z) !== ''; }));
+    return array_slice($alle, -$anzahl);
+}
+
+/* ---------------- Befehlskatalog ----------------
+ *
+ * EINE Liste fuer alles: die Weissliste des Endpunkts, die Tabelle im Reiter
+ * "Einbindung in Loxone", die Vorlage des virtuellen Ausgangs und die Knoepfe
+ * des Reiters Test. Bis 0.9.7 standen die Befehle an vier Stellen, und die
+ * Tabelle der virtuellen Ausgaenge hatte drei davon verloren: scheibe_aus,
+ * wecken und zieltemperatur fehlten dort.
+ *
+ * Je Eintrag:
+ *   bez      Sprachschluessel der Bezeichnung
+ *   zusatz   '', 'temp', 'prozent', 'ampere', 'einstellung', 'dauer'
+ *   gefahr   1 = braucht ZUSAETZLICH den Haken 'Eingreifende Befehle'
+ *   gegen    Aktion, die als Ausbefehl an denselben virtuellen Ausgang gehoert
+ *   ohne_fz  1 = kennt keinen Fahrzeugparameter
+ */
+function au_befehle()
+{
+    return array(
+        'abruf'          => array('bez' => 'BEFEHL.ABRUF',       'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 1),
+        'klima_start'    => array('bez' => 'BEFEHL.KLIMA',       'zusatz' => 'temp',
+                                  'gefahr' => 0, 'gegen' => 'klima_stop', 'ohne_fz' => 0),
+        'klima_stop'     => array('bez' => 'BEFEHL.KLIMA_AUS',   'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'zieltemperatur' => array('bez' => 'BEFEHL.ZIELTEMP',    'zusatz' => 'temp',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'laden_start'    => array('bez' => 'BEFEHL.LADEN',       'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => 'laden_stop', 'ohne_fz' => 0),
+        'laden_stop'     => array('bez' => 'BEFEHL.LADEN_AUS',   'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'ladegrenze'     => array('bez' => 'BEFEHL.LADEGRENZE',  'zusatz' => 'prozent',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'ladestrom'      => array('bez' => 'BEFEHL.LADESTROM',   'zusatz' => 'ampere',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'scheibe_ein'    => array('bez' => 'BEFEHL.SCHEIBE',     'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => 'scheibe_aus', 'ohne_fz' => 0),
+        'scheibe_aus'    => array('bez' => 'BEFEHL.SCHEIBE_AUS', 'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'wecken'         => array('bez' => 'BEFEHL.WECKEN',      'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'einstellung'    => array('bez' => 'BEFEHL.EINSTELLUNG', 'zusatz' => 'einstellung',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        'spin_pruefen'   => array('bez' => 'BEFEHL.SPIN',        'zusatz' => '',
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 1),
+        // Ab hier: eingreifend. Zweiter Haken noetig.
+        'verriegeln'     => array('bez' => 'BEFEHL.VERRIEGELN',  'zusatz' => '',
+                                  'gefahr' => 1, 'gegen' => 'entriegeln', 'ohne_fz' => 0),
+        'entriegeln'     => array('bez' => 'BEFEHL.ENTRIEGELN',  'zusatz' => '',
+                                  'gefahr' => 1, 'gegen' => '', 'ohne_fz' => 0),
+        'hupe'           => array('bez' => 'BEFEHL.HUPE',        'zusatz' => 'dauer',
+                                  'gefahr' => 1, 'gegen' => '', 'ohne_fz' => 0),
+        'lichthupe'      => array('bez' => 'BEFEHL.LICHTHUPE',   'zusatz' => 'dauer',
+                                  'gefahr' => 1, 'gegen' => '', 'ohne_fz' => 0),
+    );
+}
+
+/** Die Ja/Nein-Einstellungen, die 'einstellung' setzen kann.
+ *  Muss zu SCHALTER in bin/audi.py passen. */
+function au_einstellungen()
+{
+    return array(
+        'stecker_auto'     => 'EINSTELLUNG.STECKER_AUTO',
+        'klima_unlock'     => 'EINSTELLUNG.KLIMA_UNLOCK',
+        'scheibe_dauer'    => 'EINSTELLUNG.SCHEIBE_DAUER',
+        'klima_ohne_strom' => 'EINSTELLUNG.KLIMA_OHNE_STROM',
+        'sitzheizung'      => 'EINSTELLUNG.SITZHEIZUNG',
+        'zone_vl'          => 'EINSTELLUNG.ZONE_VL',
+        'zone_vr'          => 'EINSTELLUNG.ZONE_VR',
+        'zone_hl'          => 'EINSTELLUNG.ZONE_HL',
+        'zone_hr'          => 'EINSTELLUNG.ZONE_HR',
+    );
+}
+
 /* ---------------- Befehlswarteschlange ----------------
  *
  * Sowohl der Miniserver-Endpunkt als auch der Reiter Test setzen Befehle ueber
@@ -468,11 +735,19 @@ function au_selbsttest()
  * Oberflaeche fast immer "Eingereiht, aber Ergebnis unbekannt" aus, obwohl
  * der Befehl kurz darauf sauber lief. Wer das zweimal erlebt, drueckt beim
  * dritten Mal mehrfach - und handelt sich bei Audi ein HTTP 429 ein.
+ *
+ * Dass die eingestellte Wartezeit hier UEBERSTIMMT wird, steht seit 0.9.8
+ * auch im Hilfetext des Feldes - bis dahin stand es nur in diesem Kommentar,
+ * und wer 0 einstellte, wartete trotzdem 30 Sekunden.
  */
 function au_wartezeit_fuer($aktion, $vorgabe)
 {
-    $lang = array('klima_start', 'klima_stop', 'wecken', 'standheizung_start',
-                  'standheizung_stop', 'laden_start', 'laden_stop');
+    // Ohne 'standheizung_start'/'standheizung_stop': diese beiden Aktionen
+    // standen bis 0.9.7 hier, gab es aber weder im Endpunkt noch im Dienst
+    // noch im Reiter Test. Ein toter Eintrag ist eine Behauptung ueber eine
+    // Funktion, die es nicht gibt.
+    $lang = array('klima_start', 'klima_stop', 'wecken', 'laden_start', 'laden_stop',
+                  'verriegeln', 'entriegeln', 'hupe', 'lichthupe');
     if (in_array((string) $aktion, $lang, true)) {
         return max(30, (int) $vorgabe);
     }
@@ -517,25 +792,91 @@ function au_befehl_absetzen($befehl, $wartezeit = null)
                   . 'bei zu vielen Anfragen.');
 }
 
-/* ---------------- Verlauf ---------------- */
+/* ---------------- Verlauf und Ladevorgaenge ---------------- */
 
-/** Messpunkte eines Tages: Array von array(ts, fuellstand, reichweite). */
+/**
+ * Messpunkte eines Tages: Array von array(ts, fuellstand, reichweite, km).
+ *
+ * Dateien aus 0.9.7 haben nur drei Spalten. Die vierte fehlt dann - das ist
+ * kein Fehler, sondern das Alter der Datei, und deshalb wird sie zu null und
+ * nicht zu 0.
+ */
 function au_verlauf_lesen($nummer, $tag = '')
 {
     if ($tag === '') {
         $tag = date('Ymd');
     }
-    $f = au_paths()['datadir'] . '/verlauf/fahrzeug' . (int) $nummer . '_' . $tag . '.csv';
+    $f = au_paths()['datadir'] . '/verlauf/fahrzeug' . (int) $nummer . '_'
+       . preg_replace('/[^0-9]/', '', (string) $tag) . '.csv';
     $out = array();
     if (is_file($f)) {
         foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $zeile) {
             $c = explode(';', $zeile);
             if (count($c) >= 2) {
-                $out[] = array((int) $c[0], (float) $c[1], isset($c[2]) && $c[2] !== '' ? (float) $c[2] : 0);
+                $out[] = array(
+                    (int) $c[0],
+                    (float) $c[1],
+                    isset($c[2]) && $c[2] !== '' ? (float) $c[2] : 0,
+                    isset($c[3]) && $c[3] !== '' ? (float) $c[3] : null,
+                );
             }
         }
     }
     return $out;
+}
+
+/** Welche Tage liegen fuer ein Fahrzeug vor? Neueste zuerst, als 'Ymd'. */
+function au_verlauf_tage($nummer)
+{
+    $muster = au_paths()['datadir'] . '/verlauf/fahrzeug' . (int) $nummer . '_*.csv';
+    $tage = array();
+    foreach (glob($muster) ?: array() as $datei) {
+        if (preg_match('/_([0-9]{8})\.csv$/', $datei, $m)) {
+            $tage[] = $m[1];
+        }
+    }
+    rsort($tage);
+    return $tage;
+}
+
+/**
+ * Die protokollierten Ladevorgaenge, neueste zuerst.
+ *
+ * Geschrieben von bin/audi.py, sobald ein Ladevorgang endet. Die Menge in kWh
+ * entsteht nur, wenn eine Batteriekapazitaet hinterlegt ist - sonst bleibt
+ * das Feld leer, und zwar leer und nicht 0.
+ */
+function au_ladungen_lesen($grenze = 200)
+{
+    $f = au_paths()['datadir'] . '/verlauf/ladungen.csv';
+    if (!is_file($f)) {
+        return array();
+    }
+    $aus = array();
+    foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $zeile) {
+        if ($zeile === '' || $zeile[0] === '#') {
+            continue;
+        }
+        $c = explode(';', $zeile);
+        if (count($c) < 8) {
+            continue;
+        }
+        $aus[] = array(
+            'fahrzeug'  => $c[0],
+            'start'     => (int) $c[1],
+            'ende'      => (int) $c[2],
+            'dauer'     => $c[3] === '' ? null : (int) $c[3],
+            'soc_start' => $c[4] === '' ? null : (float) $c[4],
+            'soc_ende'  => $c[5] === '' ? null : (float) $c[5],
+            'km'        => $c[6] === '' ? null : (float) $c[6],
+            'kwh'       => $c[7] === '' ? null : (float) $c[7],
+        );
+    }
+    // Neueste zuerst, und nur so viele, wie die Seite tragen kann.
+    usort($aus, function ($a, $b) {
+        return $b['start'] - $a['start'];
+    });
+    return array_slice($aus, 0, max(1, (int) $grenze));
 }
 
 /* ---------------- MQTT-Gateway ----------------
@@ -583,42 +924,93 @@ function au_mqtt_zustand()
     );
 }
 
-/** Alle Themen, die der Dienst veroeffentlicht, mit ihrer Bedeutung. */
+/**
+ * Welche FREMDEN Themen erwartet die Oberflaeche?
+ *
+ * Dieselbe Liste fuehrt der Dienst in horcher_themen(). Sie steht absichtlich
+ * zweimal da: die Selbstpruefung vergleicht diese Erwartung mit dem, was der
+ * Dienst wirklich abonniert hat. Ein Abo, das der Dienst nach einer Aenderung
+ * nicht nachgezogen hat, ist unsichtbar, solange niemand beide Listen
+ * nebeneinander legt - die Vorklimatisierung loest dann einfach nie aus, und
+ * das sieht aus wie "der Assistent sendet nichts".
+ */
+function au_horcher_themen($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = au_config();
+    }
+    $t = array();
+    if (!empty($cfg['abfahrt_ein'])) {
+        $pfad = trim((string) (isset($cfg['abfahrt_praefix']) ? $cfg['abfahrt_praefix'] : ''), '/');
+        if ($pfad !== '') {
+            $t[] = $pfad . '/ABFAHRT_IN';
+            $t[] = $pfad . '/OK';
+        }
+    }
+    if (!empty($cfg['ladeempf_ein'])) {
+        $th = trim((string) (isset($cfg['ladeempf_thema']) ? $cfg['ladeempf_thema'] : ''));
+        if ($th !== '') {
+            $t[] = $th;
+        }
+    }
+    sort($t);
+    return $t;
+}
+
+/**
+ * Der Zustand des Horchers, wie ihn der Dienst hinterlegt hat.
+ *
+ * Die Oberflaeche baut KEINE eigene Verbindung zum Broker auf: sie liest, was
+ * der Dienst zuletzt gesehen hat. Zwei Verbindungen zum selben Broker aus
+ * zwei Prozessen waeren zwei Stellen, die auseinanderlaufen - und die
+ * Oberflaeche wird bei jedem Klick gerendert.
+ */
+function au_horcher_zustand()
+{
+    $z = au_zustand();
+    return array(
+        'themen'    => isset($z['horcher']) && is_array($z['horcher']) ? $z['horcher'] : array(),
+        'verbunden' => !empty($z['horcher_verbunden']) ? 1 : 0,
+        'fehler'    => isset($z['horcher_fehler']) ? (string) $z['horcher_fehler'] : '',
+    );
+}
+
+/** Alle Themen, die der Dienst veroeffentlicht, mit ihrer Bedeutung.
+ *  Entsteht aus der Feldliste - so kann die Tabelle nicht von dem abweichen,
+ *  was MQTT_FELDER in bin/audi.py wirklich sendet. */
 function au_mqtt_themen()
 {
-    return array(
-        'ok'                          => 'AU_MQTT.OK',
-        'fahrzeuge'                   => 'AU_MQTT.FAHRZEUGE',
-        'fahrzeugN/soc'               => 'AU_MQTT.SOC',
-        'fahrzeugN/tank_prozent'      => 'AU_MQTT.TANK',
-        'fahrzeugN/reichweite_km'     => 'AU_MQTT.REICHWEITE',
-        'fahrzeugN/kilometerstand'    => 'AU_MQTT.KM',
-        'fahrzeugN/verriegelt'        => 'AU_MQTT.VERRIEGELT',
-        'fahrzeugN/tueren_offen'      => 'AU_MQTT.TUEREN',
-        'fahrzeugN/fenster_offen'     => 'AU_MQTT.FENSTER',
-        'fahrzeugN/licht_an'          => 'AU_MQTT.LICHT',
-        'fahrzeugN/handbremse'        => 'AU_MQTT.HANDBREMSE',
-        'fahrzeugN/zustand'           => 'AU_MQTT.ZUSTAND',
-        'fahrzeugN/erreichbar'        => 'AU_MQTT.ERREICHBAR',
-        'fahrzeugN/klima_an'          => 'AU_MQTT.KLIMA',
-        'fahrzeugN/zieltemperatur'    => 'AU_MQTT.ZIELTEMP',
-        'fahrzeugN/aussentemperatur'  => 'AU_MQTT.AUSSEN',
-        'fahrzeugN/scheibenheizung'   => 'AU_MQTT.SCHEIBE',
-        'fahrzeugN/laedt'             => 'AU_MQTT.LAEDT',
-        'fahrzeugN/ladeleistung_kw'   => 'AU_MQTT.LADEKW',
-        'fahrzeugN/ladetempo_kmh'     => 'AU_MQTT.TEMPO',
-        'fahrzeugN/ladegrenze'        => 'AU_MQTT.LADEGRENZE',
-        'fahrzeugN/ladestrom_a'       => 'AU_MQTT.LADESTROM',
-        'fahrzeugN/kabel_verbunden'   => 'AU_MQTT.KABEL',
-        'fahrzeugN/stecker_verriegelt' => 'AU_MQTT.STECKER',
-        'fahrzeugN/laden_fertig_um'   => 'AU_MQTT.FERTIG',
-        'fahrzeugN/breite'            => 'AU_MQTT.BREITE',
-        'fahrzeugN/laenge'            => 'AU_MQTT.LAENGE',
-        'fahrzeugN/inspektion_tage'   => 'AU_MQTT.INSP_TAGE',
-        'fahrzeugN/inspektion_km'     => 'AU_MQTT.INSP_KM',
-        'fahrzeugN/oelservice_tage'   => 'AU_MQTT.OEL_TAGE',
-        'fahrzeugN/oelservice_km'     => 'AU_MQTT.OEL_KM',
+    $t = array(
+        'ok'        => 'AU_MQTT.OK',
+        'grund'     => 'AU_MQTT.GRUND',
+        'fahrzeuge' => 'AU_MQTT.FAHRZEUGE',
     );
+    foreach (au_felder() as $feld => $info) {
+        if ($info['mqtt'] === '' || $info['mqtt'] === null) {
+            continue;
+        }
+        $t['fahrzeugN/' . $info['mqtt']] = $info['bez'];
+    }
+    /* Zwei Werte gehen NUR ueber MQTT hinaus, und zwar als Unix-Zeit: an den
+     * Endpunkten stehen sie als Restminuten (FERTIGMIN, KLIMAFERTIG), weil
+     * Loxone mit einer Restzeit mehr anfangen kann als mit einem Zeitstempel.
+     * Ueber MQTT ist der Zeitstempel dagegen brauchbar. Sie stehen deshalb
+     * hier eigens - ein Thema, das der Dienst sendet und keine Tabelle nennt,
+     * ist ein Wert, den niemand findet. */
+    $t['fahrzeugN/laden_fertig_um'] = 'AU_MQTT.FERTIG';
+    $t['fahrzeugN/klima_fertig_um'] = 'AU_MQTT.KLIMAFERTIG';
+    foreach (array('zustand_text' => 'AU_MQTT.ZUSTAND_TEXT',
+                   'klima_text' => 'AU_MQTT.KLIMA_TEXT',
+                   'ladezustand_text' => 'AU_MQTT.LADE_TEXT',
+                   'tueren_namen' => 'AU_MQTT.TUEREN_NAMEN',
+                   'fenster_namen' => 'AU_MQTT.FENSTER_NAMEN',
+                   'adresse' => 'AU_MQTT.ADRESSE',
+                   'saeule_name' => 'AU_MQTT.SAEULE',
+                   'modell' => 'AU_MQTT.MODELL',
+                   'vin' => 'AU_MQTT.VIN') as $k => $b) {
+        $t['fahrzeugN/' . $k] = $b;
+    }
+    return $t;
 }
 
 /* ==================================================================
@@ -667,98 +1059,658 @@ function au_xml_virtual_in_http($kopf, $cmds)
 }
 
 /**
- * Die Werte des Status-Endpunkts mit Einheit und Bedeutung.
+ * Der virtuelle AUSGANG - die Befehle zum Importieren.
  *
- * Reihenfolge und Namen sind zugleich die Reihenfolge der Befehlserkennungen
- * in der Loxone-Vorlage. Wer hier etwas einfuegt, aendert die Vorlage mit.
+ * Bis 0.9.7 gab es das nicht: alle Schaltbefehle mussten aus einer Tabelle
+ * abgetippt werden, jede Zeile mit einem 24-stelligen Token darin. Aufbau
+ * uebernommen aus LoxBerry-Plugin-BYD-Autos-0.9.1 (by_xml_virtual_out).
+ *
+ * HintText am Wurzelelement und CmdInit gehoeren dazu - Loxone Config
+ * schreibt sie beim Export ebenfalls, und eine Vorlage, die davon abweicht,
+ * sieht nach dem ersten Speichern anders aus als beim Import.
  */
-function au_status_felder()
+function au_xml_virtual_out($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut ';
+    $o .= 'Title="' . au_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . au_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . au_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'CmdInit="" ';
+    $o .= 'CloseAfterSend="false" ';
+    $o .= 'CmdSep="" ';
+    $o .= 'HintText="' . au_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '"';
+    $o .= '>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualOutCmd ';
+        $o .= 'Title="' . au_x($c['title']) . '" ';
+        $o .= 'Comment="' . au_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOnMethod="' . au_x(isset($c['on']) ? $c['on'] : '') . '" ';
+        $o .= 'CmdOffMethod="' . au_x(isset($c['off']) ? $c['off'] : '') . '" ';
+        $o .= 'Analog="' . (empty($c['analog']) ? 'false' : 'true') . '" ';
+        $o .= 'Repeat="0" ';
+        $o .= 'RepeatRate="0"';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return $o;
+}
+
+/* ==================================================================
+ * DIE FELDLISTE - eine einzige Quelle
+ *
+ * Je Eintrag:
+ *   quelle_feld  Schluessel im Abbild (bin/audi.py), '' bei gerechneten
+ *                Groessen, die erst hier entstehen
+ *   einheit      wie sie in der Tabelle steht
+ *   bez          Sprachschluessel der Bedeutung
+ *   zeilen       an welchen Endpunkten das Feld erscheint
+ *   herkunft     'connector' = kommt von Audi
+ *                'gerechnet' = das Plugin bildet ihn selbst
+ *                'bestand'   = ueber den Zwischenspeicher bekannt
+ *                'leer'      = der Audi-Connector 0.3.2 fuellt ihn NIE
+ *                              (gemessen, siehe Kopf von bin/audi.py)
+ *   mqtt         Themenname unter fahrzeugN/, '' wenn nicht gesendet
+ *
+ * REIHENFOLGE: Neues gehoert ans ENDE der jeweiligen Zeile. Loxone sucht
+ * zwar mit einer Befehlserkennung nach dem NAMEN und nicht nach der Position,
+ * aber wer die Reihenfolge aendert, aendert auch die erzeugte Vorlage - und
+ * dann sieht ein Vergleich zweier Vorlagen nach einer Aenderung aus, die
+ * keine ist.
+ * ================================================================== */
+function au_felder()
 {
     return array(
-        'SOC'       => array('%',   'AU_FELD.SOC'),
-        'TANK'      => array('%',   'AU_FELD.TANK'),
-        'REICHW'    => array('km',  'AU_FELD.REICHW'),
-        'KM'        => array('km',  'AU_FELD.KM'),
-        'VERR'      => array('',    'AU_FELD.VERR'),
-        'TUEREN'    => array('',    'AU_FELD.TUEREN'),
-        'FENSTER'   => array('',    'AU_FELD.FENSTER'),
-        'LICHT'     => array('',    'AU_FELD.LICHT'),
-        'HANDBR'    => array('',    'AU_FELD.HANDBR'),
-        'KLIMA'     => array('',    'AU_FELD.KLIMA'),
-        'ZIELTEMP'  => array('&deg;C', 'AU_FELD.ZIELTEMP'),
-        'AUSSEN'    => array('&deg;C', 'AU_FELD.AUSSEN'),
-        'SCHEIBE'   => array('',    'AU_FELD.SCHEIBE'),
-        'ZUSTAND'   => array('',    'AU_FELD.ZUSTAND'),
-        'ERREICH'   => array('',    'AU_FELD.ERREICH'),
-        'ALTER'     => array('s',   'AU_FELD.ALTER'),
-        'OK'        => array('',    'AU_FELD.OK'),
+        // OK steht in JEDER Zeile an erster Stelle. Es hat kein Abbildfeld -
+        // der Wert entsteht aus Zeitstempel und Fehlerlage - gehoert aber in
+        // die Liste, damit es in den Tabellen und in der Loxone-Vorlage
+        // erscheint. Ohne Eintrag waere es der einzige Wert, den der Endpunkt
+        // sendet und keine Tabelle nennt.
+        'OK'         => array('quelle_feld' => '', 'einheit' => '',
+                              'bez' => 'AU_FELD.OK',
+                              'zeilen' => array('status', 'laden', 'wartung', 'position'),
+                              'herkunft' => 'bestand', 'mqtt' => ''),
+        // ---- Status -------------------------------------------------------
+        'SOC'        => array('quelle_feld' => 'soc', 'einheit' => '%',
+                              'bez' => 'AU_FELD.SOC', 'zeilen' => array('status', 'laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'soc'),
+        'TANK'       => array('quelle_feld' => 'tank_prozent', 'einheit' => '%',
+                              'bez' => 'AU_FELD.TANK', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'tank_prozent'),
+        'REICHW'     => array('quelle_feld' => 'reichweite_km', 'einheit' => 'km',
+                              'bez' => 'AU_FELD.REICHW', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'reichweite_km'),
+        // Beim Plug-in-Hybrid ist REICHW die Summe. Die elektrische Haelfte
+        // steht als REICHWBAT in der Ladezeile; ohne diese hier liesse sich
+        // die Summe nicht aufteilen.
+        'REICHWVERBR' => array('quelle_feld' => 'reichweite_verbrenner_km', 'einheit' => 'km',
+                              'bez' => 'AU_FELD.REICHWVERBR', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'reichweite_verbrenner_km'),
+        'KM'         => array('quelle_feld' => 'kilometerstand', 'einheit' => 'km',
+                              'bez' => 'AU_FELD.KM', 'zeilen' => array('status', 'wartung'),
+                              'herkunft' => 'connector', 'mqtt' => 'kilometerstand'),
+        'VERR'       => array('quelle_feld' => 'verriegelt', 'einheit' => '',
+                              'bez' => 'AU_FELD.VERR', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'verriegelt'),
+        'TUEREN'     => array('quelle_feld' => 'tueren_offen', 'einheit' => '',
+                              'bez' => 'AU_FELD.TUEREN', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'tueren_offen'),
+        'FENSTER'    => array('quelle_feld' => 'fenster_offen', 'einheit' => '',
+                              'bez' => 'AU_FELD.FENSTER', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'fenster_offen'),
+        'LICHT'      => array('quelle_feld' => 'licht_an', 'einheit' => '',
+                              'bez' => 'AU_FELD.LICHT', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'licht_an'),
+        'HANDBR'     => array('quelle_feld' => 'handbremse', 'einheit' => '',
+                              'bez' => 'AU_FELD.HANDBR', 'zeilen' => array('status'),
+                              'herkunft' => 'leer', 'mqtt' => 'handbremse'),
+        'KLIMA'      => array('quelle_feld' => 'klima_an', 'einheit' => '',
+                              'bez' => 'AU_FELD.KLIMA', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'klima_an'),
+        'ZIELTEMP'   => array('quelle_feld' => 'zieltemperatur', 'einheit' => '&deg;C',
+                              'bez' => 'AU_FELD.ZIELTEMP', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'zieltemperatur'),
+        'AUSSEN'     => array('quelle_feld' => 'aussentemperatur', 'einheit' => '&deg;C',
+                              'bez' => 'AU_FELD.AUSSEN', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'aussentemperatur'),
+        'SCHEIBE'    => array('quelle_feld' => 'scheibenheizung', 'einheit' => '',
+                              'bez' => 'AU_FELD.SCHEIBE', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'scheibenheizung'),
+        'ZUSTAND'    => array('quelle_feld' => 'zustand', 'einheit' => '',
+                              'bez' => 'AU_FELD.ZUSTAND', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'zustand'),
+        'ERREICH'    => array('quelle_feld' => 'erreichbar', 'einheit' => '',
+                              'bez' => 'AU_FELD.ERREICH', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'erreichbar'),
+        // ---- Neu in 0.9.8, Status ----------------------------------------
+        'TUERANZ'    => array('quelle_feld' => 'tueren_anzahl', 'einheit' => '',
+                              'bez' => 'AU_FELD.TUERANZ', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'tueren_anzahl'),
+        'FENSTERANZ' => array('quelle_feld' => 'fenster_anzahl', 'einheit' => '',
+                              'bez' => 'AU_FELD.FENSTERANZ', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'fenster_anzahl'),
+        'KLIMAART'   => array('quelle_feld' => 'klima_stufe', 'einheit' => '',
+                              'bez' => 'AU_FELD.KLIMAART', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'klima_stufe'),
+        'KLIMAFERTIG' => array('quelle_feld' => '', 'einheit' => 'min',
+                              'bez' => 'AU_FELD.KLIMAFERTIG', 'zeilen' => array('status'),
+                              'herkunft' => 'gerechnet', 'mqtt' => ''),
+        'SITZHEIZ'   => array('quelle_feld' => 'sitzheizung_ein', 'einheit' => '',
+                              'bez' => 'AU_FELD.SITZHEIZ', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'sitzheizung_ein'),
+        'KLIMAUNLOCK' => array('quelle_feld' => 'klima_bei_entriegeln', 'einheit' => '',
+                              'bez' => 'AU_FELD.KLIMAUNLOCK', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'klima_bei_entriegeln'),
+        'AKTIV'      => array('quelle_feld' => 'aktiv', 'einheit' => '',
+                              'bez' => 'AU_FELD.AKTIV', 'zeilen' => array('status'),
+                              'herkunft' => 'connector', 'mqtt' => 'aktiv'),
+        'STANDZEIT'  => array('quelle_feld' => 'standzeit_min', 'einheit' => 'min',
+                              'bez' => 'AU_FELD.STANDZEIT', 'zeilen' => array('status'),
+                              'herkunft' => 'gerechnet', 'mqtt' => 'standzeit_min'),
+        'FZOK'       => array('quelle_feld' => 'ok', 'einheit' => '',
+                              'bez' => 'AU_FELD.FZOK', 'zeilen' => array('status'),
+                              'herkunft' => 'bestand', 'mqtt' => 'ok'),
+        'AUSFALL'    => array('quelle_feld' => '', 'einheit' => '',
+                              'bez' => 'AU_FELD.AUSFALL', 'zeilen' => array('status'),
+                              'herkunft' => 'gerechnet', 'mqtt' => ''),
+        'FEHLFOLGE'  => array('quelle_feld' => 'fehlfolge', 'einheit' => '',
+                              'bez' => 'AU_FELD.FEHLFOLGE', 'zeilen' => array('status'),
+                              'herkunft' => 'gerechnet', 'mqtt' => 'fehlfolge'),
+        // ---- Laden --------------------------------------------------------
+        'LAEDT'      => array('quelle_feld' => 'laedt', 'einheit' => '',
+                              'bez' => 'AU_LFELD.LAEDT', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'laedt'),
+        'LADEKW'     => array('quelle_feld' => 'ladeleistung_kw', 'einheit' => 'kW',
+                              'bez' => 'AU_LFELD.LADEKW', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'ladeleistung_kw'),
+        'TEMPO'      => array('quelle_feld' => 'ladetempo_kmh', 'einheit' => 'km/h',
+                              'bez' => 'AU_LFELD.TEMPO', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'ladetempo_kmh'),
+        'LADEGR'     => array('quelle_feld' => 'ladegrenze', 'einheit' => '%',
+                              'bez' => 'AU_LFELD.LADEGR', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'ladegrenze'),
+        'LADESTROM'  => array('quelle_feld' => 'ladestrom_a', 'einheit' => 'A',
+                              'bez' => 'AU_LFELD.LADESTROM', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'ladestrom_a'),
+        'KABEL'      => array('quelle_feld' => 'kabel_verbunden', 'einheit' => '',
+                              'bez' => 'AU_LFELD.KABEL', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'kabel_verbunden'),
+        'STECKER'    => array('quelle_feld' => 'stecker_verriegelt', 'einheit' => '',
+                              'bez' => 'AU_LFELD.STECKER', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'stecker_verriegelt'),
+        'REICHWBAT'  => array('quelle_feld' => 'reichweite_elektro_km', 'einheit' => 'km',
+                              'bez' => 'AU_LFELD.REICHWBAT', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'reichweite_elektro_km'),
+        'FERTIGMIN'  => array('quelle_feld' => '', 'einheit' => 'min',
+                              'bez' => 'AU_LFELD.FERTIGMIN', 'zeilen' => array('laden'),
+                              'herkunft' => 'gerechnet', 'mqtt' => ''),
+        // ---- Neu in 0.9.8, Laden -----------------------------------------
+        'LADESTUFE'  => array('quelle_feld' => 'lade_stufe', 'einheit' => '',
+                              'bez' => 'AU_LFELD.LADESTUFE', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'lade_stufe'),
+        'LADEART'    => array('quelle_feld' => 'ladeart_zahl', 'einheit' => '',
+                              'bez' => 'AU_LFELD.LADEART', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'ladeart_zahl'),
+        'EXTSTROM'   => array('quelle_feld' => 'externe_kraft', 'einheit' => '',
+                              'bez' => 'AU_LFELD.EXTSTROM', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'externe_kraft'),
+        'STECKERAUTO' => array('quelle_feld' => 'stecker_entriegeln', 'einheit' => '',
+                              'bez' => 'AU_LFELD.STECKERAUTO', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'stecker_entriegeln'),
+        'BATTTEMP'   => array('quelle_feld' => 'batterie_temp', 'einheit' => '&deg;C',
+                              'bez' => 'AU_LFELD.BATTTEMP', 'zeilen' => array('laden'),
+                              'herkunft' => 'connector', 'mqtt' => 'batterie_temp'),
+        'VERBRAUCH'  => array('quelle_feld' => 'verbrauch', 'einheit' => 'kWh/100km',
+                              'bez' => 'AU_LFELD.VERBRAUCH', 'zeilen' => array('laden'),
+                              'herkunft' => 'gerechnet', 'mqtt' => 'verbrauch'),
+        'LADEKWH'    => array('quelle_feld' => 'ladekwh', 'einheit' => 'kWh',
+                              'bez' => 'AU_LFELD.LADEKWH', 'zeilen' => array('laden'),
+                              'herkunft' => 'gerechnet', 'mqtt' => 'ladekwh'),
+        'LADEEMPF'   => array('quelle_feld' => 'ladeempf', 'einheit' => '',
+                              'bez' => 'AU_LFELD.LADEEMPF', 'zeilen' => array('laden'),
+                              'herkunft' => 'gerechnet', 'mqtt' => 'ladeempf'),
+        // ---- Wartung ------------------------------------------------------
+        'INSPTAGE'   => array('quelle_feld' => 'inspektion_tage', 'einheit' => 'd',
+                              'bez' => 'AU_WFELD.INSPTAGE', 'zeilen' => array('wartung'),
+                              'herkunft' => 'connector', 'mqtt' => 'inspektion_tage'),
+        'INSPKM'     => array('quelle_feld' => 'inspektion_km', 'einheit' => 'km',
+                              'bez' => 'AU_WFELD.INSPKM', 'zeilen' => array('wartung'),
+                              'herkunft' => 'connector', 'mqtt' => 'inspektion_km'),
+        'OELTAGE'    => array('quelle_feld' => 'oelservice_tage', 'einheit' => 'd',
+                              'bez' => 'AU_WFELD.OELTAGE', 'zeilen' => array('wartung'),
+                              'herkunft' => 'connector', 'mqtt' => 'oelservice_tage'),
+        'OELKM'      => array('quelle_feld' => 'oelservice_km', 'einheit' => 'km',
+                              'bez' => 'AU_WFELD.OELKM', 'zeilen' => array('wartung'),
+                              'herkunft' => 'connector', 'mqtt' => 'oelservice_km'),
+        // ---- Neu in 0.9.8, Wartung ---------------------------------------
+        'ADBLUE'     => array('quelle_feld' => 'adblue_km', 'einheit' => 'km',
+                              'bez' => 'AU_WFELD.ADBLUE', 'zeilen' => array('wartung'),
+                              'herkunft' => 'connector', 'mqtt' => 'adblue_km'),
+        'OELSTAND'   => array('quelle_feld' => 'oelstand_prozent', 'einheit' => '%',
+                              'bez' => 'AU_WFELD.OELSTAND', 'zeilen' => array('wartung'),
+                              'herkunft' => 'leer', 'mqtt' => ''),
+        // ---- Position -----------------------------------------------------
+        'BREITE'     => array('quelle_feld' => 'breite', 'einheit' => '',
+                              'bez' => 'AU_PFELD.BREITE', 'zeilen' => array('position'),
+                              'herkunft' => 'connector', 'mqtt' => 'breite'),
+        'LAENGE'     => array('quelle_feld' => 'laenge', 'einheit' => '',
+                              'bez' => 'AU_PFELD.LAENGE', 'zeilen' => array('position'),
+                              'herkunft' => 'connector', 'mqtt' => 'laenge'),
+        'POSART'     => array('quelle_feld' => 'positionsart_zahl', 'einheit' => '',
+                              'bez' => 'AU_PFELD.POSART', 'zeilen' => array('position'),
+                              'herkunft' => 'connector', 'mqtt' => 'positionsart_zahl'),
+        'ZUHAUSE'    => array('quelle_feld' => 'zuhause', 'einheit' => '',
+                              'bez' => 'AU_PFELD.ZUHAUSE',
+                              'zeilen' => array('status', 'position'),
+                              'herkunft' => 'gerechnet', 'mqtt' => 'zuhause'),
+        'ENTF'       => array('quelle_feld' => 'entfernung_m', 'einheit' => 'm',
+                              'bez' => 'AU_PFELD.ENTF',
+                              'zeilen' => array('status', 'position'),
+                              'herkunft' => 'gerechnet', 'mqtt' => 'entfernung_m'),
+        // ---- In JEDER Zeile, immer am Ende --------------------------------
+        'ALTER'      => array('quelle_feld' => '', 'einheit' => 's',
+                              'bez' => 'AU_FELD.ALTER',
+                              'zeilen' => array('status', 'laden', 'wartung', 'position'),
+                              'herkunft' => 'bestand', 'mqtt' => ''),
+        'GRUND'      => array('quelle_feld' => '', 'einheit' => '',
+                              'bez' => 'AU_FELD.GRUND',
+                              'zeilen' => array('status', 'laden', 'wartung', 'position'),
+                              'herkunft' => 'bestand', 'mqtt' => ''),
+        'FEHLERTEXT' => array('quelle_feld' => '', 'einheit' => '',
+                              'bez' => 'AU_FELD.FEHLERTEXT',
+                              'zeilen' => array('status', 'laden', 'wartung', 'position'),
+                              'herkunft' => 'bestand', 'mqtt' => ''),
     );
 }
 
-/** Die Werte des Lade-Endpunkts. */
-function au_laden_felder()
+/** Die Felder einer Endpunktzeile, in der Reihenfolge der Ausgabe. */
+function au_felder_von($zeile)
 {
-    return array(
-        'SOC'       => array('%',    'AU_LFELD.SOC'),
-        'LAEDT'     => array('',     'AU_LFELD.LAEDT'),
-        'LADEKW'    => array('kW',   'AU_LFELD.LADEKW'),
-        'TEMPO'     => array('km/h', 'AU_LFELD.TEMPO'),
-        'LADEGR'    => array('%',    'AU_LFELD.LADEGR'),
-        'LADESTROM' => array('A',    'AU_LFELD.LADESTROM'),
-        'KABEL'     => array('',     'AU_LFELD.KABEL'),
-        'STECKER'   => array('',     'AU_LFELD.STECKER'),
-        'REICHWBAT' => array('km',   'AU_LFELD.REICHWBAT'),
-        'FERTIGMIN' => array('min',  'AU_LFELD.FERTIGMIN'),
-        'OK'        => array('',     'AU_LFELD.OK'),
-    );
+    $aus = array();
+    foreach (au_felder() as $feld => $info) {
+        if (in_array($zeile, $info['zeilen'], true)) {
+            $aus[$feld] = $info;
+        }
+    }
+    return $aus;
 }
 
-/** Die Werte des Wartungs-Endpunkts. */
-function au_wartung_felder()
+/* Die drei alten Namen bleiben, damit nichts bricht, was sie benutzt -
+ * sie holen ihre Daten jetzt aber aus der einen Liste. */
+function au_status_felder()  { return au_felder_von('status'); }
+function au_laden_felder()   { return au_felder_von('laden'); }
+function au_wartung_felder() { return au_felder_von('wartung'); }
+function au_position_felder() { return au_felder_von('position'); }
+
+/**
+ * Der Suchtext eines Feldes fuer den virtuellen Eingang in Loxone.
+ *
+ * Das Semikolon gehoert DAZU. Ohne es nimmt Loxone die erste Fundstelle,
+ * und die kann zu einem anderen Feld gehoeren, dessen Name auf diesen
+ * endet. Gemessen an der Antwort des Wartungs-Endpunkts: das Muster
+ * \iKM= trifft dort INSPKM=15000, nicht KM=48210. Beide Zahlen sehen aus
+ * wie ein Kilometerstand - der Fehler faellt an keiner Stelle auf.
+ *
+ * Und es gibt diese Funktion, damit der Suchtext an EINER Stelle
+ * entsteht. Vorher stand er fuenfmal woertlich da: einmal in der Vorlage
+ * und viermal in der Oberflaeche. Vier Kopien einer Regel sind vier
+ * Gelegenheiten, sie an einer Stelle zu vergessen.
+ */
+function au_check($feld)
 {
-    return array(
-        'INSPTAGE'  => array('d',   'AU_WFELD.INSPTAGE'),
-        'INSPKM'    => array('km',  'AU_WFELD.INSPKM'),
-        'OELTAGE'   => array('d',   'AU_WFELD.OELTAGE'),
-        'OELKM'     => array('km',  'AU_WFELD.OELKM'),
-        'KM'        => array('km',  'AU_WFELD.KM'),
-        'OK'        => array('',    'AU_WFELD.OK'),
-    );
+    return '\i;' . $feld . '=\i\v';
 }
 
-/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
-function au_vorlage($nummer = 1)
+/**
+ * Einen Wert fuer die Endpunktzeile aufbereiten.
+ *
+ * Ein Strich bedeutet: dieser Wert liegt nicht vor. Es wird bewusst keine 0
+ * gesendet - eine 0 waere eine stille Falschaussage. Loxone behaelt dann den
+ * letzten gueltigen Wert; genau das ist bei einem fehlenden Messwert richtig.
+ */
+function au_w($v)
+{
+    if ($v === null || $v === '') {
+        return '-';
+    }
+    if (is_numeric($v)) {
+        return (string) (0 + $v);
+    }
+    // Weicher zweiter Versuch: liefert die Bibliothek einen Wert mit Einheit
+    // oder Komma ("54,5" oder "312 km"), waere die harte Pruefung ein '-' -
+    // und in Loxone stuende dann nichts, obwohl die Zahl da ist. Nur wenn
+    // wirklich keine Ziffer am Anfang steht, wird aufgegeben.
+    $t = str_replace(',', '.', trim((string) $v));
+    if (preg_match('/^-?\d+(\.\d+)?/', $t, $m)) {
+        return (string) (0 + $m[0]);
+    }
+    return '-';
+}
+
+/**
+ * Baut die Antwortzeile eines Endpunkts aus der Feldliste.
+ *
+ * DAS IST DER GANZE PUNKT DER UMSTELLUNG: Zeile und Tabelle entstehen aus
+ * derselben Liste. Ein Feld, das hier hinausgeht, steht zwangslaeufig auch in
+ * der Tabelle des Reiters "Einbindung in Loxone" und in der Loxone-Vorlage.
+ *
+ * $kopf   'AUDI', 'LADEN', 'WARTUNG', 'POSITION'
+ * $zeile  'status', 'laden', 'wartung', 'position'
+ */
+function au_zeile($kopf, $zeile, $f, $ok, $alter, $grund, $fehlertext)
+{
+    $teile = array($kopf);
+    foreach (au_felder_von($zeile) as $feld => $info) {
+        if ($feld === 'OK') {
+            $teile[] = 'OK=' . (int) $ok;
+            continue;
+        }
+        if ($feld === 'ALTER') {
+            $teile[] = 'ALTER=' . (int) $alter;
+            continue;
+        }
+        if ($feld === 'GRUND') {
+            $teile[] = 'GRUND=' . (int) $grund;
+            continue;
+        }
+        if ($feld === 'FEHLERTEXT') {
+            // Nur wenn es hakt: eine leere Textangabe in jeder Zeile ist
+            // Ballast, und Loxone behaelt den letzten Wert ohnehin.
+            if ((int) $grund !== 0) {
+                $teile[] = 'FEHLERTEXT=' . $fehlertext;
+            }
+            continue;
+        }
+        $teile[] = $feld . '=' . au_w(au_zeile_wert($feld, $info, $f));
+    }
+    return implode(';', $teile) . "\n";
+}
+
+/** Den Wert eines Feldes aus dem Abbild holen - oder ihn hier ausrechnen. */
+function au_zeile_wert($feld, $info, $f)
+{
+    if (!is_array($f)) {
+        return null;
+    }
+    if ($info['quelle_feld'] !== '') {
+        return isset($f[$info['quelle_feld']]) ? $f[$info['quelle_feld']] : null;
+    }
+    switch ($feld) {
+        case 'FERTIGMIN':
+            // Der Fertigzeitpunkt kommt als Unix-Zeit aus dem Dienst. Loxone
+            // kann mit einer Restzeit in Minuten mehr anfangen als mit einem
+            // Zeitstempel - und nur, wenn er in der Zukunft liegt.
+            return au_restminuten(isset($f['laden_fertig_um']) ? $f['laden_fertig_um'] : null);
+        case 'KLIMAFERTIG':
+            return au_restminuten(isset($f['klima_fertig_um']) ? $f['klima_fertig_um'] : null);
+        case 'AUSFALL':
+            return (isset($f['ausfaelle']) && is_array($f['ausfaelle']))
+                ? count($f['ausfaelle']) : null;
+    }
+    return null;
+}
+
+/** Restminuten bis zu einem Unix-Zeitpunkt, oder null. */
+function au_restminuten($ts)
+{
+    if (!is_numeric($ts) || (int) $ts <= time()) {
+        return null;
+    }
+    return (int) ceil(((int) $ts - time()) / 60);
+}
+
+/**
+ * Kurzer Fehlergrund fuer Loxone - als Zahl UND als Text.
+ *
+ * BIS 0.9.7 WURDE HIER GERATEN, und zwar falsch. Die Funktion suchte im
+ * Fehlertext nach "429", "too many", "timeout", "unauthorized". Im Text steht
+ * aber die DEUTSCHE Meldung, die bin/audi.py erzeugt. Von den vierzehn
+ * Meldungen, die der Dienst schreibt, trafen genau zwei - und die nur
+ * zufaellig, weil sie das Wort "Zugangsdaten" enthalten. Ausgerechnet die
+ * Unterscheidung, wegen der es die Zahl gibt - "Konto fuer 24 Stunden
+ * gesperrt" gegen "Audi ist gestoert, warten genuegt" - war unerreichbar.
+ * Dazu war strpos($klein,'5')===0 nicht "HTTP 5xx", sondern "der Text beginnt
+ * mit der Ziffer 5".
+ *
+ * Seit 0.9.8 bestimmt bin/audi.py die Klasse an der Ausnahme selbst und legt
+ * sie als fehler_code ab. Hier wird sie nur noch gelesen. Fehlt sie - eine
+ * Datei aus 0.9.7 -, bleibt es bei 9, und das ist dann ehrlich.
+ */
+function au_fehlergrund($lox, $ok, $alter)
+{
+    if ($ok) {
+        return array(0, '');
+    }
+    $text = trim((string) (isset($lox['fehler']) ? $lox['fehler'] : ''));
+    $code = isset($lox['fehler_code']) ? (int) $lox['fehler_code'] : 9;
+    if ($text === '' && $alter < 0) {
+        $code = 1;                                        // noch nie gelaufen
+        $text = 'Es hat noch kein Abruf stattgefunden. Laeuft der Dienst?';
+    }
+    if ($code === 0) {
+        $code = 9;   // ok=0, aber keine Klasse: unbekannt, nicht "in Ordnung"
+    }
+    // Semikolon und Zeilenumbruch heraus: die Statuszeile trennt mit ';'.
+    $text = str_replace(array(';', "\r", "\n"), array(',', ' ', ' '), $text);
+    // mb_substr ist abgesichert - mb_strtolower stand bis 0.9.7 UNGESCHUETZT
+    // in derselben Funktion. Ohne die Erweiterung mbstring starb damit jeder
+    // Endpunktaufruf, bevor die abgesicherte Zeile ueberhaupt erreicht war.
+    if (function_exists('mb_substr')) {
+        $text = mb_substr($text, 0, 160, 'UTF-8');
+    } else {
+        $text = substr($text, 0, 160);
+    }
+    return array($code, trim($text));
+}
+
+/** Der Klartext einer Herkunft. */
+function au_herkunft_text($quelle)
+{
+    $karte = array(
+        'connector' => 'LOX.HERKUNFT_CONNECTOR',
+        'gerechnet' => 'LOX.HERKUNFT_GERECHNET',
+        'bestand'   => 'LOX.HERKUNFT_BESTAND',
+        'leer'      => 'LOX.HERKUNFT_LEER',
+    );
+    $q = (string) $quelle;
+    // Bewusst eine Zuordnung und kein zweiwertiger Ausdruck: eine unbekannte
+    // Herkunft wird BENANNT und nicht der harmlosesten Klasse zugeschlagen.
+    return isset($karte[$q]) ? au_t($karte[$q]) : sprintf(au_t('LOX.HERKUNFT_UNBEKANNT'), $q);
+}
+
+/* ---------------- Adressen ---------------- */
+
+function au_host()
+{
+    if (isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== '') {
+        return preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST']);
+    }
+    $h = gethostname();
+    return $h ? $h : 'loxberry';
+}
+
+/**
+ * Die Adressen der Miniserver, wie LoxBerry sie kennt.
+ *
+ * Fuer die Beschraenkung des Endpunkts. Findet sich keiner, wird die
+ * Beschraenkung NICHT angewendet - eine leere Liste wuerde sonst jeden
+ * Zugriff abweisen, auch den berechtigten.
+ */
+function au_miniserver_adressen()
 {
     $p = au_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-        : (gethostname() ?: 'loxberry');
-    $token = au_token();
+    if ($p['home'] === '') {
+        return array();
+    }
+    $gen = au_json_lesen($p['home'] . '/config/system/general.json');
+    $ms = array();
+    foreach (array('Miniserver', 'miniserver') as $k) {
+        if (isset($gen[$k]) && is_array($gen[$k])) {
+            $ms = $gen[$k];
+            break;
+        }
+    }
+    $aus = array();
+    foreach ($ms as $eintrag) {
+        if (!is_array($eintrag)) {
+            continue;
+        }
+        foreach (array('Ipaddress', 'ipaddress', 'IPAddress') as $f) {
+            if (!empty($eintrag[$f])) {
+                $aus[] = (string) $eintrag[$f];
+                break;
+            }
+        }
+    }
+    return array_values(array_unique($aus));
+}
+
+/**
+ * Vorlage fuer den Import in Loxone Config - virtueller EINGANG.
+ *
+ * $art ist 'status', 'laden', 'wartung' oder 'position'.
+ * Rueckgabe: array(name, inhalt)
+ *
+ * Bis 0.9.7 gab es nur die Statusvorlage, und nur fuer Fahrzeug 1 - die
+ * Adressen der uebrigen Fahrzeuge standen in einer Tabelle daneben, ohne dass
+ * man sie herunterladen konnte.
+ */
+function au_vorlage($nummer = 1, $art = 'status')
+{
+    $erlaubt = array('status' => 'AUDI', 'laden' => 'LADEN',
+                     'wartung' => 'WARTUNG', 'position' => 'POSITION');
+    if (!isset($erlaubt[$art])) {
+        $art = 'status';
+    }
+    $p = au_paths();
+    $cfg = au_config();
+    $host = au_host();
+    $token = au_token('lesen');
     $cmds = array();
-    foreach (au_status_felder() as $feld => $info) {
+    foreach (au_felder_von($art) as $feld => $info) {
+        if ($feld === 'FEHLERTEXT') {
+            // Ein Text laesst sich mit einer analogen Befehlserkennung nicht
+            // lesen. Er geht trotzdem hinaus - fuer einen virtuellen
+            // Texteingang, den man von Hand anlegt.
+            continue;
+        }
         // Der Text laeuft gleich durch au_x() und wuerde dort ein zweites Mal
         // maskiert. Deshalb erst Auszeichnung entfernen und Entitaeten
         // aufloesen - sonst stuende in Loxone Config wortwoertlich
         // 'l&auml;dt' statt 'laedt'.
-        $bedeutung = trim(strip_tags(html_entity_decode(au_t($info[1]), ENT_QUOTES, 'UTF-8')));
-        $einheit = trim(strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
+        $bedeutung = au_klartext(au_t($info['bez']));
+        $einheit = au_klartext($info['einheit']);
+        if ($info['herkunft'] === 'leer') {
+            $bedeutung .= ' [' . au_klartext(au_t('LOX.HERKUNFT_LEER')) . ']';
+        }
         $cmds[] = array(
-            'title'   => 'AUDI_' . $nummer . '_' . $feld,
+            'title'   => 'AUDI_' . (int) $nummer . '_' . $feld,
             'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
-            'check'   => '\i' . $feld . '=\i\v',
+            'check'   => au_check($feld),
         );
     }
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
-             . '/index.php?token=' . $token . '&aktion=status&fahrzeug=' . (int) $nummer;
+             . '/index.php?token=' . $token . '&aktion=' . $art
+             . '&fahrzeug=' . (int) $nummer;
+    // Der Abholzyklus folgt dem eingestellten Takt. Bis 0.9.7 stand hier fest
+    // 300 - bei einem Takt von 900 s fragte Loxone dreimal dieselben Werte ab,
+    // bei 180 s hinkte es hinterher.
+    $zyklus = max(60, min(3600, (int) $cfg['intervall']));
     return array(
-        'audi_fahrzeug' . (int) $nummer . '.xml',
+        'VI_audi_' . (int) $nummer . '_' . $art . '.xml',
         au_xml_virtual_in_http(array(
-            'title'   => 'Audi ' . (int) $nummer,
+            'title'   => 'Audi ' . (int) $nummer . ' ' . strtoupper($art),
             'address' => $adresse,
-            'polling' => '300',
+            'polling' => (string) $zyklus,
             'comment' => 'Erzeugt vom LoxBerry-Plugin Audi Connect (' . date('d.m.Y') . ')',
         ), $cmds),
     );
+}
+
+/**
+ * Vorlage fuer den virtuellen AUSGANG - alle Schaltbefehle.
+ *
+ * Die eingreifenden Befehle (Ver-/Entriegeln, Hupe) kommen nur mit hinein,
+ * wenn sie freigegeben sind. Eine Vorlage, die einen gesperrten Befehl
+ * enthaelt, erzeugt in Loxone einen Ausgang, der jedes Mal HTTP 403
+ * bekommt - und der Anwender sucht den Fehler bei sich.
+ */
+function au_vorlage_vo($nummer = 1)
+{
+    $p = au_paths();
+    $cfg = au_config();
+    $token = au_token('schalten');
+    $basis = '/plugins/' . $p['plugin'] . '/index.php?token=' . $token;
+    $fz = '&fahrzeug=' . (int) $nummer;
+    $cmds = array();
+    foreach (au_befehle() as $aktion => $eig) {
+        if ($eig['gefahr'] && empty($cfg['gefahr_ein'])) {
+            continue;
+        }
+        if ($aktion === 'einstellung' || $aktion === 'spin_pruefen') {
+            continue;   // eigene Zeilen weiter unten
+        }
+        // Ein Zustand gehoert an EINEN Ausgang mit Ein- und Ausbefehl, nicht
+        // an zwei Ausgaenge. Klima ein/aus ist genau so ein Fall.
+        $gegen = (string) $eig['gegen'];
+        if ($gegen === '' && au_ist_gegenstueck($aktion)) {
+            continue;   // steht als Ausbefehl an seinem Partner
+        }
+        $titel = 'AUDI ' . (int) $nummer . ' ' . au_klartext(au_t($eig['bez']));
+        $ziel = $basis . '&aktion=' . $aktion . ($eig['ohne_fz'] ? '' : $fz);
+        if ($eig['zusatz'] === 'temp') {
+            $ziel .= '&temp=<v>';
+        } elseif ($eig['zusatz'] === 'prozent') {
+            $ziel .= '&prozent=<v>';
+        } elseif ($eig['zusatz'] === 'ampere') {
+            $ziel .= '&ampere=<v>';
+        }
+        $cmds[] = array(
+            'title'   => $titel,
+            'comment' => 'AUDI_' . (int) $nummer . '_' . strtoupper($aktion),
+            'on'      => $ziel,
+            'off'     => $gegen === '' ? ''
+                         : $basis . '&aktion=' . $gegen . ($eig['ohne_fz'] ? '' : $fz),
+            'analog'  => in_array($eig['zusatz'], array('temp', 'prozent', 'ampere'), true) ? 1 : 0,
+        );
+    }
+    // Die Ja/Nein-Einstellungen: je eine Zeile mit Ein- und Ausbefehl.
+    foreach (au_einstellungen() as $name => $bez) {
+        $cmds[] = array(
+            'title'   => 'AUDI ' . (int) $nummer . ' ' . au_klartext(au_t($bez)),
+            'comment' => 'AUDI_' . (int) $nummer . '_' . strtoupper($name),
+            'on'      => $basis . '&aktion=einstellung' . $fz . '&name=' . $name . '&wert=1',
+            'off'     => $basis . '&aktion=einstellung' . $fz . '&name=' . $name . '&wert=0',
+            'analog'  => 0,
+        );
+    }
+    return array(
+        'VA_audi_' . (int) $nummer . '_steuern.xml',
+        au_xml_virtual_out(array(
+            'title'   => 'Audi ' . (int) $nummer . ' steuern',
+            'address' => 'http://' . au_host(),
+            'comment' => 'Audi Connect ' . (int) $nummer . ' Steuerbefehle',
+            'hint'    => au_klartext(au_t('LOX.VORLAGE_VO_HINWEIS')),
+        ), $cmds),
+    );
+}
+
+/** Ist diese Aktion der Ausbefehl eines anderen? */
+function au_ist_gegenstueck($aktion)
+{
+    foreach (au_befehle() as $eig) {
+        if ((string) $eig['gegen'] === (string) $aktion) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Auszeichnung heraus und Entitaeten aufloesen - fuer XML und Klartext. */
+function au_klartext($s)
+{
+    return trim(strip_tags(html_entity_decode((string) $s, ENT_QUOTES, 'UTF-8')));
 }
 
 /* ==================================================================

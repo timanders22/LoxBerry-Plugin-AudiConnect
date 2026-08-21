@@ -141,6 +141,31 @@ if ! "$VENV/bin/python3" -m pip install --no-cache-dir \
     echo "<INFO> 'Rohdaten als JSON ansehen' aufrufen und vergleichen."
 fi
 
+# ---------- paho-mqtt fuer den Mithoerer ----------
+#
+# NEU IN 0.9.8. Gebraucht wird es nur, wenn die Vorklimatisierung am
+# Abfahrtsassistenten oder die Ladeempfehlung aus einem fremden Thema benutzt
+# wird - beide sind ab Werk AUS. Deshalb ist ein Fehlschlag hier KEIN Grund
+# abzubrechen: das Plugin ist ohne paho voll brauchbar, nur diese beiden
+# Zusatzfunktionen bleiben wirkungslos. Gesagt wird es trotzdem, und die
+# Selbstpruefung im Reiter Test nennt es ebenfalls.
+#
+# carconnectivity bringt paho NICHT mit - nachgesehen, nicht angenommen: der
+# Kern hat keine MQTT-Abhaengigkeit, die steckt allein im Zusatzplugin
+# carconnectivity-plugin-mqtt, das dieses Plugin nicht benutzt.
+if "$VENV/bin/python3" -c 'import paho.mqtt.client' 2>/dev/null; then
+    echo "<OK> paho-mqtt ist bereits vorhanden."
+elif "$VENV/bin/python3" -m pip install --no-cache-dir --prefer-binary "paho-mqtt" \
+        >/dev/null 2>&1 \
+     && "$VENV/bin/python3" -c 'import paho.mqtt.client' 2>/dev/null; then
+    echo "<OK> paho-mqtt installiert (fuer Vorklimatisierung und Ladeempfehlung)."
+else
+    echo "<INFO> paho-mqtt liess sich nicht installieren. Das Plugin laeuft trotzdem;"
+    echo "<INFO> nur die Vorklimatisierung am Abfahrtsassistenten und die"
+    echo "<INFO> Ladeempfehlung aus einem fremden MQTT-Thema bleiben wirkungslos."
+    echo "<INFO> Beide sind ab Werk ausgeschaltet."
+fi
+
 # Rueckgabewert allein genuegt nicht - es wird nachgesehen, ob sich beide
 # Pakete auch laden lassen.
 if ! "$VENV/bin/python3" -c 'from carconnectivity.carconnectivity import CarConnectivity' 2>/dev/null; then
@@ -160,6 +185,52 @@ chmod 755 "$PBIN/dienst.sh" 2>/dev/null
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 chmod 600 "$PCONFIG/zugang.json"
 chmod 600 "$PDATA/token.json" 2>/dev/null
+
+# ---------- Dienst wieder starten, wenn er vor dem Upgrade lief ----------
+#
+# Der Merker entsteht nur in preupgrade.sh und nur dann, wenn dort ein
+# laufender Vorgang angehalten wurde. Bei einer Erstinstallation gibt es
+# ihn nicht, und dann passiert hier nichts.
+#
+# Er behebt keinen Stillstand: der Sollmerker unter data/ ueberlebt das
+# Upgrade (gemessen an sbin/plugininstall.pl), und der Cron-Waechter holt
+# den Dienst binnen einer Minute zurueck. Dieser Start hier ist sofort und
+# unabhaengig vom Waechter - das ist der ganze Gewinn, und mehr wird nicht
+# behauptet.
+#
+# Er wird IN JEDEM FALL entfernt, auch wenn der Start scheitert. Ein
+# liegengebliebener Merker startete den Dienst bei einer spaeteren
+# Installation ungefragt - auch dann, wenn er absichtlich abgeschaltet
+# worden war.
+#
+# Abgeraeumt wird er an ZWEI Stellen: hier und im Deinstallationsskript,
+# das es seit 0.9.7 gibt. Beide braucht es: nach einem abgebrochenen
+# Upgrade laeuft keins von beiden, und dann startet die naechste
+# Installation den Dienst einmal - der sich ohne Zugangsdaten selbst
+# abweist. Nachgesehen, nicht angenommen.
+MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
+if [ -f "$MERKER" ]; then
+    rm -f "$MERKER"
+    if [ ! -x "$PBIN/dienst.sh" ]; then
+        echo "<INFO> $PBIN/dienst.sh fehlt - der Dienst wurde nicht gestartet."
+    else
+        # Als loxberry und nicht als root: der Dienst schreibt in data/
+        # und log/. Was root dort anlegt, kann die Oberflaeche danach
+        # nicht mehr ueberschreiben.
+        if [ "$(id -u)" = "0" ]; then
+            AUSGABE=$(su -s /bin/bash -c "$PBIN/dienst.sh start" loxberry 2>&1)
+        else
+            AUSGABE=$("$PBIN/dienst.sh" start 2>&1)
+        fi
+        case "$AUSGABE" in
+            *gestartet*|*laeuft*)
+                echo "<OK> Dienst wieder gestartet: $AUSGABE" ;;
+            *)
+                echo "<INFO> Der Dienst liess sich nicht wieder starten: $AUSGABE"
+                echo "<INFO> Reiter Einstellungen, Knopf 'Dienst starten'." ;;
+        esac
+    fi
+fi
 
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Zugangsdaten des myAudi-Kontos"

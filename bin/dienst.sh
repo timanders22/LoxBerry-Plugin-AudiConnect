@@ -27,13 +27,37 @@ SKRIPT="$SELF/audi.py"
 
 mkdir -p "$PDATA" "$PLOG" 2>/dev/null
 
+# Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
+#
+# BERICHTIGT IN 0.9.8. Hier stand bis dahin
+#     grep -qa "audi.py" "/proc/$P/cmdline"
+# und damit genau die zu weiche Pruefung, die au_lib.php in au_dienst_pid()
+# ausfuehrlich als Fehler beschreibt und dort seit 0.9.7 ersetzt hatte.
+# /proc/<pid>/cmdline enthaelt ALLE Argumente, durch Nullbytes getrennt; ein
+# grep darueber trifft auch einen Editor mit geoeffneter audi.py.
+#
+# Diese Datei wiegt dabei schwerer als die Oberflaeche: sie traegt den
+# minuetlichen Waechter. Hatte die wiederverwendete Prozessnummer aus der
+# PID-Datei irgendetwas erwischt, in dessen Kommandozeile "audi.py" vorkam,
+# hielt der Waechter den toten Dienst fuer lebendig und startete ihn NIE
+# wieder. Die Oberflaeche zeigte korrekt "gestoppt", der Waechter tat nichts,
+# und niemand fand den Grund.
+#
+# Geprueft wird jetzt argumentweise: das ZWEITE Argument muss genau unser
+# Skript sein - mit vollem Pfad, damit ein zweites Exemplar des Plugins
+# (LoxBerry haengt bei Namenskonflikt 01, 02 ... an den Ordnernamen an) nicht
+# faelschlich fuer das eigene gehalten wird.
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    [ "$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n '2p')" = "$SKRIPT" ]
+}
+
 laeuft() {
     [ -f "$PID" ] || return 1
     P=$(cat "$PID" 2>/dev/null)
     [ -n "$P" ] || return 1
     kill -0 "$P" 2>/dev/null || return 1
-    # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein
-    grep -qa "audi.py" "/proc/$P/cmdline" 2>/dev/null || return 1
+    ist_unser_dienst "$P" || return 1
     return 0
 }
 

@@ -2,7 +2,8 @@
 /**
  * Audi Connect - Bedienoberflaeche
  *
- * Reiter: Einstellungen | MQTT | Einbindung in Loxone | Test | Logdateien
+ * Reiter: Einstellungen | MQTT | Einbindung in Loxone | Ladevorgaenge | Test |
+ *         Logdateien
  *
  * Diese Datei ist NUR Oberflaeche. Der Datenabruf laeuft im Dienst
  * (bin/audi.py), der Miniserver spricht mit webfrontend/html/index.php.
@@ -47,10 +48,27 @@ if ($au_p['home'] !== '' && is_file($au_p['home'] . '/libs/phplib/loxberry_syste
     require_once $au_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
-/* Aktiver Reiter. Wer einen Reiter hinzufuegt, muss diese Positivliste
- * mitziehen - sonst springt die Seite nach jedem Absenden zurueck auf
- * Einstellungen, obwohl der Reiter sichtbar und anklickbar ist. */
-$au_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
+/* ==================================================================
+ * DIE REITERLISTE STEHT GENAU EINMAL
+ *
+ * Bis 0.9.7 stand sie dreimal: als Positivliste im Muster, als Leiste im
+ * Markup und als sechs Bereiche. Wer einen Reiter hinzufuegt und die
+ * Positivliste vergisst, bekommt einen Reiter, der sichtbar und anklickbar
+ * ist - aber nach jedem Absenden springt die Seite zurueck auf
+ * "Einstellungen", ohne dass jemand den Grund sieht.
+ *
+ * Jetzt entstehen Positivliste und Leiste aus diesem einen Feld. Zu pruefen
+ * bleibt nur, dass es zu jeder Zeile einen Bereich mit derselben id gibt.
+ * ================================================================== */
+$au_reiter = array(
+    'settings' => 'REITER.EINSTELLUNGEN',
+    'mqtt'     => 'MQTT',
+    'loxone'   => 'REITER.LOXONE',
+    'ladungen' => 'REITER.LADUNGEN',
+    'test'     => 'REITER.TEST',
+    'log'      => 'REITER.LOG',
+);
+$au_muster = '/^tab-(' . implode('|', array_keys($au_reiter)) . ')$/';
 $au_tab = 'tab-settings';
 if (isset($_POST['activetab']) && preg_match($au_muster, (string) $_POST['activetab'])) {
     $au_tab = (string) $_POST['activetab'];
@@ -63,13 +81,47 @@ $au_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
 $au_testausgabe = '';
 $au_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
-/* ---------------- Vorlage herunterladen ---------------- */
+/* Beide Token anlegen, BEVOR das Formulartoken geprueft wird - es leitet sich
+ * aus dem Lesetoken ab. */
+au_token('lesen');
+
+/* ---------------- Formulartoken ----------------
+ * Die Oberflaeche liegt hinter der LoxBerry-Anmeldung, aber ein Formular, das
+ * jede POST-Anfrage ausfuehrt, laesst sich von einer fremden Seite aus
+ * abschicken, solange der Browser noch angemeldet ist. Betroffen waeren
+ * Dienststart, Tokenwechsel und - schlimmer - die schaltenden Knoepfe des
+ * Reiters Test, die auf ein Fahrzeug wirken. */
+if ($au_post && !au_formtoken_pruefen()) {
+    $au_fehler[] = au_t('ALLG.FORMTOKEN');
+    $au_post = false;      // nichts ausfuehren, aber die Seite normal zeigen
+}
+
+/* ---------------- Vorlagen herunterladen ---------------- */
 if ($au_post && isset($_POST['vorlage'])) {
     $au_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['vorlage']) ? (int) $_POST['vorlage'] : 1;
-    list($au_name, $au_inhalt) = au_vorlage($au_nr);
+    $au_art = isset($_POST['vorlage_art']) ? (string) $_POST['vorlage_art'] : 'status';
+    if (!in_array($au_art, array('status', 'laden', 'wartung', 'position'), true)) {
+        $au_art = 'status';
+    }
+    list($au_name, $au_inhalt) = au_vorlage($au_nr, $au_art);
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $au_name . '"');
     echo $au_inhalt;
+    exit;
+}
+if ($au_post && isset($_POST['vorlage_vo'])) {
+    $au_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['vorlage_vo']) ? (int) $_POST['vorlage_vo'] : 1;
+    list($au_name, $au_inhalt) = au_vorlage_vo($au_nr);
+    header('Content-Type: application/xml; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $au_name . '"');
+    echo $au_inhalt;
+    exit;
+}
+if ($au_post && isset($_POST['verlauf_csv'])) {
+    $au_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['verlauf_csv']) ? (int) $_POST['verlauf_csv'] : 1;
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="audi_verlauf_' . $au_nr . '.csv"');
+    echo au_verlauf_csv($au_nr);
     exit;
 }
 
@@ -80,12 +132,15 @@ if ($au_post && isset($_POST['speichern'])) {
     foreach (array(
         // Untergrenze 180 s: der Audi-Connector wirft darunter beim
         // Anlegen einen ValueError. Lieber hier abweisen als dort abstuerzen.
-        'intervall'    => array(180, 3600),
-        'takt_wartung' => array(1, 240),
-        'temp_min'     => array(10, 30),
-        'temp_max'     => array(10, 30),
-        'verlauf_tage' => array(1, 90),
-        'wartezeit'    => array(0, 30),
+        'intervall'      => array(180, 3600),
+        'takt_wartung'   => array(1, 240),
+        'temp_min'       => array(10, 30),
+        'temp_max'       => array(10, 30),
+        'verlauf_tage'   => array(1, 90),
+        'wartezeit'      => array(0, 30),
+        'abruf_abstand'  => array(0, 3600),
+        'befehle_stunde' => array(0, 500),
+        'strom_abstand'  => array(0, 3600),
     ) as $au_feld => $au_grenzen) {
         $au_wert = isset($_POST[$au_feld]) ? trim((string) $_POST[$au_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $au_wert)) {
@@ -105,34 +160,56 @@ if ($au_post && isset($_POST['speichern'])) {
         $au_fehler[] = au_t('EINST.FEHLER_TEMP_TAUSCH');
     }
 
-    $au_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
+    $au_cfg['steuerung_ein']  = isset($_POST['steuerung_ein']) ? 1 : 0;
+    $au_cfg['gefahr_ein']     = isset($_POST['gefahr_ein']) ? 1 : 0;
+    $au_cfg['probe_ein']      = isset($_POST['probe_ein']) ? 1 : 0;
+    $au_cfg['gps_ein']        = isset($_POST['gps_ein']) ? 1 : 0;
+    $au_cfg['melden_ein']     = isset($_POST['melden_ein']) ? 1 : 0;
+    $au_cfg['nur_miniserver'] = isset($_POST['nur_miniserver']) ? 1 : 0;
 
+    /* Der zweite Haken ohne S-PIN ist eine Freigabe ins Leere: der Connector
+     * weist Ver- und Entriegeln ohne S-PIN ab. Beanstanden, nicht das ganze
+     * Speichern verhindern - der Anwender traegt die S-PIN gleich nach. */
+    $au_zg_vorher = au_zugang();
+    $au_spin_neu = isset($_POST['spin']) ? trim((string) $_POST['spin']) : '';
+    if ($au_cfg['gefahr_ein'] && $au_spin_neu === '' && $au_zg_vorher['spin_laenge'] === 0) {
+        $au_fehler[] = au_t('EINST.WARN_GEFAHR_OHNE_SPIN');
+    }
+    if ($au_cfg['nur_miniserver'] && !au_miniserver_adressen()) {
+        $au_fehler[] = au_t('EINST.WARN_KEIN_MINISERVER');
+    }
 
-    /* Zugangsdaten: eigene Datei mit Rechten 0600. Ein leer zurueckgegebenes
-     * Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
-     * Passwort in der Datei, ohne dass es jemand merkt. */
+    /* Zugangsdaten: eigene Datei mit Rechten 0600.
+     *
+     * REIHENFOLGE BERICHTIGT IN 0.9.8. Bis dahin wurden sie geschrieben,
+     * BEVOR feststand, ob die Zahlenfelder in Ordnung sind. Fiel eine
+     * Zahlenpruefung durch, erschien "Es wurde nichts gespeichert." - und die
+     * Zugangsdaten standen trotzdem schon in der Datei. Jetzt wird zuerst
+     * alles geprueft und erst danach geschrieben.
+     *
+     * Ein leer zurueckgegebenes Passwortfeld loescht nichts - sonst stuende
+     * irgendwann ein leeres Passwort in der Datei, ohne dass es jemand merkt.
+     * Fuer die E-Mail gilt: ein leeres Feld wird als "nicht aendern" gelesen,
+     * nicht als "Konto loeschen". Zum Loeschen gibt es den eigenen Knopf. */
     $au_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['email']));
     $au_pw = isset($_POST['passwort']) ? (string) $_POST['passwort'] : '';
-    $au_spin = isset($_POST['spin']) ? trim((string) $_POST['spin']) : '';
     if ($au_email !== '' && !filter_var($au_email, FILTER_VALIDATE_EMAIL)) {
         $au_fehler[] = au_t('EINST.FEHLER_EMAIL');
-    } elseif ($au_spin !== '' && !preg_match('/^[0-9]{4}$/', $au_spin)) {
+    }
+    if ($au_spin_neu !== '' && !preg_match('/^[0-9]{4}$/', $au_spin_neu)) {
         // Ist die FORM eines Geheimnisses erkennbar falsch, wird beim Speichern
         // abgewiesen, statt den Benutzer in eine Fehlermeldung des Anbieters
         // laufen zu lassen.
         $au_fehler[] = au_t('EINST.FEHLER_SPIN');
-    } else {
-        if (!au_zugang_speichern($au_email, $au_pw, $au_spin)) {
-            $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
-        }
     }
-    $au_zg = au_zugang();
-    if ($au_zg['laenge'] > 0 && $au_zg['email'] === '') {
+    if ($au_pw !== '' && $au_email === '' && $au_zg_vorher['email'] === '') {
         $au_fehler[] = au_t('EINST.WARN_PW_OHNE_KONTO');
     }
 
     if (!$au_fehler) {
-        if (au_config_speichern($au_cfg)) {
+        if (!au_zugang_speichern($au_email !== '' ? $au_email : null, $au_pw, $au_spin_neu)) {
+            $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
+        } elseif (au_config_speichern($au_cfg)) {
             $au_meldungen[] = au_t('EINST.GESPEICHERT');
         } else {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
@@ -140,20 +217,111 @@ if ($au_post && isset($_POST['speichern'])) {
     }
     $au_tab = 'tab-settings';
 
-    /* mqtt_ein und mqtt_topic werden hier bewusst NICHT angefasst: sie wohnen im
-     * Reiter MQTT und haben dort ein eigenes Formular. Die Konfiguration
-     * kommt aus au_config(), die Werte ueberleben also unveraendert. Stuende
-     * hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0", wuerde jedes Speichern
-     * der Einstellungen MQTT stillschweigend abschalten. */
+    /* mqtt_ein, mqtt_topic und die Automatik werden hier bewusst NICHT
+     * angefasst: sie haben eigene Formulare mit eigenen Handlern. Die
+     * Konfiguration kommt aus au_config(), die Werte ueberleben also
+     * unveraendert. Stuende hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0",
+     * wuerde jedes Speichern der Einstellungen MQTT stillschweigend
+     * abschalten. */
 }
 
-/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+/* ---------------- Automatik und gerechnete Groessen ----------------
  *
- * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
- * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
- * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
- * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
- * ruehrt ausschliesslich die MQTT-Werte an. */
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten mehrere
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils nicht
+ * abgeschickten Formulars per isset() auf 0 - der Benutzer verloere Werte,
+ * die er nie gesehen hat. */
+if ($au_post && isset($_POST['save_automatik'])) {
+    $au_acfg = au_config();
+    $au_acfg['abfahrt_ein']  = isset($_POST['abfahrt_ein']) ? 1 : 0;
+    $au_acfg['ladeempf_ein'] = isset($_POST['ladeempf_ein']) ? 1 : 0;
+    $au_acfg['ladeempf_unter'] = isset($_POST['ladeempf_unter']) ? 1 : 0;
+
+    foreach (array(
+        'abfahrt_vorlauf'  => array(1, 120),
+        'abfahrt_temp'     => array(10, 30),
+        'abfahrt_alter'    => array(60, 3600),
+        'abfahrt_fahrzeug' => array(1, 99),
+        'ladeempf_alter'   => array(60, 86400),
+        'kapazitaet'       => array(0, 500),
+        'heim_radius'      => array(20, 5000),
+    ) as $au_feld => $au_grenzen) {
+        $au_wert = isset($_POST[$au_feld]) ? trim((string) $_POST[$au_feld]) : '';
+        if (!preg_match('/^[0-9]+$/', $au_wert)) {
+            $au_fehler[] = sprintf(au_t('EINST.FEHLER_ZAHL'), au_t('EINST.L_' . strtoupper($au_feld)));
+            continue;
+        }
+        $au_zahl = (int) $au_wert;
+        if ($au_zahl < $au_grenzen[0] || $au_zahl > $au_grenzen[1]) {
+            $au_fehler[] = sprintf(au_t('EINST.FEHLER_BEREICH'),
+                au_t('EINST.L_' . strtoupper($au_feld)), $au_grenzen[0], $au_grenzen[1]);
+            continue;
+        }
+        $au_acfg[$au_feld] = $au_zahl;
+    }
+
+    // Der Ladeempfehlungs-Schwellwert darf negativ und gebrochen sein: an der
+    // Boerse kostet Strom zeitweise weniger als nichts.
+    $au_gr = isset($_POST['ladeempf_grenze']) ? trim((string) $_POST['ladeempf_grenze']) : '';
+    $au_gr = str_replace(',', '.', $au_gr);
+    if ($au_gr === '' || !preg_match('/^-?[0-9]+(\.[0-9]+)?$/', $au_gr)) {
+        $au_fehler[] = sprintf(au_t('EINST.FEHLER_ZAHL'), au_t('EINST.L_LADEEMPF_GRENZE'));
+    } else {
+        $au_acfg['ladeempf_grenze'] = (float) $au_gr;
+    }
+
+    $au_pr = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['abfahrt_praefix']) ? $_POST['abfahrt_praefix'] : '')));
+    if ($au_pr === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $au_pr)) {
+        $au_fehler[] = au_t('EINST.FEHLER_PRAEFIX');
+    } else {
+        $au_acfg['abfahrt_praefix'] = trim($au_pr, '/');
+    }
+
+    $au_th = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['ladeempf_thema']) ? $_POST['ladeempf_thema'] : '')));
+    if ($au_th !== '' && !preg_match('#^[A-Za-z0-9_/\-\.\+#]{1,128}$#', $au_th)) {
+        $au_fehler[] = au_t('EINST.FEHLER_THEMA');
+    } else {
+        $au_acfg['ladeempf_thema'] = $au_th;
+    }
+    if ($au_acfg['ladeempf_ein'] && $au_acfg['ladeempf_thema'] === '') {
+        $au_fehler[] = au_t('EINST.FEHLER_THEMA_LEER');
+    }
+
+    // Heimatposition: entweder beide oder keine. Eine halbe Koordinate ergibt
+    // keinen Punkt, und ZUHAUSE bliebe stumm leer.
+    foreach (array('heim_breite' => array(-90, 90), 'heim_laenge' => array(-180, 180))
+             as $au_feld => $au_gr2) {
+        $au_wert = isset($_POST[$au_feld]) ? trim(str_replace(',', '.', (string) $_POST[$au_feld])) : '';
+        if ($au_wert === '') {
+            $au_acfg[$au_feld] = '';
+            continue;
+        }
+        if (!preg_match('/^-?[0-9]{1,3}(\.[0-9]{1,8})?$/', $au_wert)
+            || (float) $au_wert < $au_gr2[0] || (float) $au_wert > $au_gr2[1]) {
+            $au_fehler[] = sprintf(au_t('EINST.FEHLER_BEREICH'),
+                au_t('EINST.L_' . strtoupper($au_feld)), $au_gr2[0], $au_gr2[1]);
+            continue;
+        }
+        $au_acfg[$au_feld] = $au_wert;
+    }
+    if ((trim((string) $au_acfg['heim_breite']) === '')
+        !== (trim((string) $au_acfg['heim_laenge']) === '')) {
+        $au_fehler[] = au_t('EINST.FEHLER_HEIM_HALB');
+    }
+
+    if (!$au_fehler) {
+        if (au_config_speichern($au_acfg)) {
+            $au_meldungen[] = au_t('EINST.GESPEICHERT');
+        } else {
+            $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
+        }
+    }
+    $au_tab = 'tab-settings';
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ---------------- */
 if ($au_post && isset($_POST['save_mqtt'])) {
     $au_mcfg = au_config();
     $au_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
@@ -166,7 +334,9 @@ if ($au_post && isset($_POST['save_mqtt'])) {
     }
     if (!$au_fehler) {
         if (au_config_speichern($au_mcfg)) {
-        $au_meldungen[] = au_t('EINST.GESPEICHERT');
+            $au_meldungen[] = au_t('EINST.GESPEICHERT');
+        } else {
+            $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
         }
     }
     $au_tab = 'tab-mqtt';
@@ -198,10 +368,30 @@ if ($au_post && isset($_POST['sitzung_verwerfen'])) {
     $au_tab = 'tab-settings';
 }
 
-/* ---------------- Neues Token ---------------- */
+/* ---------------- Zugangsdaten loeschen ----------------
+ * Ein leeres Feld loescht nichts (siehe Speichern-Handler). Wer sie wirklich
+ * entfernen will, braucht deshalb einen eigenen Knopf - sonst bleibt ein
+ * altes Passwort fuer immer stehen. */
+if ($au_post && isset($_POST['zugang_loeschen'])) {
+    if (au_datei_schreiben($au_p['zugang'], json_encode(array(
+            'email' => '', 'passwort' => '', 'spin' => '')), 0600)) {
+        $au_meldungen[] = au_t('EINST.ZUGANG_GELOESCHT');
+    } else {
+        $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
+    }
+    $au_tab = 'tab-settings';
+}
+
+/* ---------------- Neue Token ---------------- */
 if ($au_post && isset($_POST['token_neu'])) {
+    $au_art = (string) $_POST['token_neu'];
     $au_cfg = au_config();
-    $au_cfg['aktionstoken'] = au_token_erzeugen();
+    if ($au_art === 'lesen' || $au_art === 'beide') {
+        $au_cfg['aktionstoken'] = au_token_erzeugen();
+    }
+    if ($au_art === 'schalten' || $au_art === 'beide') {
+        $au_cfg['schalttoken'] = au_token_erzeugen();
+    }
     if (au_config_speichern($au_cfg)) {
         $au_meldungen[] = au_t('LOX.TOKEN_NEU');
     } else {
@@ -235,29 +425,38 @@ if ($au_post && isset($_POST['selbsttest'])) {
 
 /* ---------------- Laden ---------------- */
 $au_cfg = au_config();
-$au_token = au_token();
+$au_token = au_token('lesen');
+$au_stoken = au_token('schalten');
+$au_ftoken = au_formtoken($au_cfg);
 $au_zg = au_zugang();
 $au_fahrzeuge = au_fahrzeuge();
 $au_zustand = au_zustand();
 $au_alter = au_alter();
 $au_pid = au_dienst_pid();
 $au_mqtt = au_mqtt_zustand();
+$au_horcher = au_horcher_zustand();
 $au_pyv = au_python_fassung();
 $au_libv = au_bibliothek_fassung();
-$au_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-    ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-    : (gethostname() ?: 'loxberry');
+$au_fassungen = au_bibliothek_fassungen();
+$au_host = au_host();
 $au_basis = 'http://' . $au_host . '/plugins/' . $au_p['plugin'] . '/index.php';
-$au_logzeilen = array();
-if (is_file($au_p['log'])) {
-    $au_logzeilen = array_slice(
-        array_reverse(file($au_p['log'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()),
-        0, 400);
-}
+$au_logzeilen = array_reverse(au_log_ende($au_p['log'], 400));
+$au_ladungen = au_ladungen_lesen(200);
+
+/* Welcher Tag wird im Verlauf gezeigt? */
+$au_vtag = isset($_GET['tag']) && preg_match('/^[0-9]{8}$/', (string) $_GET['tag'])
+    ? (string) $_GET['tag'] : date('Ymd');
 
 $au_rahmen = class_exists('LBWeb', false);
 if ($au_rahmen) {
     LBWeb::lbheader('Audi Connect', 'https://wiki.loxberry.de/', 'help.html');
+}
+
+/** Ein verstecktes Feld-Paar, das in JEDES Formular gehoert. */
+function au_formfelder($tab, $ftoken)
+{
+    echo '<input data-role="none" type="hidden" name="activetab" value="' . au_e($tab) . '">'
+       . '<input data-role="none" type="hidden" name="formtoken" value="' . au_e($ftoken) . '">';
 }
 ?>
 <style>
@@ -321,6 +520,7 @@ if ($au_rahmen) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
+.sm-leer { color: #888; font-style: italic; }
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, "Courier New", monospace;
     font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto;
     white-space: pre-wrap; }
@@ -335,6 +535,10 @@ if ($au_rahmen) {
 <ul style="margin:6px 0 0 18px;padding:0;">
 <?php foreach ($au_fehler as $au_f) { ?><li><?= $au_f ?></li><?php } ?>
 </ul></div>
+<?php } ?>
+
+<?php if (!empty($au_cfg['probe_ein'])) { ?>
+<div class="sm-warnung"><b><?= au_e(au_t('EINST.L_PROBE_EIN')) ?></b> <?= au_t('EINST.PROBE_LAEUFT') ?></div>
 <?php } ?>
 
 <!-- ================= Statuskacheln ================= -->
@@ -355,16 +559,26 @@ if ($au_rahmen) {
     <b class="<?= $au_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $au_mqtt['autostart'] ? au_e(au_t('ALLG.EIN')) : au_e(au_t('ALLG.AUS')) ?></b>
     <span class="sm-hilfe"><?= au_e(au_t('ALLG.GATEWAY')) ?></span>
   </div>
+  <div class="sm-kachel"><?= au_e(au_t('ALLG.BEFEHLE_STUNDE')) ?>
+    <b><?= (int) (isset($au_zustand['befehle_stunde']) ? $au_zustand['befehle_stunde'] : 0) ?></b>
+    <span class="sm-hilfe"><?= (int) $au_cfg['befehle_stunde'] === 0
+        ? au_e(au_t('TEST.A_OHNE_GRENZE'))
+        : au_e(sprintf(au_t('ALLG.VON_N'), (int) $au_cfg['befehle_stunde'])) ?></span>
+  </div>
 </div>
 
 <?php if (!empty($au_zustand['fehler'])) { ?>
-<div class="sm-warnung"><b><?= au_e(au_t('ALLG.LETZTE_STOERUNG')) ?></b> <?= au_e($au_zustand['fehler']) ?></div>
+<div class="sm-warnung"><b><?= au_e(au_t('ALLG.LETZTE_STOERUNG')) ?></b> <?= au_e($au_zustand['fehler']) ?>
+<?php if (isset($au_zustand['fehler_code'])) { ?>
+<span class="sm-hilfe">(<?= au_e(au_t('ALLG.FEHLERKLASSE')) ?> <?= (int) $au_zustand['fehler_code'] ?>)</span>
+<?php } ?>
+</div>
 <?php } ?>
 
 <?php foreach ($au_fahrzeuge as $au_nr => $au_fz) { ?>
 <div class="sm-hinweis">
 <b><?= au_e($au_fz['modell'] ? $au_fz['modell'] : au_t('ALLG.OHNE_NAMEN')) ?></b>
-(<?= au_e(au_t('ALLG.FAHRZEUG')) ?> <?= au_e($au_nr) ?><?= !empty($au_fz['kennzeichen']) ? ', ' . au_e($au_fz['kennzeichen']) : '' ?>)
+(<?= au_e(au_t('ALLG.FAHRZEUG')) ?> <?= au_e($au_nr) ?>)
 &middot; <?= au_e(au_t('ALLG.SOC')) ?> <b><?= !isset($au_fz['soc']) || $au_fz['soc'] === null ? '&ndash;' : au_e($au_fz['soc']) . ' %' ?></b>
 &middot; <?= au_e(au_t('ALLG.REICHWEITE')) ?> <?= !isset($au_fz['reichweite_km']) || $au_fz['reichweite_km'] === null ? '&ndash;' : au_e($au_fz['reichweite_km']) . ' km' ?>
 &middot; <?= au_e(au_t('ALLG.KM')) ?> <?= !isset($au_fz['kilometerstand']) || $au_fz['kilometerstand'] === null ? '&ndash;' : au_e($au_fz['kilometerstand']) . ' km' ?>
@@ -372,8 +586,22 @@ if ($au_rahmen) {
 <?php if (!isset($au_fz['verriegelt']) || $au_fz['verriegelt'] === null) { ?>&ndash;<?php
       } elseif ($au_fz['verriegelt']) { ?><span class="sm-an"><?= au_e(au_t('ALLG.JA')) ?></span><?php
       } else { ?><span class="sm-aus"><?= au_e(au_t('ALLG.NEIN')) ?></span><?php } ?>
-<div style="margin-top:8px;"><?= au_soc_svg(au_verlauf_lesen((int) $au_nr)) ?></div>
-<div class="sm-hilfe"><?= au_e(au_t('ALLG.VERLAUF_HINWEIS')) ?></div>
+<?php if (!empty($au_fz['tueren_namen'])) { ?>
+&middot; <?= au_e(au_t('ALLG.OFFEN')) ?> <span class="sm-mono"><?= au_e($au_fz['tueren_namen']) ?></span>
+<?php } ?>
+<?php if (isset($au_fz['zuhause']) && $au_fz['zuhause'] !== null) { ?>
+&middot; <?= $au_fz['zuhause'] ? au_e(au_t('ALLG.ZUHAUSE_JA')) : au_e(au_t('ALLG.ZUHAUSE_NEIN')) ?>
+<?php if (isset($au_fz['entfernung_m']) && $au_fz['entfernung_m'] !== null) { ?>
+(<?= (int) $au_fz['entfernung_m'] ?> m)
+<?php } } ?>
+<div style="margin-top:8px;"><?= au_soc_svg(au_verlauf_lesen((int) $au_nr, $au_vtag), $au_vtag) ?></div>
+<div class="sm-hilfe"><?= au_e(au_t('ALLG.VERLAUF_HINWEIS')) ?>
+<?php $au_tage = au_verlauf_tage((int) $au_nr); if (count($au_tage) > 1) { ?>
+<br><?= au_e(au_t('ALLG.TAG_WAEHLEN')) ?>
+<?php foreach (array_slice($au_tage, 0, 14) as $au_t1) { ?>
+<a href="index.php?form=settings&amp;tag=<?= au_e($au_t1) ?>"<?= $au_t1 === $au_vtag ? ' style="font-weight:700;"' : '' ?>><?= au_e(substr($au_t1, 6, 2) . '.' . substr($au_t1, 4, 2) . '.') ?></a>
+<?php } } ?>
+</div>
 <?php if (!empty($au_fz['ausfaelle']) && is_array($au_fz['ausfaelle'])) { ?>
 <div class="sm-hilfe"><b><?= au_e(au_t('ALLG.AUSFAELLE')) ?></b>
 <?php foreach ($au_fz['ausfaelle'] as $au_ep => $au_gr) { ?>
@@ -386,17 +614,21 @@ if ($au_rahmen) {
 
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. So bleibt jeder
      Reiter verlinkbar, Eingaben in anderen Reitern gehen nicht verloren, und
-     faellt das Skript aus, ist die Seite weiterhin bedienbar. -->
+     faellt das Skript aus, ist die Seite weiterhin bedienbar.
+
+     WELCHER REITER OFFEN IST, ENTSCHEIDET DER SERVER. Die Klasse sm-active
+     steht deshalb AUCH hier und an jedem Bereich - bis 0.9.7 tat sie das
+     nicht, und weil .sm-seite auf display:none steht, war die Seite ohne
+     JavaScript vollstaendig leer. Nur die Reiterleiste war zu sehen. -->
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings" href="index.php?form=settings"><?= au_e(au_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-mqtt"     href="index.php?form=mqtt">MQTT</a>
-	<a class="sm-tab" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= au_e(au_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"     href="index.php?form=test"><?= au_e(au_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"      href="index.php?form=log"><?= au_e(au_t('REITER.LOG')) ?></a>
+<?php foreach ($au_reiter as $au_k => $au_bez) { ?>
+	<a class="sm-tab<?= $au_tab === 'tab-' . $au_k ? ' sm-active' : '' ?>" data-ziel="tab-<?= au_e($au_k) ?>"
+	   href="index.php?form=<?= au_e($au_k) ?>"><?= au_e($au_bez === 'MQTT' ? 'MQTT' : au_t($au_bez)) ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $au_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <?php if ($au_pyv !== '' && version_compare($au_pyv, '3.9.0', '<')) { ?>
 <div class="sm-fehler"><?= au_t('EINST.PYTHON_ZU_ALT') ?></div>
@@ -410,26 +642,26 @@ if ($au_rahmen) {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?php au_formfelder('tab-settings', $au_ftoken); ?>
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="dienst" value="start"><?= au_e(au_t('EINST.K_START')) ?></button>
   </form>
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?php au_formfelder('tab-settings', $au_ftoken); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="restart"><?= au_e(au_t('EINST.K_NEUSTART')) ?></button>
   </form>
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?php au_formfelder('tab-settings', $au_ftoken); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="stop"><?= au_e(au_t('EINST.K_STOPP')) ?></button>
   </form>
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?php au_formfelder('tab-settings', $au_ftoken); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="sitzung_verwerfen" value="1"><?= au_e(au_t('EINST.K_SITZUNG')) ?></button>
   </form>
 </div>
 
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="speichern" value="1">
-<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<?php au_formfelder('tab-settings', $au_ftoken); ?>
 
 <h2><?= au_e(au_t('EINST.H_KONTO')) ?></h2>
 <div class="sm-warnung"><?= au_t('EINST.KONTO_ERKLAERUNG') ?></div>
@@ -476,6 +708,21 @@ if ($au_rahmen) {
     <?= au_e(au_t('EINST.L_STEUERUNG_EIN')) ?>
   </label>
 </div>
+<div class="sm-fehler"><?= au_t('EINST.GEFAHR_ERKLAERUNG') ?></div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="gefahr_ein" value="1" <?= !empty($au_cfg['gefahr_ein']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_GEFAHR_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_GEFAHR_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="probe_ein" value="1" <?= !empty($au_cfg['probe_ein']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_PROBE_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_PROBE_EIN') ?></div>
+</div>
 <div class="sm-feld">
   <label for="temp_min"><?= au_e(au_t('EINST.L_TEMP_MIN')) ?></label>
   <input data-role="none" type="number" id="temp_min" name="temp_min" value="<?= (int) $au_cfg['temp_min'] ?>" min="10" max="30">
@@ -491,8 +738,171 @@ if ($au_rahmen) {
   <div class="sm-hilfe"><?= au_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
-<?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
-         vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
+<h2><?= au_e(au_t('EINST.H_DROSSEL')) ?></h2>
+<div class="sm-warnung"><?= au_t('EINST.DROSSEL_ERKLAERUNG') ?></div>
+<div class="sm-feld">
+  <label for="abruf_abstand"><?= au_e(au_t('EINST.L_ABRUF_ABSTAND')) ?></label>
+  <input data-role="none" type="number" id="abruf_abstand" name="abruf_abstand" value="<?= (int) $au_cfg['abruf_abstand'] ?>" min="0" max="3600">
+  <div class="sm-hilfe"><?= au_t('EINST.H_ABRUF_ABSTAND') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="befehle_stunde"><?= au_e(au_t('EINST.L_BEFEHLE_STUNDE')) ?></label>
+  <input data-role="none" type="number" id="befehle_stunde" name="befehle_stunde" value="<?= (int) $au_cfg['befehle_stunde'] ?>" min="0" max="500">
+  <div class="sm-hilfe"><?= au_t('EINST.H_BEFEHLE_STUNDE') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="strom_abstand"><?= au_e(au_t('EINST.L_STROM_ABSTAND')) ?></label>
+  <input data-role="none" type="number" id="strom_abstand" name="strom_abstand" value="<?= (int) $au_cfg['strom_abstand'] ?>" min="0" max="3600">
+  <div class="sm-hilfe"><?= au_t('EINST.H_STROM_ABSTAND') ?></div>
+</div>
+
+<h2><?= au_e(au_t('EINST.H_DATENSCHUTZ')) ?></h2>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="gps_ein" value="1" <?= !empty($au_cfg['gps_ein']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_GPS_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_GPS_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="nur_miniserver" value="1" <?= !empty($au_cfg['nur_miniserver']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_NUR_MINISERVER')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_NUR_MINISERVER') ?>
+  <?php $au_ms = au_miniserver_adressen(); if ($au_ms) { ?>
+  <br><span class="sm-mono"><?= au_e(implode(', ', $au_ms)) ?></span>
+  <?php } else { ?>
+  <br><span class="sm-leer"><?= au_e(au_t('EINST.KEIN_MINISERVER')) ?></span>
+  <?php } ?>
+  </div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="melden_ein" value="1" <?= !empty($au_cfg['melden_ein']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_MELDEN_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_MELDEN_EIN') ?></div>
+</div>
+
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= au_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php au_formfelder('tab-settings', $au_ftoken); ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="zugang_loeschen" value="1"><?= au_e(au_t('EINST.K_ZUGANG_LOESCHEN')) ?></button>
+  </form>
+</div>
+
+<!-- ---------------- Automatik: eigenes Formular, eigener Handler ---------------- -->
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_automatik" value="1">
+<?php au_formfelder('tab-settings', $au_ftoken); ?>
+
+<h2><?= au_e(au_t('EINST.H_GERECHNET')) ?></h2>
+<p class="sm-hilfe"><?= au_t('EINST.GERECHNET_ERKLAERUNG') ?></p>
+<div class="sm-feld">
+  <label for="kapazitaet"><?= au_e(au_t('EINST.L_KAPAZITAET')) ?></label>
+  <input data-role="none" type="number" id="kapazitaet" name="kapazitaet" value="<?= (int) $au_cfg['kapazitaet'] ?>" min="0" max="500">
+  <div class="sm-hilfe"><?= au_t('EINST.H_KAPAZITAET') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="heim_breite"><?= au_e(au_t('EINST.L_HEIM_BREITE')) ?></label>
+  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= au_e($au_cfg['heim_breite']) ?>" placeholder="48.137">
+</div>
+<div class="sm-feld">
+  <label for="heim_laenge"><?= au_e(au_t('EINST.L_HEIM_LAENGE')) ?></label>
+  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= au_e($au_cfg['heim_laenge']) ?>" placeholder="11.575">
+</div>
+<div class="sm-feld">
+  <label for="heim_radius"><?= au_e(au_t('EINST.L_HEIM_RADIUS')) ?></label>
+  <input data-role="none" type="number" id="heim_radius" name="heim_radius" value="<?= (int) $au_cfg['heim_radius'] ?>" min="20" max="5000">
+  <div class="sm-hilfe"><?= au_t('EINST.H_HEIM') ?></div>
+</div>
+
+<h2><?= au_e(au_t('EINST.H_ABFAHRT')) ?></h2>
+<div class="sm-warnung"><?= au_t('EINST.ABFAHRT_ERKLAERUNG') ?></div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="abfahrt_ein" value="1" <?= !empty($au_cfg['abfahrt_ein']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_ABFAHRT_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label for="abfahrt_praefix"><?= au_e(au_t('EINST.L_ABFAHRT_PRAEFIX')) ?></label>
+  <input data-role="none" type="text" id="abfahrt_praefix" name="abfahrt_praefix" value="<?= au_e($au_cfg['abfahrt_praefix']) ?>" placeholder="abfahrt">
+  <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_PRAEFIX') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="abfahrt_vorlauf"><?= au_e(au_t('EINST.L_ABFAHRT_VORLAUF')) ?></label>
+  <input data-role="none" type="number" id="abfahrt_vorlauf" name="abfahrt_vorlauf" value="<?= (int) $au_cfg['abfahrt_vorlauf'] ?>" min="1" max="120">
+  <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_VORLAUF') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="abfahrt_temp"><?= au_e(au_t('EINST.L_ABFAHRT_TEMP')) ?></label>
+  <input data-role="none" type="number" id="abfahrt_temp" name="abfahrt_temp" value="<?= (int) $au_cfg['abfahrt_temp'] ?>" min="10" max="30">
+</div>
+<div class="sm-feld">
+  <label for="abfahrt_fahrzeug"><?= au_e(au_t('EINST.L_ABFAHRT_FAHRZEUG')) ?></label>
+  <input data-role="none" type="number" id="abfahrt_fahrzeug" name="abfahrt_fahrzeug" value="<?= (int) $au_cfg['abfahrt_fahrzeug'] ?>" min="1" max="99">
+  <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_FAHRZEUG') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="abfahrt_alter"><?= au_e(au_t('EINST.L_ABFAHRT_ALTER')) ?></label>
+  <input data-role="none" type="number" id="abfahrt_alter" name="abfahrt_alter" value="<?= (int) $au_cfg['abfahrt_alter'] ?>" min="60" max="3600">
+  <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_ALTER') ?></div>
+</div>
+
+<h2><?= au_e(au_t('EINST.H_LADEEMPF')) ?></h2>
+<div class="sm-warnung"><?= au_t('EINST.LADEEMPF_ERKLAERUNG') ?></div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="ladeempf_ein" value="1" <?= !empty($au_cfg['ladeempf_ein']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_LADEEMPF_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label for="ladeempf_thema"><?= au_e(au_t('EINST.L_LADEEMPF_THEMA')) ?></label>
+  <input data-role="none" type="text" id="ladeempf_thema" name="ladeempf_thema" value="<?= au_e($au_cfg['ladeempf_thema']) ?>" placeholder="awattar/preis_jetzt">
+  <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_THEMA') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="ladeempf_grenze"><?= au_e(au_t('EINST.L_LADEEMPF_GRENZE')) ?></label>
+  <input data-role="none" type="text" id="ladeempf_grenze" name="ladeempf_grenze" value="<?= au_e($au_cfg['ladeempf_grenze']) ?>" placeholder="0">
+  <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_GRENZE') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="ladeempf_unter" value="1" <?= !empty($au_cfg['ladeempf_unter']) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_LADEEMPF_UNTER')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_UNTER') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="ladeempf_alter"><?= au_e(au_t('EINST.L_LADEEMPF_ALTER')) ?></label>
+  <input data-role="none" type="number" id="ladeempf_alter" name="ladeempf_alter" value="<?= (int) $au_cfg['ladeempf_alter'] ?>" min="60" max="86400">
+  <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_ALTER') ?></div>
+</div>
+
+<?php if (au_horcher_themen($au_cfg)) { ?>
+<div class="<?= ($au_horcher['fehler'] === '' && $au_horcher['verbunden']) ? 'sm-hinweis' : 'sm-fehler' ?>">
+<b><?= au_e(au_t('EINST.HORCHER_ZUSTAND')) ?></b>
+<?php if ($au_horcher['fehler'] !== '') { ?>
+<?= au_e($au_horcher['fehler']) ?>
+<?php } elseif (!$au_horcher['verbunden']) { ?>
+<?= au_t('EINST.HORCHER_AUS') ?>
+<?php } else { ?>
+<?= au_e(implode(', ', $au_horcher['themen'])) ?>
+<?php } ?>
+<?php if ($au_fassungen['paho'] === '') { ?>
+<br><?= au_t('EINST.PAHO_FEHLT') ?>
+<?php } ?>
+</div>
+<?php } ?>
 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
@@ -510,24 +920,25 @@ if ($au_rahmen) {
     <th><?= au_e(au_t('EINST.T_SOFTWARE')) ?></th></tr>
 <?php foreach ($au_fahrzeuge as $au_nr => $au_fz) { ?>
 <tr><td><?= au_e($au_nr) ?></td><td><?= au_e($au_fz['modell']) ?></td>
-    <td><?= au_e($au_fz['kennzeichen']) ?></td>
+    <td><?= empty($au_fz['kennzeichen']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['kennzeichen']) ?></td>
     <td><span class="sm-mono"><?= au_e($au_fz['vin']) ?></span></td>
     <td><?= au_e($au_fz['antriebsart']) ?></td>
-    <td><?= empty($au_fz['batterie_kwh']) ? '&mdash;' : au_e($au_fz['batterie_kwh']) . ' kWh' ?></td>
-    <td><?= au_e($au_fz['software']) ?></td></tr>
+    <td><?= empty($au_fz['batterie_kwh']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['batterie_kwh']) . ' kWh' ?></td>
+    <td><?= empty($au_fz['software']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['software']) ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= au_t('EINST.VIN_HINWEIS') ?></p>
+<div class="sm-warnung"><?= au_t('EINST.NICHT_GELIEFERT_ERKLAERUNG') ?></div>
 <?php } ?>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
-<div class="sm-seite" id="tab-mqtt">
+<div class="sm-seite<?= $au_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 
 <h2>MQTT</h2>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
-<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<?php au_formfelder('tab-mqtt', $au_ftoken); ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($au_cfg['mqtt_ein']) ? 'checked' : '' ?>>
@@ -536,7 +947,7 @@ if ($au_rahmen) {
 </div>
 <div class="sm-feld">
   <label for="mqtt_topic"><?= au_e(au_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= au_e($au_cfg['mqtt_topic']) ?>" placeholder="vw">
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= au_e($au_cfg['mqtt_topic']) ?>" placeholder="audi">
   <div class="sm-hilfe"><?= au_t('EINST.H_MQTT_TOPIC') ?></div>
 </div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= au_t('LEGENDE.AKTION') ?></span></div>
@@ -561,6 +972,10 @@ if ($au_rahmen) {
 <tr><td><?= au_e(au_t('MQTT.T_BROKER')) ?></td><td><span class="sm-mono"><?= au_e($au_mqtt['broker']) ?>:<?= au_e($au_mqtt['brokerport']) ?></span></td></tr>
 <tr><td><?= au_e(au_t('MQTT.T_UDP')) ?></td><td><span class="sm-mono"><?= (int) $au_mqtt['udpport'] ?></span></td></tr>
 <tr><td><?= au_e(au_t('MQTT.T_PLUGIN')) ?></td><td class="<?= !empty($au_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($au_cfg['mqtt_ein']) ? au_e(au_t('ALLG.EIN')) : au_e(au_t('ALLG.AUS')) ?></td></tr>
+<tr><td><?= au_e(au_t('MQTT.T_HORCHER')) ?></td>
+    <td><?= au_horcher_themen($au_cfg)
+        ? au_e(implode(', ', $au_horcher['themen'])) . ($au_horcher['verbunden'] ? '' : ' (' . au_e(au_t('EINST.HORCHER_AUS')) . ')')
+        : '<span class="sm-leer">' . au_e(au_t('MQTT.HORCHER_KEINE')) . '</span>' ?></td></tr>
 </table>
 
 <h2><?= au_e(au_t('MQTT.H_ABO')) ?></h2>
@@ -583,7 +998,7 @@ if ($au_rahmen) {
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $au_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= au_e(au_t('LOX.H_TITEL')) ?></h2>
 <p><?= au_t('LOX.EINLEITUNG') ?></p>
 
@@ -599,23 +1014,53 @@ if ($au_rahmen) {
 
 <div class="sm-step"><b><?= au_e(au_t('LOX.S3_TITEL')) ?></b><br>
 <?= au_t('LOX.S3_TEXT') ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= au_t('LEGENDE.LESEN') ?></span>
+</div>
+<?php
+/* Je Endpunkt ein Kasten: Adresse, Feldtabelle und ein Knopf, der genau
+ * diese Vorlage erzeugt. Bis 0.9.7 gab es nur den Statusknopf - die uebrigen
+ * drei Endpunkte hatten Tabellen ohne Vorlage. */
+$au_endpunkte = array(
+    'status'   => array('AUDI',     'LOX.EP_STATUS'),
+    'laden'    => array('LADEN',    'LOX.EP_LADEN'),
+    'wartung'  => array('WARTUNG',  'LOX.EP_WARTUNG'),
+    'position' => array('POSITION', 'LOX.EP_POSITION'),
+);
+$au_nummern = $au_fahrzeuge ? array_keys($au_fahrzeuge) : array('1');
+foreach ($au_endpunkte as $au_art => $au_info) {
+?>
+<h3><?= au_e(au_t($au_info[1])) ?></h3>
 <table class="sm-tbl">
 <tr><th><?= au_e(au_t('ALLG.EIGENSCHAFT')) ?></th><th><?= au_e(au_t('ALLG.WERT')) ?></th></tr>
 <tr><td><?= au_e(au_t('LOX.T_ADRESSE')) ?></td>
-    <td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=status&amp;fahrzeug=1</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_ZYKLUS')) ?></td><td>300 <?= au_e(au_t('ALLG.SEKUNDEN')) ?></td></tr>
+    <td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=<?= au_e($au_art) ?>&amp;fahrzeug=1</span></td></tr>
+<tr><td><?= au_e(au_t('LOX.T_ZYKLUS')) ?></td><td><?= (int) $au_cfg['intervall'] ?> <?= au_e(au_t('ALLG.SEKUNDEN')) ?></td></tr>
 </table>
-<?= au_t('LOX.S3_BEFEHLE') ?>
 <table class="sm-tbl">
 <tr><th><?= au_e(au_t('LOX.T_TITEL')) ?></th><th><?= au_e(au_t('LOX.T_BEFEHL')) ?></th>
-    <th><?= au_e(au_t('LOX.T_EINHEIT')) ?></th><th><?= au_e(au_t('LOX.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (au_status_felder() as $au_feld => $au_info) { ?>
+    <th><?= au_e(au_t('LOX.T_EINHEIT')) ?></th><th><?= au_e(au_t('LOX.T_HERKUNFT')) ?></th>
+    <th><?= au_e(au_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach (au_felder_von($au_art) as $au_feld => $au_fi) { ?>
 <tr><td><span class="sm-mono">AUDI_1_<?= au_e($au_feld) ?></span></td>
-    <td><span class="sm-mono">\i<?= au_e($au_feld) ?>=\i\v</span></td>
-    <td><?= $au_info[0] ?></td><td><?= au_t($au_info[1]) ?></td></tr>
+    <td><span class="sm-mono"><?= $au_feld === 'FEHLERTEXT' ? '&mdash;' : au_e(au_check($au_feld)) ?></span></td>
+    <td><?= $au_fi['einheit'] ?></td>
+    <td<?= $au_fi['herkunft'] === 'leer' ? ' class="sm-leer"' : '' ?>><?= au_e(au_herkunft_text($au_fi['herkunft'])) ?></td>
+    <td><?= au_t($au_fi['bez']) ?></td></tr>
 <?php } ?>
 </table>
+<div class="sm-knopfreihe">
+<?php foreach ($au_nummern as $au_nr2) { ?>
+  <form action="index.php" method="post">
+    <?php au_formfelder('tab-loxone', $au_ftoken); ?>
+    <input data-role="none" type="hidden" name="vorlage_art" value="<?= au_e($au_art) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="<?= au_e($au_nr2) ?>"><?= au_e(sprintf(au_t('LOX.K_VORLAGE_N'), au_t($au_info[1]), $au_nr2)) ?></button>
+  </form>
+<?php } ?>
+</div>
+<?php } ?>
 <div class="sm-warnung"><?= au_t('LOX.S3_STRICH') ?></div>
+<div class="sm-hinweis"><?= au_t('LOX.S3_ADRESSE_ZEILE') ?></div>
 <?php if (count($au_fahrzeuge) > 1) { ?>
 <p><b><?= au_e(au_t('LOX.MEHRERE_FAHRZEUGE')) ?></b></p>
 <table class="sm-tbl">
@@ -626,44 +1071,14 @@ if ($au_rahmen) {
 <?php } ?>
 </table>
 <?php } ?>
-<div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <input data-role="none" type="hidden" name="vorlage" value="1">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= au_e(au_t('LOX.K_VORLAGE')) ?></button>
-  </form>
-</div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= au_t('LEGENDE.LESEN') ?></span>
-</div>
 </div>
 
 <div class="sm-step"><b><?= au_e(au_t('LOX.S4_TITEL')) ?></b><br>
 <?= au_t('LOX.S4_TEXT') ?>
 <table class="sm-tbl">
 <tr><th><?= au_e(au_t('ALLG.EIGENSCHAFT')) ?></th><th><?= au_e(au_t('ALLG.WERT')) ?></th></tr>
-<tr><td><?= au_e(au_t('LOX.T_ADRESSE')) ?></td><td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=laden&amp;fahrzeug=1</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_ZYKLUS')) ?></td><td>300 <?= au_e(au_t('ALLG.SEKUNDEN')) ?></td></tr>
-</table>
-<table class="sm-tbl">
-<tr><th><?= au_e(au_t('LOX.T_BEFEHL')) ?></th><th><?= au_e(au_t('LOX.T_EINHEIT')) ?></th><th><?= au_e(au_t('LOX.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (au_laden_felder() as $au_feld => $au_info) { ?>
-<tr><td><span class="sm-mono">\i<?= au_e($au_feld) ?>=\i\v</span></td>
-    <td><?= $au_info[0] ?></td><td><?= au_t($au_info[1]) ?></td></tr>
-<?php } ?>
-</table>
-<?= au_t('LOX.S4_WARTUNG') ?>
-<table class="sm-tbl">
-<tr><th><?= au_e(au_t('LOX.T_BEFEHL')) ?></th><th><?= au_e(au_t('LOX.T_EINHEIT')) ?></th><th><?= au_e(au_t('LOX.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (au_wartung_felder() as $au_feld => $au_info) { ?>
-<tr><td><span class="sm-mono">\i<?= au_e($au_feld) ?>=\i\v</span></td>
-    <td><?= $au_info[0] ?></td><td><?= au_t($au_info[1]) ?></td></tr>
-<?php } ?>
-</table>
-<?= au_t('LOX.S4_POSITION') ?>
-<table class="sm-tbl">
-<tr><td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=position&amp;fahrzeug=1</span></td>
-    <td><span class="sm-mono">\iBREITE=\i\v</span> / <span class="sm-mono">\iLAENGE=\i\v</span></td></tr>
+<tr><td><?= au_e(au_t('LOX.T_ADRESSE')) ?></td>
+    <td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=text&amp;fahrzeug=1</span></td></tr>
 </table>
 </div>
 
@@ -672,40 +1087,60 @@ if ($au_rahmen) {
 <table class="sm-tbl">
 <tr><th><?= au_e(au_t('ALLG.EIGENSCHAFT')) ?></th><th><?= au_e(au_t('ALLG.WERT')) ?></th></tr>
 <tr><td><?= au_e(au_t('LOX.T_VA_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= au_e($au_host) ?></span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_KLIMA_EIN')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=klima_start&amp;fahrzeug=1&amp;temp=21</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_KLIMA_AUS')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=klima_stop&amp;fahrzeug=1</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_LADEN_EIN')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=laden_start&amp;fahrzeug=1</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_LADEN_AUS')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=laden_stop&amp;fahrzeug=1</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_LADEGRENZE')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=ladegrenze&amp;fahrzeug=1&amp;prozent=&lt;v&gt;</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_LADESTROM')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=ladestrom&amp;fahrzeug=1&amp;ampere=&lt;v&gt;</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_SCHEIBE')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=scheibe_ein&amp;fahrzeug=1</span></td></tr>
-<tr><td><?= au_e(au_t('LOX.T_VA_ABRUF')) ?></td>
-    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_token) ?>&amp;aktion=abruf</span></td></tr>
+</table>
+<table class="sm-tbl">
+<tr><th><?= au_e(au_t('LOX.T_BEFEHL')) ?></th><th><?= au_e(au_t('LOX.T_ZIEL')) ?></th></tr>
+<?php foreach (au_befehle() as $au_ak => $au_eig) {
+    if ($au_ak === 'einstellung') { continue; }
+    if ($au_eig['gefahr'] && empty($au_cfg['gefahr_ein'])) { continue; }
+    $au_z = '/plugins/' . $au_p['plugin'] . '/index.php?token=' . $au_stoken
+          . '&amp;aktion=' . $au_ak . ($au_eig['ohne_fz'] ? '' : '&amp;fahrzeug=1');
+    if ($au_eig['zusatz'] === 'temp')    { $au_z .= '&amp;temp=&lt;v&gt;'; }
+    if ($au_eig['zusatz'] === 'prozent') { $au_z .= '&amp;prozent=&lt;v&gt;'; }
+    if ($au_eig['zusatz'] === 'ampere')  { $au_z .= '&amp;ampere=&lt;v&gt;'; }
+    if ($au_eig['zusatz'] === 'dauer')   { $au_z .= '&amp;dauer=10'; }
+?>
+<tr><td><?= au_t($au_eig['bez']) ?><?= $au_eig['gefahr'] ? ' <b>(' . au_e(au_t('LOX.EINGRIFF')) . ')</b>' : '' ?></td>
+    <td><span class="sm-mono"><?= $au_z ?></span></td></tr>
+<?php } ?>
+<?php foreach (au_einstellungen() as $au_en => $au_eb) { ?>
+<tr><td><?= au_t($au_eb) ?></td>
+    <td><span class="sm-mono">/plugins/<?= au_e($au_p['plugin']) ?>/index.php?token=<?= au_e($au_stoken) ?>&amp;aktion=einstellung&amp;fahrzeug=1&amp;name=<?= au_e($au_en) ?>&amp;wert=1</span></td></tr>
+<?php } ?>
 </table>
 <div class="sm-warnung"><?= au_t('LOX.S5_WARNUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= au_t('LEGENDE.LESEN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+<?php foreach ($au_nummern as $au_nr2) { ?>
+  <form action="index.php" method="post">
+    <?php au_formfelder('tab-loxone', $au_ftoken); ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage_vo" value="<?= au_e($au_nr2) ?>"><?= au_e(sprintf(au_t('LOX.K_VORLAGE_VO'), $au_nr2)) ?></button>
+  </form>
+<?php } ?>
+</div>
 </div>
 
 <div class="sm-step"><b><?= au_e(au_t('LOX.S6_TITEL')) ?></b><br>
 <table class="sm-tbl">
 <tr><th><?= au_e(au_t('ALLG.EIGENSCHAFT')) ?></th><th><?= au_e(au_t('ALLG.WERT')) ?></th></tr>
-<tr><td><?= au_e(au_t('LOX.T_TOKEN')) ?></td><td><span class="sm-mono"><?= au_e($au_token) ?></span></td></tr>
+<tr><td><?= au_e(au_t('LOX.T_TOKEN_LESEN')) ?></td><td><span class="sm-mono"><?= au_e($au_token) ?></span></td></tr>
+<tr><td><?= au_e(au_t('LOX.T_TOKEN_SCHALTEN')) ?></td><td><span class="sm-mono"><?= au_e($au_stoken) ?></span></td></tr>
 </table>
 <?= au_t('LOX.S6_TEXT') ?>
-<div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= au_e(au_t('LOX.K_TOKEN_NEU')) ?></button>
-  </form>
-</div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= au_t('LEGENDE.AKTION_TOKEN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php au_formfelder('tab-loxone', $au_ftoken); ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="lesen"><?= au_e(au_t('LOX.K_TOKEN_LESEN')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <?php au_formfelder('tab-loxone', $au_ftoken); ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="schalten"><?= au_e(au_t('LOX.K_TOKEN_SCHALTEN')) ?></button>
+  </form>
 </div>
 </div>
 
@@ -724,6 +1159,13 @@ if ($au_rahmen) {
  * Je Zeile: Nummer, Typ, Name, Parameter, woran die Eingaenge kommen.
  * Typ, Name und Parameter stehen als Sprachschluessel drin, die Eingangsspalte
  * ist symbolisch und damit sprachfrei.
+ *
+ * ACHTUNG bei UND und ODER: die Zahl der Eingaenge ist eine Eigenschaft des
+ * Bausteins, die Loxone Config selbst setzt. Wer einen dritten Eingang
+ * aufzieht, verliert beim naechsten Oeffnen der Datei alle Verbindungen, die
+ * daran hingen - ohne Meldung. An einem ODER duerfen deshalb mehrere Quellen
+ * an EINEM Eingang haengen (sie werden dort ODER-verknuepft); an einem UND
+ * waere dieselbe Form falsch, weil sie das UND still in ein ODER verwandelte.
  */
 function au_bausteine()
 {
@@ -741,7 +1183,7 @@ function au_bausteine()
         array(11, 'BAUSTEIN.T_VE',      'BAUSTEIN.N11', 'BAUSTEIN.P11', '&mdash;'),
         array(12, 'BAUSTEIN.T_VE',      'BAUSTEIN.N12', 'BAUSTEIN.P12', '&mdash;'),
         array(13, 'BAUSTEIN.T_NICHT',   'BAUSTEIN.N13', '',             'I &larr; #5'),
-        array(14, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14', '',             'I1 &larr; #13, I2 &larr; #6, I3 &larr; #7, I4 &larr; #8'),
+        array(14, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14', '',             'I1 &larr; #13, #6 &middot; I2 &larr; #7, #8'),
         array(15, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I &larr; #14'),
         array(16, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N16', 'BAUSTEIN.P16', 'I &larr; #15'),
         array(17, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N17', 'BAUSTEIN.P17', 'I &larr; #1'),
@@ -762,6 +1204,14 @@ function au_bausteine()
         array(32, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N32', 'BAUSTEIN.P32', 'I &larr; #31'),
         array(33, 'BAUSTEIN.T_VA',      'BAUSTEIN.N33', 'BAUSTEIN.P33', 'I &larr; #32'),
         array(34, 'BAUSTEIN.T_VA',      'BAUSTEIN.N34', 'BAUSTEIN.P34', au_t('BAUSTEIN.MANUELL')),
+        // ---- Neu in 0.9.8 ------------------------------------------------
+        array(35, 'BAUSTEIN.T_VE',      'BAUSTEIN.N35', 'BAUSTEIN.P35', '&mdash;'),
+        array(36, 'BAUSTEIN.T_VE',      'BAUSTEIN.N36', 'BAUSTEIN.P36', '&mdash;'),
+        array(37, 'BAUSTEIN.T_VE',      'BAUSTEIN.N37', 'BAUSTEIN.P37', '&mdash;'),
+        array(38, 'BAUSTEIN.T_UND',     'BAUSTEIN.N38', 'BAUSTEIN.P38', 'I1 &larr; #35, I2 &larr; #36'),
+        array(39, 'BAUSTEIN.T_VA',      'BAUSTEIN.N39', 'BAUSTEIN.P39', 'I &larr; #38'),
+        array(40, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N40', 'BAUSTEIN.P40', 'I &larr; #37'),
+        array(41, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N41', 'BAUSTEIN.P41', 'I &larr; #40'),
     );
 }
 ?>
@@ -789,12 +1239,59 @@ function au_bausteine()
     <td><span class="sm-mono">FEHLER;OK=0;GRUND=TOKEN</span> (HTTP 403)</td></tr>
 <tr><td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=quatsch</span></td>
     <td><span class="sm-mono">FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION</span> (HTTP 400)</td></tr>
+<tr><td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=wecken</span></td>
+    <td><span class="sm-mono">FEHLER;OK=0;GRUND=LESETOKEN_SCHALTET_NICHT</span> (HTTP 403)</td></tr>
 </table>
 </div>
 </div>
 
+<!-- ================= Reiter: Ladevorgaenge ================= -->
+<div class="sm-seite<?= $au_tab === 'tab-ladungen' ? ' sm-active' : '' ?>" id="tab-ladungen">
+<h2><?= au_e(au_t('LADUNG.H_TITEL')) ?></h2>
+<p class="sm-hilfe"><?= au_t('LADUNG.ERKLAERUNG') ?></p>
+<?php if ((int) $au_cfg['kapazitaet'] === 0) { ?>
+<div class="sm-warnung"><?= au_t('LADUNG.OHNE_KAPAZITAET') ?></div>
+<?php } ?>
+<?php if (!$au_ladungen) { ?>
+<div class="sm-hinweis"><?= au_t('LADUNG.LEER') ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= au_e(au_t('LADUNG.T_FAHRZEUG')) ?></th><th><?= au_e(au_t('LADUNG.T_START')) ?></th>
+    <th><?= au_e(au_t('LADUNG.T_ENDE')) ?></th><th><?= au_e(au_t('LADUNG.T_DAUER')) ?></th>
+    <th><?= au_e(au_t('LADUNG.T_SOC')) ?></th><th><?= au_e(au_t('LADUNG.T_KWH')) ?></th>
+    <th><?= au_e(au_t('LADUNG.T_KM')) ?></th></tr>
+<?php $au_summe = 0.0; foreach ($au_ladungen as $au_l) {
+    if ($au_l['kwh'] !== null) { $au_summe += (float) $au_l['kwh']; } ?>
+<tr><td><?= au_e($au_l['fahrzeug']) ?></td>
+    <td><?= au_e(date('d.m.Y H:i', $au_l['start'])) ?></td>
+    <td><?= au_e(date('d.m.Y H:i', $au_l['ende'])) ?></td>
+    <td><?= $au_l['dauer'] === null ? '&ndash;' : (int) $au_l['dauer'] . ' min' ?></td>
+    <td><?= $au_l['soc_start'] === null ? '&ndash;' : au_e($au_l['soc_start']) . ' &rarr; ' . au_e($au_l['soc_ende']) . ' %' ?></td>
+    <td><?= $au_l['kwh'] === null ? '<span class="sm-leer">&ndash;</span>' : au_e($au_l['kwh']) . ' kWh' ?></td>
+    <td><?= $au_l['km'] === null ? '&ndash;' : au_e($au_l['km']) . ' km' ?></td></tr>
+<?php } ?>
+</table>
+<p class="sm-hilfe"><?= au_e(sprintf(au_t('LADUNG.SUMME'), count($au_ladungen), round($au_summe, 2))) ?></p>
+<?php } ?>
+
+<h2><?= au_e(au_t('LADUNG.H_VERLAUF')) ?></h2>
+<p class="sm-hilfe"><?= au_t('LADUNG.VERLAUF_ERKLAERUNG') ?></p>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= au_t('LEGENDE.LESEN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+<?php foreach ($au_nummern as $au_nr2) { ?>
+  <form action="index.php" method="post">
+    <?php au_formfelder('tab-ladungen', $au_ftoken); ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="verlauf_csv" value="<?= au_e($au_nr2) ?>"><?= au_e(sprintf(au_t('LADUNG.K_CSV'), $au_nr2)) ?></button>
+  </form>
+<?php } ?>
+  <a class="sm-btn sm-b-lesen" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=ladungen" target="_blank"><?= au_e(au_t('LADUNG.K_ENDPUNKT')) ?></a>
+</div>
+</div>
+
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $au_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= au_e(au_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <p class="sm-hilfe"><?= au_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
@@ -819,13 +1316,15 @@ function au_bausteine()
   <a class="sm-btn sm-b-lesen" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=status&amp;fahrzeug=1" target="_blank"><?= au_e(au_t('TEST.K_STATUS')) ?></a>
   <a class="sm-btn sm-b-lesen" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=laden&amp;fahrzeug=1" target="_blank"><?= au_e(au_t('TEST.K_LADEN')) ?></a>
   <a class="sm-btn sm-b-lesen" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=wartung&amp;fahrzeug=1" target="_blank"><?= au_e(au_t('TEST.K_WARTUNG')) ?></a>
+  <a class="sm-btn sm-b-lesen" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=position&amp;fahrzeug=1" target="_blank"><?= au_e(au_t('TEST.K_POSITION')) ?></a>
+  <a class="sm-btn sm-b-lesen" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=text&amp;fahrzeug=1" target="_blank"><?= au_e(au_t('TEST.K_TEXT')) ?></a>
   <a class="sm-btn sm-b-lesen" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=fahrzeuge" target="_blank"><?= au_e(au_t('TEST.K_FAHRZEUGE')) ?></a>
 </div>
 
 <h3><?= au_e(au_t('TEST.H_TECHNIK')) ?></h3>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <?php au_formfelder('tab-test', $au_ftoken); ?>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="selbsttest" value="1"><?= au_e(au_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <a class="sm-btn sm-b-technik" href="<?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=roh" target="_blank"><?= au_e(au_t('TEST.K_ROH')) ?></a>
@@ -840,7 +1339,14 @@ function au_bausteine()
 <div class="sm-hinweis"><?= au_t('TEST.SCHALTEN_GESPERRT') ?></div>
 <?php } ?>
 <form action="index.php" method="post">
-<input data-role="none" type="hidden" name="activetab" value="tab-test">
+<?php au_formfelder('tab-test', $au_ftoken); ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="test_probe" value="1">
+    <?= au_e(au_t('TEST.L_PROBE')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('TEST.H_PROBE') ?></div>
+</div>
 <div class="sm-feld">
   <label for="test_fahrzeug"><?= au_e(au_t('TEST.L_FAHRZEUG')) ?></label>
   <input data-role="none" type="number" id="test_fahrzeug" name="test_fahrzeug" value="1" min="1" max="99">
@@ -871,6 +1377,7 @@ function au_bausteine()
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="abruf"><?= au_e(au_t('TEST.K_ABRUF')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="klima_start"><?= au_e(au_t('TEST.K_KLIMA_EIN')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="klima_stop"><?= au_e(au_t('TEST.K_KLIMA_AUS')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="zieltemperatur"><?= au_e(au_t('TEST.K_ZIELTEMP')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="laden_start"><?= au_e(au_t('TEST.K_LADEN_EIN')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="laden_stop"><?= au_e(au_t('TEST.K_LADEN_AUS')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="ladegrenze"><?= au_e(au_t('TEST.K_LADEGRENZE')) ?></button>
@@ -878,14 +1385,54 @@ function au_bausteine()
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="scheibe_ein"><?= au_e(au_t('TEST.K_SCHEIBE_EIN')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="scheibe_aus"><?= au_e(au_t('TEST.K_SCHEIBE_AUS')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="wecken"><?= au_e(au_t('TEST.K_WECKEN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="spin_pruefen"><?= au_e(au_t('TEST.K_SPIN')) ?></button>
 </div>
+
+<h3><?= au_e(au_t('TEST.H_EINSTELLUNG')) ?></h3>
+<p class="sm-hilfe"><?= au_t('TEST.EINSTELLUNG_ERKLAERUNG') ?></p>
+<div class="sm-feld">
+  <label for="test_einstellung"><?= au_e(au_t('TEST.L_EINSTELLUNG')) ?></label>
+  <select data-role="none" id="test_einstellung" name="test_einstellung">
+<?php foreach (au_einstellungen() as $au_en => $au_eb) { ?>
+    <option value="<?= au_e($au_en) ?>"><?= au_e(au_klartext(au_t($au_eb))) ?></option>
+<?php } ?>
+  </select>
+</div>
+<div class="sm-feld">
+  <label for="test_ewert"><?= au_e(au_t('TEST.L_EWERT')) ?></label>
+  <select data-role="none" id="test_ewert" name="test_ewert">
+    <option value="1"><?= au_e(au_t('ALLG.EIN')) ?></option>
+    <option value="0"><?= au_e(au_t('ALLG.AUS')) ?></option>
+  </select>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="einstellung"><?= au_e(au_t('TEST.K_EINSTELLUNG')) ?></button>
+</div>
+
+<h3><?= au_e(au_t('TEST.H_EINGRIFF')) ?></h3>
+<div class="sm-fehler"><?= au_t('TEST.EINGRIFF_WARNUNG') ?></div>
+<?php if (empty($au_cfg['gefahr_ein'])) { ?>
+<div class="sm-hinweis"><?= au_t('TEST.EINGRIFF_GESPERRT') ?></div>
+<?php } else { ?>
+<div class="sm-feld">
+  <label for="test_dauer"><?= au_e(au_t('TEST.L_DAUER')) ?></label>
+  <input data-role="none" type="number" id="test_dauer" name="test_dauer" value="10" min="1" max="60">
+  <div class="sm-hilfe"><?= au_t('TEST.H_DAUER') ?></div>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="verriegeln"><?= au_e(au_t('TEST.K_VERRIEGELN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="entriegeln"><?= au_e(au_t('TEST.K_ENTRIEGELN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="lichthupe"><?= au_e(au_t('TEST.K_LICHTHUPE')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="hupe"><?= au_e(au_t('TEST.K_HUPE')) ?></button>
+</div>
+<?php } ?>
 </form>
 
 <div class="sm-warnung"><b><?= au_e(au_t('TEST.H_UNGEPRUEFT')) ?></b><br><?= au_t('TEST.UNGEPRUEFT') ?></div>
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $au_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= au_e(au_t('LOG.H_TITEL')) ?></h2>
 <?php
 if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
@@ -904,7 +1451,7 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-log">
+    <?php au_formfelder('tab-log', $au_ftoken); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= au_e(au_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>
