@@ -96,6 +96,23 @@ if ($au_post && !au_formtoken_pruefen()) {
     $au_post = false;      // nichts ausfuehren, aber die Seite normal zeigen
 }
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Vorlagen herunterladen ---------------- */
 if ($au_post && isset($_POST['vorlage'])) {
     $au_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['vorlage']) ? (int) $_POST['vorlage'] : 1;
@@ -448,9 +465,6 @@ $au_vtag = isset($_GET['tag']) && preg_match('/^[0-9]{8}$/', (string) $_GET['tag
     ? (string) $_GET['tag'] : date('Ymd');
 
 $au_rahmen = class_exists('LBWeb', false);
-if ($au_rahmen) {
-    LBWeb::lbheader('Audi Connect', 'https://wiki.loxberry.de/', 'help.html');
-}
 
 /** Ein verstecktes Feld-Paar, das in JEDES Formular gehoert. */
 function au_formfelder($tab, $ftoken)
@@ -504,6 +518,11 @@ if ($au_post && isset($_POST['au_zurueck'])) {
             $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($au_rahmen) {
+    LBWeb::lbheader('Audi Connect', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
