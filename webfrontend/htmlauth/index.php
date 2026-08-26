@@ -458,6 +458,54 @@ function au_formfelder($tab, $ftoken)
     echo '<input data-role="none" type="hidden" name="activetab" value="' . au_e($tab) . '">'
        . '<input data-role="none" type="hidden" name="formtoken" value="' . au_e($ftoken) . '">';
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($au_post && isset($_POST['au_sichern'])) {
+    $au_js = json_encode(au_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($au_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="audiconnect_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $au_js;
+        exit;
+    }
+    $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($au_post && isset($_POST['au_zurueck'])) {
+    if (!isset($_FILES['au_sicherung']) || !is_array($_FILES['au_sicherung'])
+        || !isset($_FILES['au_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['au_sicherung']['tmp_name'])) {
+        $au_fehler[] = au_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['au_sicherung']['size'] > 262144) {
+        $au_fehler[] = au_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($au_neu, $au_mangel, $au_n) = au_sicherung_lesen(
+            (string) @file_get_contents($_FILES['au_sicherung']['tmp_name']));
+        if ($au_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $au_fehler[] = au_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $au_mangel);
+        } elseif (au_config_speichern($au_neu)) {
+            $au_meldungen[] = sprintf(au_t('EINST.SICH_UEBERNOMMEN'), $au_n);
+        } else {
+            $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard, wortgetreu aus VORLAGE_hausstandard.css.html uebernommen.
@@ -930,6 +978,27 @@ function au_formfelder($tab, $ftoken)
 <p class="sm-hilfe"><?= au_t('EINST.VIN_HINWEIS') ?></p>
 <div class="sm-warnung"><?= au_t('EINST.NICHT_GELIEFERT_ERKLAERUNG') ?></div>
 <?php } ?>
+
+<h2><?= au_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= au_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= au_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= au_e($au_ftoken) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="au_sichern" value="1"><?= au_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= au_e($au_ftoken) ?>">
+    <input data-role="none" type="file" name="au_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="au_zurueck" value="1"><?= au_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -979,7 +1048,7 @@ function au_formfelder($tab, $ftoken)
 </table>
 
 <h2><?= au_e(au_t('MQTT.H_ABO')) ?></h2>
-<div class="sm-warnung"><?= au_t('MQTT.ABO_WARNUNG') ?></div>
+<div class="sm-warnung"><?= au_abo_text() ?></div>
 <div class="sm-step">
 <?= au_t('MQTT.ABO_SCHRITTE') ?>
 <p><span class="sm-mono"><?= au_e($au_cfg['mqtt_topic']) ?>/#</span></p>
@@ -1009,7 +1078,7 @@ function au_formfelder($tab, $ftoken)
 <div class="sm-step"><b><?= au_e(au_t('LOX.S2_TITEL')) ?></b><br>
 <?= au_t('LOX.S2_TEXT') ?>
 <p><span class="sm-mono"><?= au_e($au_cfg['mqtt_topic']) ?>/#</span></p>
-<div class="sm-warnung"><?= au_t('LOX.S2_WARNUNG') ?></div>
+<div class="sm-warnung"><?= au_abo_text() ?></div>
 </div>
 
 <div class="sm-step"><b><?= au_e(au_t('LOX.S3_TITEL')) ?></b><br>
