@@ -30,11 +30,18 @@ Gegen den Quelltext des Tags v0.3.2 gemessen - also gegen genau die Fassung,
 die postinstall.sh festnagelt. Der Stand von "main" ist byteweise derselbe
 (cmp ueber connector.py).
 
-SIEBEN ATTRIBUTE GIBT ES IM KERNMODELL, DER AUDI-CONNECTOR FUELLT SIE NIE:
-    software.version, license_plate, model_year, parking_brake, manufacturer,
+SECHS ATTRIBUTE GIBT ES IM KERNMODELL, DER AUDI-CONNECTOR FUELLT SIE NIE:
+    software.version, license_plate, model_year, parking_brake,
     battery.total_capacity, CombustionDrive.oil_level
 Gemessen: keiner dieser Namen kommt im Connector auch nur vor (Volltextsuche
 ueber connector.py, vehicle.py, climatization.py, charging.py, capability.py).
+
+BERICHTIGT IN 0.9.12: hier standen SIEBEN, mit "manufacturer" darunter.
+Der Connector setzt es sehr wohl - vehicle.py Zeile 138,
+"self.manufacturer._set_value(value='Audi')", auf der Einrueckungsebene
+von __init__ und damit fuer JEDES Fahrzeug. An einem echten AudiVehicle
+nachgemessen: v.manufacturer.value ergibt "Audi". Die uebrigen sechs sind
+bestaetigt.
 Das Plugin liest sie weiterhin - eine spaetere Connector-Fassung koennte sie
 fuellen -, aber die Oberflaeche und die Feldtabellen BENENNEN sie als nicht
 belegt. Ein Feld, das dauerhaft leer bleibt und nicht sagt warum, ist ein
@@ -120,11 +127,64 @@ def mqtt_wert_saeubern(wert):
 # trotzdem Erfolg meldet.
 # ---------------------------------------------------------------------------
 SELF = Path(__file__).resolve().parent            # <home>/bin/plugins/<ordner>
-PNAME = SELF.name
-if len(SELF.parents) >= 3:
-    LBHOME = SELF.parents[2]
-else:
-    LBHOME = Path(os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln())
+
+
+def _pname_bestimmen():
+    """Der Ordnername, unter dem LoxBerry das Plugin fuehrt.
+
+    Installiert ist SELF.name richtig (bin/plugins/<ordner>), und bei einer
+    Zweitinstallation haengt LoxBerry _01 an - auch das traegt der Name.
+    Im entpackten Archiv heisst SELF aber "bin", und dann zeigte PNAME bis
+    0.9.11 auf einen Ordner "bin". LBPPLUGINDIR bekommt deshalb den
+    Vorrang; webfrontend/html/au_lib.php macht es in au_paths() genauso.
+    """
+    umgebung = (os.environ.get("LBPPLUGINDIR") or "").strip()
+    if umgebung:
+        return umgebung
+    if SELF.name == "bin" and SELF.parent.name:
+        # Archivbau: <plugin>/bin. Der Pluginname steckt eine Ebene hoeher.
+        return "audiconnect"
+    return SELF.name
+
+
+PNAME = _pname_bestimmen()
+
+
+def _lbhome_bestimmen():
+    """Die LoxBerry-Wurzel - LBHOMEDIR zuerst, dann der eigene Ablageort.
+
+    BERICHTIGT IN 0.9.12. Hier stand
+        if len(SELF.parents) >= 3: LBHOME = SELF.parents[2]
+        else: LBHOME = Path(os.environ.get("LBHOMEDIR") or ...)
+    - und weil ein Pfad fast immer drei Elternebenen hat, wurde LBHOMEDIR
+    in der Praxis NIE gelesen. Installiert ist die Ableitung richtig
+    (<home>/bin/plugins/<ordner> -> parents[2] = <home>). Im entpackten
+    Archiv ist sie es nicht: dort heisst SELF "bin", und parents[2] zeigt
+    auf das Verzeichnis UEBER dem Plugin. Gemessen: ein Lauf aus dem
+    Archivbau legte data/plugins/bin/ neben dem Arbeitsordner an und
+    schrieb loxone.json und cache.json hinein - ausserhalb jedes Plugins.
+
+    Jetzt hat LBHOMEDIR den Vorrang, und der abgeleitete Pfad wird gegen
+    das Bild eines LoxBerry gehalten (config/plugins und data/plugins
+    muessen dort liegen), bevor er gilt.
+    """
+    umgebung = os.environ.get("LBHOMEDIR")
+    if umgebung and Path(umgebung).is_dir():
+        return Path(umgebung)
+    if len(SELF.parents) >= 3:
+        kandidat = SELF.parents[2]
+        if (kandidat / "config" / "plugins").is_dir() \
+                and (kandidat / "data" / "plugins").is_dir():
+            return kandidat
+    wurzel = lb_wurzel_ermitteln()
+    if wurzel:
+        return Path(wurzel)
+    # Weder Umgebung noch eine Lage, die wie ein LoxBerry aussieht: dann
+    # wird NEBEN dem Plugin gearbeitet, nicht in einem fremden Baum.
+    return SELF.parent
+
+
+LBHOME = _lbhome_bestimmen()
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
 PCONFIG = LBHOME / "config" / "plugins" / PNAME
@@ -393,7 +453,14 @@ def config() -> dict:
     c["abruf_abstand"] = max(0, min(3600, ganz(c.get("abruf_abstand"), 60)))
     c["befehle_stunde"] = max(0, min(500, ganz(c.get("befehle_stunde"), 30)))
     c["strom_abstand"] = max(0, min(3600, ganz(c.get("strom_abstand"), 300)))
-    c["kapazitaet"] = max(0, min(500, ganz(c.get("kapazitaet"), 0)))
+    # zahl() statt ganz(): ganz("77,4") und ganz("77.4") ergaben beide 0,
+    # und mit einer Kapazitaet 0 entstehen VERBRAUCH und LADEKWH nie. Ueber
+    # die Oberflaeche war das nicht erreichbar (sie weist Komma ab), wohl
+    # aber ueber eine zurueckgespielte Sicherung oder eine von Hand
+    # bearbeitete Datei. Nebenbei traegt die Kapazitaet jetzt Nachkommastellen
+    # - ein e-tron 55 hat 86,5 kWh, und 86 statt 86,5 verschiebt Verbrauch
+    # und geladene Menge um rund ein halbes Prozent.
+    c["kapazitaet"] = max(0.0, min(500.0, zahl(c.get("kapazitaet")) or 0.0))
     c["heim_radius"] = max(20, min(5000, ganz(c.get("heim_radius"), 150)))
     c["abfahrt_vorlauf"] = max(1, min(120, ganz(c.get("abfahrt_vorlauf"), 20)))
     c["abfahrt_temp"] = max(c["temp_min"], min(c["temp_max"],
@@ -587,8 +654,37 @@ class Horcher:
                 melde_gebremst("horcher_abo", "Abo %s nicht moeglich: %s" % (t, err), 900)
         self.themen = set(themen)
 
-    def _verbunden_cb(self, *args, **kwargs):
+    def _verbunden_cb(self, client=None, userdata=None, flags=None,
+                      rc=None, properties=None):
+        """Der Broker hat geantwortet - aber WIE?
+
+        BERICHTIGT IN 0.9.12. Hier stand "self.verbunden = True" ohne jede
+        Bedingung, und die Signatur verwarf den Rueckgabecode. paho's
+        connect() wartet nicht auf CONNACK (gemessen an 1.6.1: reconnect()
+        endet mit "return self._send_connect(...)"), also kehrt es auch
+        dann normal zurueck, wenn der Broker die Anmeldung ablehnt - der
+        except-Zweig um connect() greift nur bei einem TCP-Fehler.
+        Ergebnis: der Reiter Test meldete "verbunden", zustand.json meldete
+        horcher_verbunden=1, und es kam nie eine Nachricht an. Das ist die
+        Ebene "erreichbar ist nicht angemeldet" - der LoxBerry-Broker
+        verlangt ab Werk eine Anmeldung und weist sonst mit CONNACK-Code 5
+        ab.
+"""
+        code = getattr(rc, "value", rc)
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            code = 0 if code is None else 9
+        if code != 0:
+            self.verbunden = False
+            self.fehler = (
+                "Der Broker hat die Anmeldung abgelehnt (CONNACK-Code %d). "
+                "Benutzer und Kennwort stehen in config/system/general.json "
+                "unter Mqtt (Brokeruser, Brokerpass)." % code)
+            melde_gebremst("horcher_rc", self.fehler, 900)
+            return
         self.verbunden = True
+        self.fehler = ""
         # Nach jedem Verbindungsaufbau werden die Abos neu gesetzt: der Broker
         # kennt sie nach einer Trennung nicht mehr.
         for t in sorted(self.themen):
@@ -811,6 +907,24 @@ def fehlertext(err: Exception) -> str:
     return f"{name}: {inhalt}"
 
 
+def ursachen(err):
+    """Die Ausnahme und alles, woraus sie entstanden ist.
+
+    NEU IN 0.9.12. Der Connector verpackt JEDE requests-Ausnahme in einen
+    RetrievalError (connector.py:3091, 3093, 3095, 3097, 3102) und setzt
+    dabei durchweg "from ..." - die Ursache steht also in __cause__.
+    Gemessen: die rohe ConnectionError ergab Code 4 (unerreichbar), dieselbe
+    Ausnahme so, wie der Connector sie weiterreicht, ergab 9 (unbekannt).
+    Der errno-Zweig und die Namensliste unten waren damit fuer alles, was
+    aus dem Connector kommt, toter Code.
+    """
+    gesehen = set()
+    while err is not None and id(err) not in gesehen:
+        gesehen.add(id(err))
+        yield err
+        err = getattr(err, "__cause__", None) or getattr(err, "__context__", None)
+
+
 def fehler_code(err: Exception) -> int:
     """Die Fehlerklasse als Zahl - an der AUSNAHME bestimmt, nicht am Text.
 
@@ -818,7 +932,19 @@ def fehler_code(err: Exception) -> int:
     lag in zwoelf von vierzehn Faellen auf 9 ("unbekannt"). Hier steht die
     Ausnahme selbst zur Verfuegung; das ist die einzige Stelle, an der sich
     die Klasse ohne Raten bestimmen laesst.
+
+    Seit 0.9.12 wird die ganze Ursachenkette abgeklappert: die erste Stufe,
+    die eine Klasse ergibt, gewinnt. Eine fehlende Klasse ist 9, nicht 0.
     """
+    for glied in ursachen(err):
+        code = _fehler_code_einzeln(glied)
+        if code != CODE_UNBEKANNT:
+            return code
+    return CODE_UNBEKANNT
+
+
+def _fehler_code_einzeln(err: Exception) -> int:
+    """Die Klasse EINER Ausnahme, ohne ihre Ursachen."""
     name = type(err).__name__
     klein = (str(err) or "").lower()
 
@@ -1113,7 +1239,8 @@ def abgeleitetes_ergaenzen(nummer: str, d: dict, cfg: dict, merker: dict,
     # Er gilt fuer den ganzen Dienst, nicht je Fahrzeug - er steht trotzdem in
     # jeder Statuszeile, weil Loxone je Fahrzeug EINEN Eingang liest. Dass es
     # derselbe Wert ist, sagt der Hilfetext.
-    d["fehlfolge"] = int(fehler_folge)
+    # fehlfolge wird seit 0.9.12 in abbild_schreiben() gesetzt - dort und
+    # nur dort, weil das jeden Takt laeuft und den AKTUELLEN Zaehler kennt.
     d["ladeempf"] = empfehlung
 
     # ---- Geofence ----
@@ -1266,10 +1393,20 @@ def ladung_anhaengen(zeile: dict, tage: int) -> None:
                 if z.startswith("#")
                 or (len(z.split(";")) > 2 and ganz(z.split(";")[2], 0) >= grenze)]
     if len(behalten) < len(zeilen):
+        # Unteilbar: Nebendatei, dann os.replace. write_text oeffnet mit "w"
+        # und kuerzt die Datei zuerst auf null Byte - ein Stromausfall in
+        # diesem Augenblick loescht das Ladeprotokoll, und das ist die
+        # einzige Datei des Plugins, die sich nicht nachbeschaffen laesst.
+        # Jede JSON-Datei geht laengst ueber json_schreiben(); hier fehlte es.
+        neben = DATEI_LADUNGEN.with_name(DATEI_LADUNGEN.name + ".%d.neu" % os.getpid())
         try:
-            DATEI_LADUNGEN.write_text("\n".join(behalten) + "\n", encoding="utf-8")
+            neben.write_text("\n".join(behalten) + "\n", encoding="utf-8")
+            os.replace(str(neben), str(DATEI_LADUNGEN))
         except OSError:
-            pass
+            try:
+                neben.unlink()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1370,10 +1507,20 @@ def fahrzeug_waehlen(fahrzeuge: list, nummer_oder_vin):
         v = str(wert(getattr(f, "vin", None)) or "")
         if v and v.upper() == s.upper():
             return f
+    if s == "":
+        # Kein Wert genannt: das erste Fahrzeug ist die dokumentierte
+        # Vorgabe, und der Endpunkt setzt sie ohnehin schon.
+        return fahrzeuge[0] if fahrzeuge else None
     try:
         n = int(s)
     except (TypeError, ValueError):
-        n = 1
+        # BERICHTIGT IN 0.9.12: hier stand "n = 1". Eine VIN, die zu keinem
+        # Fahrzeug passt, ist keine Zahl - und wurde damit zu Fahrzeug 1.
+        # Gemessen an echten Bibliotheksobjekten: eine um EINE Ziffer
+        # vertippte VIN in einer Loxone-Ausgangsadresse entriegelte das
+        # falsche Auto, und die Antwort lautete SET;OK=1. Ein Rueckfall
+        # ist an dieser Stelle eine Vermutung, keine Wahl.
+        return None
     return fahrzeuge[n - 1] if 1 <= n <= len(fahrzeuge) else None
 
 
@@ -1390,21 +1537,55 @@ def befehl_holen(objekt, name: str):
 # Set-Hook registriert (__on_air_conditioning_settings_change bzw.
 # __on_charging_settings_change). Die vier Zonen sind eine AUDI-EIGENE
 # Erweiterung - der Volkswagen-Connector desselben Geruests hat sie nicht.
+#
+# ENTFALLEN IN 0.9.12: "sitzheizung" ("klima", "seat_heating"). Der
+# Connector 0.3.2 setzt seat_heating an vier Stellen mit _set_value, also
+# nur LESEND; ein _add_on_set_hook oder _is_changeable gibt es dafuer
+# nirgends - als einzigem der neun Eintraege. Eine Zuweisung wirft
+# "TypeError: You cannot set this attribute", und der Anwender las diesen
+# englischen Satz. Der Wert wird weiterhin GELESEN (sitzheizung_ein).
 SCHALTER = {
     "stecker_auto":     ("laden", "auto_unlock"),
     "klima_unlock":     ("klima", "climatization_at_unlock"),
     "scheibe_dauer":    ("klima", "window_heating"),
     "klima_ohne_strom": ("klima", "climatization_without_external_power"),
-    "sitzheizung":      ("klima", "seat_heating"),
     "zone_vl":          ("klima", "front_zone_left_enabled"),
     "zone_vr":          ("klima", "front_zone_right_enabled"),
     "zone_hl":          ("klima", "rear_zone_left_enabled"),
     "zone_hr":          ("klima", "rear_zone_right_enabled"),
 }
 
+
+def setzbar(attr) -> bool:
+    """Kann DIESES Fahrzeug dieses Attribut wirklich setzen?
+
+    NEU IN 0.9.12. Bis 0.9.11 stand ueberall "if attr is None: return
+    fehlt(...)". Das beantwortet die Frage nicht: die Einstellungs-
+    Attribute legt der Konstruktor IMMER an. Ob sie schreibbar sind, steht
+    in _is_changeable, und das ist ab Werk False; der Connector schaltet es
+    nur innerhalb der Abrufzweige frei - also erst, wenn die Schnittstelle
+    das Feld wirklich geliefert hat. An einem frischen AudiVehicle
+    gemessen: alle acht Klimafelder sind vorhanden und keines ist
+    schreibbar; eine Zuweisung wirft TypeError.
+
+    Folge bis 0.9.11: vor dem ersten erfolgreichen Abruf und bei jedem
+    Fahrzeug, das ein Feld nicht liefert, las der Anwender den englischen
+    Wortlaut der Bibliothek statt der Meldung, die fehlt() dafuer bereithaelt.
+
+    Die BEFEHLS-Objekte sind davon nicht betroffen: die legt der Connector
+    nur bedingt an, dort ist "cmd is None" der richtige Test.
+    """
+    return attr is not None and bool(getattr(attr, "_is_changeable", False))
+
 # Befehle, die auf ein Fahrzeug im oeffentlichen Raum wirken. Sie brauchen
 # ZUSAETZLICH zum Steuerungshaken den Haken 'gefahr_ein'.
-GEFAEHRLICH = ("verriegeln", "entriegeln", "hupe", "lichthupe")
+# spin_pruefen ist seit 0.9.12 dabei: der Befehl schickt die S-PIN zur
+# Pruefung an Audi. Er brauchte bis dahin nur den Steuerungshaken und
+# durfte bis zu befehle_stunde mal je Stunde hinausgehen - ein flatternder
+# Baustein in Loxone haette damit dreissig Fehlversuche je Stunde gegen ein
+# Konto abgesetzt, das dafuer sperrt. Das ist nicht weniger eingreifend als
+# eine Lichthupe.
+GEFAEHRLICH = ("verriegeln", "entriegeln", "hupe", "lichthupe", "spin_pruefen")
 
 
 def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
@@ -1528,7 +1709,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
                        f"({lo} bis {hi} Grad).", {})
         einst = getattr(getattr(f, "climatization", None), "settings", None)
         attr = getattr(einst, "target_temperature", None)
-        if attr is None:
+        if not setzbar(attr):
             return fehlt("Zieltemperatur")
         if not probe:
             attr.value = float(temp)
@@ -1551,7 +1732,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
             return (0, f"{p} % ist keine zulaessige Ladegrenze. Zulaessig sind 10 bis 100 %.", {})
         einst = getattr(getattr(f, "charging", None), "settings", None)
         attr = getattr(einst, "target_level", None)
-        if attr is None:
+        if not setzbar(attr):
             return fehlt("Ladegrenze")
 
         # Auf Zehnerschritte runden, bevor der Wert hinausgeht.
@@ -1585,7 +1766,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
                        f"und maximal (16).", {})
         einst = getattr(getattr(f, "charging", None), "settings", None)
         attr = getattr(einst, "maximum_current", None)
-        if attr is None:
+        if not setzbar(attr):
             return fehlt("Ladestrom")
         erlaubt, rest, warum = bremse.strom_erlaubt(cfg, vin, int(a))
         if not erlaubt and warum == "gleich":
@@ -1598,10 +1779,26 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
                        f"{cfg['strom_abstand']} s zurueck, die naechste ist in {rest} s "
                        f"moeglich. Ohne diese Entprellung setzt ein Ueberschussregler das "
                        f"Konto binnen einer Stunde in die Sperre.", {"wartet": rest})
-        if not probe:
-            attr.value = float(int(a))
-            bremse.strom_vermerken(vin, int(a))
-        return erledigt(f"Ladestrom {int(a)} A gesetzt.", {"ampere": int(a)})
+        if probe:
+            return erledigt(f"Ladestrom {int(a)} A gesetzt.", {"ampere": int(a)})
+        attr.value = float(int(a))
+        # ZURUECKLESEN, nicht der Quittung glauben. Der Connector lehnt
+        # einen Zwischenwert nicht ab, sondern setzt still auf die
+        # naechstniedrigere Stufe, die das Fahrzeug fuehrt
+        # (__on_charging_settings_change). "Ladestrom 16 A gesetzt." war
+        # dann eine stille Falschaussage, wenn 13 A angekommen sind - beim
+        # Ueberschussladen rund 0,7 kW, die der Loxone-Regler nicht sieht.
+        ist = wert(attr)
+        genommen = int(ist) if ist is not None else int(a)
+        # Gemerkt wird, was WIRKLICH steht: sonst weist die Entprellung ein
+        # Nachsetzen auf den tatsaechlichen Wert als "gleich" ab.
+        bremse.strom_vermerken(vin, genommen)
+        if genommen != int(a):
+            return erledigt(
+                f"Ladestrom {int(a)} A angefordert - das Fahrzeug nimmt "
+                f"{genommen} A. Es fuehrt feste Stufen und rundet ab.",
+                {"ampere": genommen, "angefordert": int(a)})
+        return erledigt(f"Ladestrom {genommen} A gesetzt.", {"ampere": genommen})
 
     if aktion in ("scheibe_ein", "scheibe_aus"):
         cmd = befehl_holen(getattr(f, "window_heatings", None), "start-stop")
@@ -1635,7 +1832,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         else:
             einst = getattr(getattr(f, "charging", None), "settings", None)
         attr = getattr(einst, feld, None)
-        if attr is None:
+        if not setzbar(attr):
             return fehlt(name)
         if not probe:
             attr.value = (w == "1")
@@ -1764,7 +1961,7 @@ MQTT_TEXTE = ("zustand_text", "klima_text", "ladezustand_text", "tueren_namen",
 
 
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
-                     code: int = CODE_OK) -> dict:
+                     code: int = CODE_OK, fehler_folge: int = 0) -> dict:
     """Schreibt den Zwischenspeicher.
 
     Bei einem fehlgeschlagenen Abruf bleiben die zuletzt gueltigen Werte
@@ -1774,6 +1971,13 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
     Ausfallerkennung in Loxone haengt.
     """
     fahrzeuge = stand.get("fahrzeuge") or {}
+    # FEHLFOLGE gilt fuer den ganzen Dienst, steht aber in jeder
+    # Fahrzeugzeile (so beschreibt es auch die Feldtabelle). Gesetzt wird
+    # sie HIER, weil diese Funktion jeden Takt laeuft - auch bei einer
+    # Stoerung, in der die Karten selbst nicht neu gebaut werden.
+    for _f in fahrzeuge.values():
+        if isinstance(_f, dict):
+            _f["fehlfolge"] = int(fehler_folge)
     lox = {
         "ok": ok,
         "fehler": fehler,
@@ -1830,9 +2034,19 @@ def merker_lesen() -> dict:
     """Der Merker haelt fest, was ZWISCHEN zwei Abrufen gilt: der letzte
     Ladezustand, der Anfang eines Fahrabschnitts, der letzte Verbrauch.
 
-    Er ueberlebt einen Neustart des Dienstes mit Absicht: sonst ginge nach
-    jedem Update der angefangene Ladevorgang verloren, und der Verbrauch
-    entstuende erst nach der uebernaechsten Fahrt wieder.
+    Er ueberlebt einen NEUSTART des Dienstes mit Absicht: sonst ginge der
+    angefangene Ladevorgang verloren, und der Verbrauch entstuende erst
+    nach der uebernaechsten Fahrt wieder.
+
+    BERICHTIGT IN 0.9.12. Hier stand "sonst ginge nach jedem UPDATE ..." -
+    das war falsch. Am 05.09.2026 an sbin/plugininstall.pl nachgemessen
+    (master, 2054 Zeilen, 65 120 Byte): purge_installation wird an ZWEI
+    Stellen gerufen, :233 im Deinstallations- und :886 im Upgrade-Zweig;
+    Block 7 haengt allein an "if ($pfolder)" (:1626) und loescht
+    data/plugins/<ordner>/ in :1631, ohne $option zu pruefen. Ein Update
+    raeumt diesen Ordner also ab. Damit merker.json trotzdem ueberlebt,
+    sichert preupgrade.sh ihn seit 0.9.12 NEBEN den Ordner und
+    postinstall.sh spielt ihn zurueck.
     """
     return json_lesen(DATEI_MERKER)
 
@@ -2043,9 +2257,19 @@ def dienst(einmal: bool = False) -> int:
         # tokenstore_file: die Bibliothek legt hier ihre Anmeldemarken ab und
         # spart sich damit bei jedem Start eine neue Anmeldung. Die Datei
         # bekommt deshalb die Rechte 0600.
-        cc = CarConnectivity(config=bibliothek_config(z, cfg),
-                             tokenstore_file=str(DATEI_TOKEN),
-                             cache_file=str(DATEI_ZWISCHEN))
+        # umask 0077 fuer die Dauer des Anlegens: die Bibliothek legt
+        # tokenstore_file und cache_file SELBST an, mit der umask des
+        # Prozesses (auf einem LoxBerry ueblich 022 -> 0644). rechte_sichern()
+        # zieht die Rechte danach nach, aber erst danach - und die Bibliothek
+        # schreibt die Marken bei jeder Auffrischung neu. In diesem Fenster
+        # stuende ein gueltiges Zugangstoken des myAudi-Kontos weltlesbar da.
+        _alte_umask = os.umask(0o077)
+        try:
+            cc = CarConnectivity(config=bibliothek_config(z, cfg),
+                                 tokenstore_file=str(DATEI_TOKEN),
+                                 cache_file=str(DATEI_ZWISCHEN))
+        finally:
+            os.umask(_alte_umask)
     except Exception as err:  # noqa: BLE001
         meldung = fehlertext(err)
         code = fehler_code(err)
@@ -2112,7 +2336,7 @@ def dienst(einmal: bool = False) -> int:
 
             if ok and fahrzeuge:
                 stand = {"ts": int(time.time()), "fahrzeuge": fahrzeuge}
-            abbild_schreiben(stand, cfg, ok, fehler, code)
+            abbild_schreiben(stand, cfg, ok, fehler, code, fehler_folge)
             merker_schreiben(merker)
             zustand_schreiben(ok=ok, fehler=fehler, fehler_code=code, zyklus=zyklus,
                               fehler_folge=fehler_folge, pid=os.getpid(),
@@ -2304,8 +2528,9 @@ def selbsttest() -> int:
                   f"hoechstens {c['befehle_stunde']} schaltende Befehle je Stunde, "
                   f"Ladestrom fruehestens alle {c['strom_abstand']} s")
     if c["kapazitaet"] > 0:
-        zeilen.append("[OK]   Batteriekapazitaet %d kWh hinterlegt - Verbrauch und geladene "
-                      "Menge werden gerechnet" % c["kapazitaet"])
+        zeilen.append("[OK]   Batteriekapazitaet %s kWh hinterlegt - Verbrauch und geladene "
+                      "Menge werden gerechnet"
+                      % ("%g" % float(c["kapazitaet"])))
     else:
         zeilen.append("[INFO] Keine Batteriekapazitaet hinterlegt. Verbrauch und geladene "
                       "Menge entstehen deshalb nicht - geraten wird nichts")
@@ -2356,8 +2581,8 @@ def selbsttest() -> int:
 
     zeilen.append("")
     zeilen.append("Am Audi-Connector 0.3.2 GEMESSEN und deshalb dauerhaft leer:")
-    zeilen.append("  Kennzeichen, Baujahr, Hersteller, Softwarestand, Handbremse,")
-    zeilen.append("  Batteriekapazitaet und Oelstand. Der Connector fuellt diese sieben")
+    zeilen.append("  Kennzeichen, Baujahr, Softwarestand, Handbremse,")
+    zeilen.append("  Batteriekapazitaet und Oelstand. Der Connector fuellt diese sechs")
     zeilen.append("  Attribute an keiner Stelle - das ist kein Fehler dieses Plugins und")
     zeilen.append("  auch keiner Ihres Fahrzeugs.")
     zeilen.append("")

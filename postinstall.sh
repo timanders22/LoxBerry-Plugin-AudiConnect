@@ -35,6 +35,17 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+# Fail-closed wie in uninstall/uninstall: sieht die Lage nicht wie ein
+# LoxBerry aus, wird nichts angelegt. Ohne diese Zeile war BASE nach einem
+# fehlgeschlagenen cd leer, und der Installer legte als root /data/plugins,
+# /log/plugins und /config/plugins im Wurzelverzeichnis an - mit Erfolg,
+# weil root das darf, und mit einer Installation, die Erfolg meldet.
+if [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<FAIL> $BASE sieht nicht wie ein LoxBerry aus (config/plugins und"
+    echo "<FAIL> data/plugins fehlen). Es wurde nichts angelegt."
+    exit 1
+fi
+
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"
@@ -49,6 +60,14 @@ mkdir -p "$PDATA" "$PLOG" "$PCONFIG" "$PDATA/befehle" "$PDATA/antworten" || {
     exit 1
 }
 chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+# Die Rechte gleich hier setzen, nicht erst am Ende. Zwischen dem Anlegen
+# und dem chown am Dateiende liegen sieben Abbruchstellen, und eine davon
+# sagt ausdruecklich "Das Plugin bleibt installiert". Nach so einem
+# Abbruch gehoerten die Ordner und die frisch angelegte zugang.json dem
+# Benutzer root; die Oberflaeche laeuft als loxberry und koennte die
+# Zugangsdaten dann nicht speichern. Am Ende wird es wiederholt, weil die
+# venv erst dort steht.
+chown -R loxberry:loxberry "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null || true
 
 # ---------- Konfiguration ----------
 [ -f "$PCONFIG/audi.json" ] || echo '{}' > "$PCONFIG/audi.json"
@@ -64,11 +83,53 @@ for f in audi.json zugang.json; do
     if [ -f "$BK" ]; then
         INHALT=$(cat "$CF" 2>/dev/null)
         if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-            cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
+            if cp -p "$BK" "$CF"; then
+                echo "<OK> $f aus Sicherung wiederhergestellt."
+            else
+                echo "<FAIL> $f liess sich nicht wiederherstellen ($BK)."
+            fi
         fi
     fi
 done
 chmod 600 "$PCONFIG/zugang.json"
+
+# ---------- Den Datenordner zurueckholen ----------
+#
+# NEU IN 0.9.12. Ein Upgrade raeumt data/plugins/<ordner>/ ab - nachgemessen
+# am 05.09.2026 an sbin/plugininstall.pl (Einzelheiten im Kopf von
+# preupgrade.sh). Bis 0.9.11 stand hier das Gegenteil, und mit jedem Update
+# gingen der Verlauf, das Ladeprotokoll, der Merker und die Anmeldemarken
+# verloren, ohne dass irgendwo etwas davon stand.
+#
+# Zurueckgespielt wird nur, was fehlt: eine Neuinstallation neben einer
+# alten Rettung soll den frischen Stand nicht ueberschreiben.
+RETTUNG="$BASE/data/plugins/$PFOLDER.rettung"
+if [ -d "$RETTUNG" ]; then
+    for f in merker.json token.json; do
+        if [ -f "$RETTUNG/$f" ] && [ ! -s "$PDATA/$f" ]; then
+            if cp -p "$RETTUNG/$f" "$PDATA/$f"; then
+                echo "<OK> $f zurueckgespielt."
+            else
+                echo "<FAIL> $f liess sich nicht zurueckspielen."
+            fi
+        fi
+    done
+    if [ -d "$RETTUNG/verlauf" ] && [ ! -d "$PDATA/verlauf" ]; then
+        if cp -rp "$RETTUNG/verlauf" "$PDATA/verlauf"; then
+            echo "<OK> Verlauf und Ladeprotokoll zurueckgespielt."
+        else
+            echo "<FAIL> Der Verlauf liess sich nicht zurueckspielen."
+        fi
+    fi
+    # Erst wegraeumen, wenn wirklich etwas angekommen ist - sonst waere ein
+    # fehlgeschlagenes Zurueckspielen ein endgueltiger Verlust.
+    if [ -s "$PDATA/merker.json" ] || [ -d "$PDATA/verlauf" ] || [ -s "$PDATA/token.json" ]; then
+        rm -rf "$RETTUNG"
+    else
+        echo "<INFO> $RETTUNG bleibt liegen - es kam nichts an."
+    fi
+fi
+chmod 600 "$PDATA/token.json" 2>/dev/null || true
 
 # ---------- Python suchen ----------
 PY=""
@@ -155,8 +216,13 @@ fi
 # carconnectivity-plugin-mqtt, das dieses Plugin nicht benutzt.
 if "$VENV/bin/python3" -c 'import paho.mqtt.client' 2>/dev/null; then
     echo "<OK> paho-mqtt ist bereits vorhanden."
-elif "$VENV/bin/python3" -m pip install --no-cache-dir --prefer-binary "paho-mqtt" \
-        >/dev/null 2>&1 \
+# Die Ausgabe wird gefangen, nicht verworfen. Bis 0.9.11 stand hier
+# ">/dev/null 2>&1", und damit war der GRUND fort - kein Netz, PyPI nicht
+# erreichbar, kein passendes Rad fuer die Architektur, ein Proxy. Die vier
+# INFO-Zeilen nannten die Folge und nie die Ursache. Der Hauptaufruf weiter
+# oben macht es richtig: dort ist die Ausgabe sichtbar.
+elif PAHO_AUSGABE=$("$VENV/bin/python3" -m pip install --no-cache-dir \
+        --prefer-binary "paho-mqtt" 2>&1) \
      && "$VENV/bin/python3" -c 'import paho.mqtt.client' 2>/dev/null; then
     echo "<OK> paho-mqtt installiert (fuer Vorklimatisierung und Ladeempfehlung)."
 else
@@ -164,6 +230,9 @@ else
     echo "<INFO> nur die Vorklimatisierung am Abfahrtsassistenten und die"
     echo "<INFO> Ladeempfehlung aus einem fremden MQTT-Thema bleiben wirkungslos."
     echo "<INFO> Beide sind ab Werk ausgeschaltet."
+    if [ -n "$PAHO_AUSGABE" ]; then
+        echo "<INFO> pip meldete: $(echo "$PAHO_AUSGABE" | tail -n 3 | tr '\n' ' ')"
+    fi
 fi
 
 # Rueckgabewert allein genuegt nicht - es wird nachgesehen, ob sich beide
@@ -180,11 +249,21 @@ IST=$("$VENV/bin/python3" -c 'import importlib.metadata as m; print(m.version("c
 echo "<OK> carconnectivity geladen, Fassungen: $IST"
 
 # ---------- Rechte ----------
-chmod 755 "$PBIN/audi.py" 2>/dev/null
-chmod 755 "$PBIN/dienst.sh" 2>/dev/null
-chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
-chmod 600 "$PCONFIG/zugang.json"
-chmod 600 "$PDATA/token.json" 2>/dev/null
+# JEDER Rueckgabewert wird geprueft - das verspricht der Kopf dieser Datei,
+# und der Rechte-Block war bis 0.9.11 der einzige, der es nicht tat: fuenf
+# Aufrufe, alle mit unterdrueckter Fehlerausgabe, keiner geprueft, und
+# unmittelbar danach "<OK> Installation abgeschlossen." Fehlt der Benutzer
+# loxberry, kann der Dienst spaeter weder Protokoll noch Daten schreiben.
+chmod 755 "$PBIN/audi.py" 2>/dev/null || echo "<INFO> chmod auf audi.py nicht moeglich."
+chmod 755 "$PBIN/dienst.sh" 2>/dev/null || echo "<INFO> chmod auf dienst.sh nicht moeglich."
+if ! chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null; then
+    echo "<FAIL> Die Dateien liessen sich nicht dem Benutzer loxberry zuordnen."
+    echo "<FAIL> Gibt es den Benutzer? (id loxberry). Ohne die richtigen Rechte"
+    echo "<FAIL> kann der Dienst weder Daten noch Protokoll schreiben."
+    exit 1
+fi
+chmod 600 "$PCONFIG/zugang.json" || echo "<INFO> chmod 600 auf zugang.json nicht moeglich."
+chmod 600 "$PDATA/token.json" 2>/dev/null || true
 
 # ---------- Dienst wieder starten, wenn er vor dem Upgrade lief ----------
 #
@@ -192,11 +271,18 @@ chmod 600 "$PDATA/token.json" 2>/dev/null
 # laufender Vorgang angehalten wurde. Bei einer Erstinstallation gibt es
 # ihn nicht, und dann passiert hier nichts.
 #
-# Er behebt keinen Stillstand: der Sollmerker unter data/ ueberlebt das
-# Upgrade (gemessen an sbin/plugininstall.pl), und der Cron-Waechter holt
-# den Dienst binnen einer Minute zurueck. Dieser Start hier ist sofort und
-# unabhaengig vom Waechter - das ist der ganze Gewinn, und mehr wird nicht
-# behauptet.
+# BERICHTIGT IN 0.9.12. Hier stand, der Sollmerker unter data/ ueberlebe
+# das Upgrade und der Cron-Waechter hole den Dienst ohnehin binnen einer
+# Minute zurueck; dieser Start sei nur eine Verkuerzung.
+#
+# Beides ist falsch. Nachgemessen am 05.09.2026 an sbin/plugininstall.pl
+# (Einzelheiten im Kopf von preupgrade.sh): das Upgrade raeumt
+# data/plugins/<ordner>/ ab, und damit ist soll_laufen fort. bin/dienst.sh
+# startet im Waechterzweig NUR, wenn es diese Datei gibt. Der Waechter holt
+# den Dienst also NICHT zurueck - dieser Merker ist das Einzige, was ihn
+# wieder anwirft. Deshalb haengt er seit 0.9.12 am Sollmerker und nicht
+# mehr daran, ob gerade ein Vorgang lief: ein zum Upgrade-Zeitpunkt
+# abgestuerzter Dienst waere sonst dauerhaft aus geblieben.
 #
 # Er wird IN JEDEM FALL entfernt, auch wenn der Start scheitert. Ein
 # liegengebliebener Merker startete den Dienst bei einer spaeteren

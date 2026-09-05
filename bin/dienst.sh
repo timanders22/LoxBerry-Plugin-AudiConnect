@@ -134,6 +134,23 @@ anhalten() {
         kill -9 "$P" 2>/dev/null
         sleep 1
     fi
+    # NACHSEHEN, ob er wirklich weg ist - BERICHTIGT IN 0.9.12.
+    #
+    # Bis 0.9.11 folgte hier ohne weitere Pruefung "rm -f $PID" und
+    # "angehalten", und die Rueckgabewerte beider kill wurden verworfen.
+    # Das ist woertlich der Fall, den der Kopf dieser Datei beschreibt:
+    # gehoert der Vorgang einem anderen Benutzer - nach einem Upgrade von
+    # 0.9.10, wo der Abstieg auf loxberry noch fehlte, laeuft der alte
+    # Dienst als root -, scheitert das kill mit EPERM, das rm gelingt aber,
+    # weil das Verzeichnis loxberry gehoert. Danach meldet "laeuft" false,
+    # ein anschliessendes "start" legt ein ZWEITES Exemplar an, und beide
+    # fuehren ihre eigene, prozesslokale Bremse - die Drosselung, wegen der
+    # es sie gibt, ist damit halbiert.
+    if laeuft; then
+        echo "FEHLER: Vorgang $P laeuft weiter - die PID-Datei bleibt stehen."
+        echo "        Gehoert er einem anderen Benutzer? ps -o user= -p $P"
+        return 1
+    fi
     rm -f "$PID"
     echo "angehalten"
     return 0

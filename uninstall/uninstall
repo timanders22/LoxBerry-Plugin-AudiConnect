@@ -121,6 +121,24 @@ done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
 rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
 
+# NEU IN 0.9.12: der Rettungsordner neben dem Datenordner.
+# preupgrade.sh legt dort Verlauf, Merker und token.json ab, damit sie ein
+# Upgrade ueberstehen (der Installer raeumt data/plugins/<ordner>/ ab).
+# Beim DEINSTALLIEREN ist genau das falsch: in token.json stehen die
+# Anmeldemarken des myAudi-Kontos. Wer das Plugin entfernt, erwartet nicht,
+# dass sie auf der Karte bleiben - dieselbe Ueberlegung wie bei den beiden
+# .backup-Dateien weiter unten.
+RETTUNG="$BASE/data/plugins/$PDIR.rettung"
+if [ -d "$RETTUNG" ]; then
+    if [ -f "$RETTUNG/token.json" ]; then
+        dd if=/dev/zero of="$RETTUNG/token.json" bs=1 \
+           count=$(stat -c%s "$RETTUNG/token.json" 2>/dev/null || echo 0) \
+           conv=notrunc 2>/dev/null || true
+    fi
+    rm -rf "$RETTUNG"
+    echo "<OK> Rettungsordner entfernt (er enthielt die Anmeldemarken)."
+fi
+
 # ---------------------------------------------------------------
 # 2. Sicherungsdateien ausserhalb der Plugin-Ordner
 # ---------------------------------------------------------------

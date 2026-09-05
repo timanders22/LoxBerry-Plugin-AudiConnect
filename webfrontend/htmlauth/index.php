@@ -146,19 +146,14 @@ if ($au_post && isset($_POST['verlauf_csv'])) {
 if ($au_post && isset($_POST['speichern'])) {
     $au_cfg = au_config();
 
-    foreach (array(
-        // Untergrenze 180 s: der Audi-Connector wirft darunter beim
-        // Anlegen einen ValueError. Lieber hier abweisen als dort abstuerzen.
-        'intervall'      => array(180, 3600),
-        'takt_wartung'   => array(1, 240),
-        'temp_min'       => array(10, 30),
-        'temp_max'       => array(10, 30),
-        'verlauf_tage'   => array(1, 90),
-        'wartezeit'      => array(0, 30),
-        'abruf_abstand'  => array(0, 3600),
-        'befehle_stunde' => array(0, 500),
-        'strom_abstand'  => array(0, 3600),
-    ) as $au_feld => $au_grenzen) {
+    /* Die Grenzen stehen seit 0.9.12 in au_grenzen() - EINE Liste fuer
+     * Formular und Sicherung. Bis dahin standen sie zweimal hier und gar
+     * nicht in der Sicherung; die pruefte nur Schluesselnamen. */
+    $au_alle_grenzen = au_grenzen();
+    foreach (array('intervall', 'takt_wartung', 'temp_min', 'temp_max',
+                   'verlauf_tage', 'wartezeit', 'abruf_abstand',
+                   'befehle_stunde', 'strom_abstand') as $au_feld) {
+        $au_grenzen = $au_alle_grenzen[$au_feld];
         $au_wert = isset($_POST[$au_feld]) ? trim((string) $_POST[$au_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $au_wert)) {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_ZAHL'), au_t('EINST.L_' . strtoupper($au_feld)));
@@ -208,7 +203,11 @@ if ($au_post && isset($_POST['speichern'])) {
      * irgendwann ein leeres Passwort in der Datei, ohne dass es jemand merkt.
      * Fuer die E-Mail gilt: ein leeres Feld wird als "nicht aendern" gelesen,
      * nicht als "Konto loeschen". Zum Loeschen gibt es den eigenen Knopf. */
-    $au_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['email']));
+    // isset(): unter PHP 8.4 gibt ein fehlendes Feld sonst
+    // "Warning: Undefined array key" aus - und zwar VOR lbheader().
+    // Die Maske in Zeile 19 deckt das seit PHP 8 nicht mehr ab.
+    $au_email = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        isset($_POST['email']) ? (string) $_POST['email'] : ''));
     $au_pw = isset($_POST['passwort']) ? (string) $_POST['passwort'] : '';
     if ($au_email !== '' && !filter_var($au_email, FILTER_VALIDATE_EMAIL)) {
         $au_fehler[] = au_t('EINST.FEHLER_EMAIL');
@@ -254,15 +253,11 @@ if ($au_post && isset($_POST['save_automatik'])) {
     $au_acfg['ladeempf_ein'] = isset($_POST['ladeempf_ein']) ? 1 : 0;
     $au_acfg['ladeempf_unter'] = isset($_POST['ladeempf_unter']) ? 1 : 0;
 
-    foreach (array(
-        'abfahrt_vorlauf'  => array(1, 120),
-        'abfahrt_temp'     => array(10, 30),
-        'abfahrt_alter'    => array(60, 3600),
-        'abfahrt_fahrzeug' => array(1, 99),
-        'ladeempf_alter'   => array(60, 86400),
-        'kapazitaet'       => array(0, 500),
-        'heim_radius'      => array(20, 5000),
-    ) as $au_feld => $au_grenzen) {
+    $au_alle_grenzen = au_grenzen();
+    foreach (array('abfahrt_vorlauf', 'abfahrt_temp', 'abfahrt_alter',
+                   'abfahrt_fahrzeug', 'ladeempf_alter', 'kapazitaet',
+                   'heim_radius') as $au_feld) {
+        $au_grenzen = $au_alle_grenzen[$au_feld];
         $au_wert = isset($_POST[$au_feld]) ? trim((string) $_POST[$au_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $au_wert)) {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_ZAHL'), au_t('EINST.L_' . strtoupper($au_feld)));
@@ -402,6 +397,16 @@ if ($au_post && isset($_POST['zugang_loeschen'])) {
 /* ---------------- Neue Token ---------------- */
 if ($au_post && isset($_POST['token_neu'])) {
     $au_art = (string) $_POST['token_neu'];
+    /* NEU IN 0.9.12: unbekannte Art abweisen. Bis 0.9.11 meldete ein POST
+     * mit token_neu=<irgendetwas> gruen "Es wurde ein neues Token erzeugt",
+     * ohne eines erzeugt zu haben - und schrieb die Konfiguration ohne Not
+     * neu. Der Anwender sucht danach in Loxone Config nach einem Token,
+     * das sich nicht geaendert hat. */
+    if (!in_array($au_art, array('lesen', 'schalten', 'beide'), true)) {
+        $au_fehler[] = au_t('LOX.TOKEN_ART_UNBEKANNT');
+        $au_tab = 'tab-loxone';
+        $au_art = '';
+    }
     $au_cfg = au_config();
     if ($au_art === 'lesen' || $au_art === 'beide') {
         $au_cfg['aktionstoken'] = au_token_erzeugen();
@@ -409,12 +414,14 @@ if ($au_post && isset($_POST['token_neu'])) {
     if ($au_art === 'schalten' || $au_art === 'beide') {
         $au_cfg['schalttoken'] = au_token_erzeugen();
     }
-    if (au_config_speichern($au_cfg)) {
-        $au_meldungen[] = au_t('LOX.TOKEN_NEU');
-    } else {
-        $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
+    if ($au_art !== '') {
+        if (au_config_speichern($au_cfg)) {
+            $au_meldungen[] = au_t('LOX.TOKEN_NEU');
+        } else {
+            $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
+        }
+        $au_tab = 'tab-loxone';
     }
-    $au_tab = 'tab-loxone';
 }
 
 /* ---------------- Log leeren ---------------- */
@@ -439,6 +446,73 @@ if ($au_post && isset($_POST['selbsttest'])) {
     $au_testausgabe = au_selbsttest();
     $au_tab = 'tab-test';
 }
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * DIESER HANDLER STEHT VOR DEM LADEBLOCK - DAS IST BAUVORSCHRIFT.
+ * Bis 0.9.11 stand er dahinter. Gemessen: nach einem erfolgreichen
+ * Zurueckspielen zeigte die ausgelieferte Seite den ALTEN Stand - alte
+ * Werte in den Feldern, die ALTEN Token in der Adresstabelle des Reiters
+ * Loxone, und ein Formularmerkmal, das nicht mehr passte. Der Anwender
+ * schrieb die verworfenen Token nach Loxone Config ab, und jeder Knopf der
+ * Seite war bis zum naechsten Neuladen tot.
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($au_post && isset($_POST['au_zurueck'])) {
+    if (!isset($_FILES['au_sicherung']) || !is_array($_FILES['au_sicherung'])
+        || !isset($_FILES['au_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['au_sicherung']['tmp_name'])) {
+        $au_fehler[] = au_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['au_sicherung']['size'] > 262144) {
+        $au_fehler[] = au_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($au_neu, $au_zneu, $au_mangel, $au_n, $au_fehlend) = au_sicherung_lesen(
+            (string) @file_get_contents($_FILES['au_sicherung']['tmp_name']));
+        if ($au_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $au_fehler[] = au_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $au_mangel);
+        } elseif (!au_config_speichern($au_neu)) {
+            $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
+        } else {
+            /* Die Zugangsdaten liegen in ihrer eigenen Datei mit Rechten 0600
+             * und werden nur geschrieben, wenn die Sicherung sie traegt. Eine
+             * aeltere Sicherung ohne den Block laesst sie unberuehrt. */
+            if ($au_zneu !== null
+                && !au_zugang_speichern($au_zneu['email'], $au_zneu['passwort'],
+                                        $au_zneu['spin'])) {
+                $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
+            }
+            $au_meldungen[] = sprintf(au_t('EINST.SICH_UEBERNOMMEN'), $au_n);
+            if ($au_fehlend > 0) {
+                /* Was die Datei nicht enthielt, behaelt seinen bisherigen
+                 * Wert - und das wird gesagt, statt es stillschweigend auf
+                 * die Werkseinstellung zu setzen. */
+                $au_meldungen[] = sprintf(au_t('EINST.SICH_FEHLEND'), $au_fehlend);
+            }
+            /* Punkt 7 des Hausstandards: den Dienst nachziehen UND sagen, was
+             * mit ihm geschah. intervall, mqtt_topic und die Automatikwerte
+             * liest bin/audi.py beim Start; ein laufender Dienst arbeitete
+             * sonst mit dem alten Stand weiter, waehrend die Seite den neuen
+             * zeigt. */
+            if (au_dienst_pid() > 0) {
+                /* au_dienst() gibt array(ok, Ausgabe) zurueck - der
+                 * Rueckgabewert allein ist immer wahr. */
+                list($au_dok, $au_daus) = au_dienst('restart');
+                $au_meldungen[] = $au_dok
+                    ? au_t('EINST.SICH_DIENST_NEU')
+                    : au_t('EINST.SICH_DIENST_FEHL') . ' ' . au_e($au_daus);
+            } else {
+                $au_meldungen[] = au_t('EINST.SICH_DIENST_AUS');
+            }
+        }
+    }
+    $au_tab = 'tab-settings';
+}
+
 
 /* ---------------- Laden ---------------- */
 $au_cfg = au_config();
@@ -480,7 +554,10 @@ function au_formfelder($tab, $ftoken)
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($au_post && isset($_POST['au_sichern'])) {
-    $au_js = json_encode(au_config(),
+    /* au_sicherung_bauen() statt au_config(): die Datei traegt seit 0.9.12
+     * auch die Zugangsdaten (Hausstandard) und einen lesbaren Kopf, aber
+     * NICHT das Formulargeheimnis. */
+    $au_js = json_encode(au_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($au_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -491,35 +568,6 @@ if ($au_post && isset($_POST['au_sichern'])) {
     }
     $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
 }
-
-/* ---------------- Einstellungen zurueckspielen ----------------
- *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
-if ($au_post && isset($_POST['au_zurueck'])) {
-    if (!isset($_FILES['au_sicherung']) || !is_array($_FILES['au_sicherung'])
-        || !isset($_FILES['au_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['au_sicherung']['tmp_name'])) {
-        $au_fehler[] = au_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['au_sicherung']['size'] > 262144) {
-        $au_fehler[] = au_t('EINST.SICH_ZU_GROSS');
-    } else {
-        list($au_neu, $au_mangel, $au_n) = au_sicherung_lesen(
-            (string) @file_get_contents($_FILES['au_sicherung']['tmp_name']));
-        if ($au_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $au_fehler[] = au_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $au_mangel);
-        } elseif (au_config_speichern($au_neu)) {
-            $au_meldungen[] = sprintf(au_t('EINST.SICH_UEBERNOMMEN'), $au_n);
-        } else {
-            $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
-        }
-    }
-}
-
 
 if ($au_rahmen) {
     LBWeb::lbheader('Audi Connect', 'https://wiki.loxberry.de/', 'help.html');
@@ -1181,7 +1229,13 @@ foreach ($au_endpunkte as $au_art => $au_info) {
 <?php foreach (au_befehle() as $au_ak => $au_eig) {
     if ($au_ak === 'einstellung') { continue; }
     if ($au_eig['gefahr'] && empty($au_cfg['gefahr_ein'])) { continue; }
-    $au_z = '/plugins/' . $au_p['plugin'] . '/index.php?token=' . $au_stoken
+    /* au_e() um BEIDE eingesetzten Werte. BERICHTIGT IN 0.9.12: bis 0.9.11
+     * ging das Schalttoken hier als einzige von achtzehn Stellen roh in die
+     * Seite. Ein Token mit Auszeichnung darin - erreichbar ueber eine
+     * zurueckgespielte Sicherung - stand danach zwoelfmal unmaskiert im
+     * ausgelieferten HTML. Der Rest der Zeile bleibt roh, weil er die
+     * fertigen Entitaeten &amp; und &lt;v&gt; traegt. */
+    $au_z = '/plugins/' . au_e($au_p['plugin']) . '/index.php?token=' . au_e($au_stoken)
           . '&amp;aktion=' . $au_ak . ($au_eig['ohne_fz'] ? '' : '&amp;fahrzeug=1');
     if ($au_eig['zusatz'] === 'temp')    { $au_z .= '&amp;temp=&lt;v&gt;'; }
     if ($au_eig['zusatz'] === 'prozent') { $au_z .= '&amp;prozent=&lt;v&gt;'; }

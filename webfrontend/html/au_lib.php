@@ -182,6 +182,14 @@ function au_vorgaben()
         // Nur hier, nicht im Dienst
         'aktionstoken'      => '',
         'schalttoken'       => '',
+        // Grundlage des Formularmerkmals. NEU IN 0.9.12 und ein eigenes
+        // Geheimnis - bis 0.9.11 entstand das Merkmal aus dem LESEtoken.
+        // Das steht in jeder Loxone-Adresse und in jeder weitergegebenen
+        // Projektdatei; wer es hatte, konnte das Merkmal ausrechnen und
+        // damit jeden POST-Zweig der Oberflaeche bedienen - auch die
+        // schaltenden Knoepfe des Reiters Test. Es wird nie angezeigt und
+        // geht nicht in die Sicherung.
+        'formgeheimnis'     => '',
         'nur_miniserver'    => 0,
         'wartezeit'         => 8,
     );
@@ -196,13 +204,26 @@ function au_json_lesen($pfad)
     return is_array($d) ? $d : array();
 }
 
-function au_config()
+/**
+ * Die Konfiguration, mit den Vorgaben aufgefuellt.
+ *
+ * $heilen ist NEU IN 0.9.12 und ab Werk true - die angemeldete Oberflaeche
+ * darf heilen. Der UNANGEMELDETE Endpunkt ruft au_config(false):
+ * gemessen an 0.9.11 hat ein Aufruf ganz ohne Token die Konfiguration aus
+ * der Zweitschrift zurueckgeschrieben (2 Byte wurden 105) und wurde
+ * anschliessend korrekt mit GRUND=TOKEN abgewiesen. Wer seine Token
+ * bewusst verwirft, bekam sie damit vom naechsten Fremdaufruf zurueck.
+ * Der Hausstandard verlangt: der unangemeldete Bereich legt nichts an.
+ */
+function au_config($heilen = true)
 {
     $p = au_paths();
     // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen.
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
+    if ($heilen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
+        if (!is_dir($p['configdir'])) {
+            @mkdir($p['configdir'], 0775, true);
+        }
         @copy($p['sicherung'], $p['config']);
     }
     $cfg = au_json_lesen($p['config']);
@@ -349,8 +370,12 @@ function au_token($art = 'lesen')
 {
     $schluessel = ($art === 'schalten') ? 'schalttoken' : 'aktionstoken';
     $cfg = au_config();
+    // Seit 0.9.12 haengt auch das Formulargeheimnis an dieser Sperre: es
+    // entsteht genauso einmalig und darf genausowenig bei jedem Aufruf
+    // neu gewuerfelt werden.
     if (trim((string) $cfg['aktionstoken']) !== ''
-        && trim((string) $cfg['schalttoken']) !== '') {
+        && trim((string) $cfg['schalttoken']) !== ''
+        && trim((string) (isset($cfg['formgeheimnis']) ? $cfg['formgeheimnis'] : '')) !== '') {
         return (string) $cfg[$schluessel];
     }
 
@@ -372,9 +397,9 @@ function au_token($art = 'lesen')
     // Zweite Pruefung hinter der Sperre: waehrend des Wartens hat ein
     // anderer Prozess vermutlich schon geschrieben.
     $cfg = au_config();
-    $vorher = $cfg['aktionstoken'] . '|' . $cfg['schalttoken'];
+    $vorher = au_token_kennung($cfg);
     $cfg = au_token_ergaenzen($cfg);
-    if ($cfg['aktionstoken'] . '|' . $cfg['schalttoken'] !== $vorher) {
+    if (au_token_kennung($cfg) !== $vorher) {
         au_config_speichern($cfg);
     }
 
@@ -383,14 +408,28 @@ function au_token($art = 'lesen')
     return (string) $cfg[$schluessel];
 }
 
-/** Ergaenzt fehlende Token, ohne vorhandene anzufassen. */
+/** Die drei Geheimnisse in einer Zeichenkette - fuer den Vorher-Nachher-Vergleich. */
+function au_token_kennung($cfg)
+{
+    $teil = array();
+    foreach (array('aktionstoken', 'schalttoken', 'formgeheimnis') as $k) {
+        $teil[] = (string) (isset($cfg[$k]) ? $cfg[$k] : '');
+    }
+    return implode('|', $teil);
+}
+
+/**
+ * Ergaenzt fehlende Geheimnisse, ohne vorhandene anzufassen.
+ *
+ * Unterschieden wird am WERT (leer nach trim), nicht mit empty() - ein
+ * Token '0' waere sonst fuer immer 'fehlend'.
+ */
 function au_token_ergaenzen($cfg)
 {
-    if (trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '')) === '') {
-        $cfg['aktionstoken'] = au_token_erzeugen();
-    }
-    if (trim((string) (isset($cfg['schalttoken']) ? $cfg['schalttoken'] : '')) === '') {
-        $cfg['schalttoken'] = au_token_erzeugen();
+    foreach (array('aktionstoken', 'schalttoken', 'formgeheimnis') as $k) {
+        if (trim((string) (isset($cfg[$k]) ? $cfg[$k] : '')) === '') {
+            $cfg[$k] = au_token_erzeugen();
+        }
     }
     return $cfg;
 }
@@ -404,16 +443,33 @@ function au_token_ergaenzen($cfg)
  * Dienststart, Tokenwechsel und - schlimmer - die schaltenden Knoepfe des
  * Reiters Test.
  *
- * Abgeleitet aus dem Aktionstoken, damit es keine Sitzungsverwaltung braucht:
- * dieselbe Anlage ergibt denselben Wert, eine fremde Seite kennt ihn nicht.
+ * BERICHTIGT IN 0.9.12. Bis 0.9.11 entstand das Merkmal aus dem
+ * AKTIONSTOKEN - und das ist in dieser Linie das LESEtoken. Es steht in
+ * jeder erzeugten Loxone-Vorlage, in jeder Adresstabelle und im Klartext
+ * auf dem Reiter; der Kommentar ueber au_token() sagt selbst, es duerfe
+ * herumliegen. Ableitung und Festtext stehen im veroeffentlichten
+ * Quelltext - wer das Lesetoken hatte, konnte das Merkmal ausrechnen und
+ * damit ueber eine fremde Seite jeden POST-Zweig der angemeldeten
+ * Oberflaeche bedienen, bis hin zu den schaltenden Knoepfen des Reiters
+ * Test. Genau die Trennung, wegen der 0.9.8 zwei Token eingefuehrt hat,
+ * war damit wieder aufgehoben.
+ *
+ * Grundlage ist jetzt ein eigenes Geheimnis, das nirgends angezeigt wird
+ * und nicht in die Sicherung geht. Nicht das Schalttoken - auch das wird
+ * ausgegeben.
+ *
+ * Der Hausstandard (Regeln/04) nennt weiterhin das Aktionstoken als
+ * Grundlage. Fuer die uebrigen 48 Linien ist das richtig: sie fuehren nur
+ * EIN Token. Wer eine Linie auf zwei Token umstellt, zieht diese Stelle
+ * mit.
  */
 function au_formtoken($cfg = null)
 {
     if ($cfg === null) {
         $cfg = au_config();
     }
-    $basis = (string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '');
-    if ($basis === '') {
+    $basis = (string) (isset($cfg['formgeheimnis']) ? $cfg['formgeheimnis'] : '');
+    if (trim($basis) === '') {
         return '';
     }
     return hash_hmac('sha256', 'formular-v1', $basis);
@@ -684,8 +740,14 @@ function au_befehle()
                                   'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
         'einstellung'    => array('bez' => 'BEFEHL.EINSTELLUNG', 'zusatz' => 'einstellung',
                                   'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
+        /* 'gefahr' => 1 SEIT 0.9.12. Dieser Befehl schickt die S-PIN zur
+         * Pruefung an Audi. Bis 0.9.11 brauchte er nur den Steuerungshaken und
+         * durfte bis zu befehle_stunde mal je Stunde hinausgehen - ein
+         * flatternder Baustein in Loxone haette damit dreissig Fehlversuche je
+         * Stunde gegen ein Konto abgesetzt, das dafuer sperrt. Das ist nicht
+         * weniger eingreifend als eine Lichthupe. */
         'spin_pruefen'   => array('bez' => 'BEFEHL.SPIN',        'zusatz' => '',
-                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 1),
+                                  'gefahr' => 1, 'gegen' => '', 'ohne_fz' => 1),
         // Ab hier: eingreifend. Zweiter Haken noetig.
         'verriegeln'     => array('bez' => 'BEFEHL.VERRIEGELN',  'zusatz' => '',
                                   'gefahr' => 1, 'gegen' => 'entriegeln', 'ohne_fz' => 0),
@@ -707,7 +769,12 @@ function au_einstellungen()
         'klima_unlock'     => 'EINSTELLUNG.KLIMA_UNLOCK',
         'scheibe_dauer'    => 'EINSTELLUNG.SCHEIBE_DAUER',
         'klima_ohne_strom' => 'EINSTELLUNG.KLIMA_OHNE_STROM',
-        'sitzheizung'      => 'EINSTELLUNG.SITZHEIZUNG',
+        /* 'sitzheizung' ist in 0.9.12 entfallen. Der Audi-Connector 0.3.2
+         * macht seat_heating nicht schreibbar - als einzige der neun
+         * Einstellungen; jede Zuweisung wirft "TypeError: You cannot set this
+         * attribute". Die Adresse haette dem Anwender einen Schalter
+         * angeboten, der nie wirkt. Der WERT wird weiterhin gelesen und geht
+         * als SITZHEIZ hinaus. */
         'zone_vl'          => 'EINSTELLUNG.ZONE_VL',
         'zone_vr'          => 'EINSTELLUNG.ZONE_VR',
         'zone_hl'          => 'EINSTELLUNG.ZONE_HL',
@@ -1367,12 +1434,13 @@ function au_felder_von($zeile)
     return $aus;
 }
 
-/* Die drei alten Namen bleiben, damit nichts bricht, was sie benutzt -
- * sie holen ihre Daten jetzt aber aus der einen Liste. */
-function au_status_felder()  { return au_felder_von('status'); }
-function au_laden_felder()   { return au_felder_von('laden'); }
-function au_wartung_felder() { return au_felder_von('wartung'); }
-function au_position_felder() { return au_felder_von('position'); }
+/* Die vier Namen au_status_felder(), au_laden_felder(),
+ * au_wartung_felder() und au_position_felder() sind in 0.9.12 entfallen.
+ * Sie waren seit 0.9.8 ohne Aufrufer - ueber alle Dateien der Linie
+ * gezaehlt kam jeder Name genau einmal vor, an seiner Definition. Der
+ * Kommentar, der hier stand, sprach von 'den drei alten Namen'; es waren
+ * vier, und au_position_felder() hat es vor 0.9.8 nie gegeben. Wer die
+ * Felder einer Zeile braucht, ruft au_felder_von('status') unmittelbar. */
 
 /**
  * Der Suchtext eines Feldes fuer den virtuellen Eingang in Loxone.
@@ -1834,27 +1902,276 @@ function au_t($schluessel)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
-function au_sicherung_lesen($roh)
+/**
+ * Die Zahlenfelder mit ihren Grenzen - EINE Liste fuer Formular UND Sicherung.
+ *
+ * NEU IN 0.9.12. Bis 0.9.11 stand die Liste zweimal in index.php und gar
+ * nicht in der Sicherung: die pruefte nur die Schluesselnamen. Eine Datei mit
+ * intervall = "abc" wurde angenommen und geschrieben - unter 180 s wirft der
+ * Connector beim Anlegen einen ValueError, der Dienst startet dann nicht mehr.
+ */
+function au_grenzen()
+{
+    return array(
+        // Untergrenze 180 s: siehe bin/audi.py, Kopf der Vorgabeliste.
+        'intervall'        => array(180, 3600),
+        'takt_wartung'     => array(1, 240),
+        'temp_min'         => array(10, 30),
+        'temp_max'         => array(10, 30),
+        'verlauf_tage'     => array(1, 90),
+        'wartezeit'        => array(0, 30),
+        'abruf_abstand'    => array(0, 3600),
+        'befehle_stunde'   => array(0, 500),
+        'strom_abstand'    => array(0, 3600),
+        'abfahrt_vorlauf'  => array(1, 120),
+        'abfahrt_temp'     => array(10, 30),
+        'abfahrt_alter'    => array(60, 3600),
+        'abfahrt_fahrzeug' => array(1, 99),
+        'ladeempf_alter'   => array(60, 86400),
+        'kapazitaet'       => array(0, 500),
+        'heim_radius'      => array(20, 5000),
+    );
+}
+
+/** Die Schluessel, die nur 0 oder 1 tragen. */
+function au_haken()
+{
+    return array('mqtt_ein', 'steuerung_ein', 'gefahr_ein', 'probe_ein',
+                 'gps_ein', 'melden_ein', 'nur_miniserver', 'abfahrt_ein',
+                 'ladeempf_ein', 'ladeempf_unter');
+}
+
+/**
+ * Was NIE in eine Sicherungsdatei gehoert.
+ *
+ * Das Formulargeheimnis ist das Sitzungsmerkmal gegen fremde Absender
+ * (Regeln/05: "Der Formulartoken der Oberflaeche gehoert NICHT hinein").
+ * Die beiden Aktionstoken dagegen SCHON - ohne sie waere die Datei nach dem
+ * Zurueckspielen wertlos.
+ */
+function au_nicht_sichern()
+{
+    return array('formgeheimnis');
+}
+
+/**
+ * Taugt der Wert ueberhaupt fuer eine Konfigurationsdatei?
+ *
+ * Feld, Objekt, Wahrheitswert und null sind hier keine Werte: die
+ * Oberflaeche gibt sie an htmlspecialchars weiter, und PHP 8 macht daraus
+ * "Array to string conversion" - achtunddreissigmal in einer Seite gemessen.
+ */
+function au_wert_taugt($v)
+{
+    if (is_array($v) || is_object($v) || is_bool($v) || is_null($v)) {
+        return false;
+    }
+    $t = (string) $v;
+    if (strlen($t) > 4096) {
+        return false;
+    }
+    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $t) !== 1;
+}
+
+/**
+ * Ist der Wert fuer DIESEN Schluessel zulaessig?
+ *
+ * Rueckgabe: Leerstring wenn ja, sonst der fertige Beanstandungstext.
+ * Geprueft wird gegen dieselbe Positivliste, die das Formular benutzt -
+ * es gibt nur eine.
+ */
+function au_wert_pruefen($k, $v)
+{
+    if (!au_wert_taugt($v)) {
+        return sprintf(au_t('EINST.SICH_WERT_FORM'), au_e((string) $k));
+    }
+    $grenzen = au_grenzen();
+    if (isset($grenzen[$k])) {
+        $t = trim((string) $v);
+        if (!preg_match('/^[0-9]+$/', $t)) {
+            return sprintf(au_t('EINST.SICH_WERT_ZAHL'), au_e((string) $k));
+        }
+        $z = (int) $t;
+        if ($z < $grenzen[$k][0] || $z > $grenzen[$k][1]) {
+            return sprintf(au_t('EINST.SICH_WERT_BEREICH'), au_e((string) $k),
+                           $grenzen[$k][0], $grenzen[$k][1]);
+        }
+        return '';
+    }
+    if (in_array($k, au_haken(), true)) {
+        if (!in_array((string) $v, array('0', '1'), true)) {
+            return sprintf(au_t('EINST.SICH_WERT_HAKEN'), au_e((string) $k));
+        }
+        return '';
+    }
+    if ($k === 'aktionstoken' || $k === 'schalttoken') {
+        // Weit gefasst mit Absicht: ein zu enges Muster verwirft ein von Hand
+        // gesetztes oder aus einer aelteren Fassung uebernommenes Token, und
+        // der Schaden ist derselbe wie bei einem verlorenen. Zugelassen ist,
+        // was ohne Kodierung in eine Adresse passt. Leer heisst "kein Token
+        // gesichert" und ist kein unzulaessiger Wert.
+        if (preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', (string) $v) !== 1) {
+            return sprintf(au_t('EINST.SICH_WERT_TOKEN'), au_e((string) $k));
+        }
+        return '';
+    }
+    if ($k === 'mqtt_topic' || $k === 'abfahrt_praefix') {
+        if (preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', (string) $v) !== 1) {
+            return sprintf(au_t('EINST.SICH_WERT_THEMA'), au_e((string) $k));
+        }
+        return '';
+    }
+    if ($k === 'ladeempf_thema') {
+        if (preg_match('#^[A-Za-z0-9_/\-]{0,128}$#', (string) $v) !== 1) {
+            return sprintf(au_t('EINST.SICH_WERT_THEMA'), au_e((string) $k));
+        }
+        return '';
+    }
+    if ($k === 'heim_breite' || $k === 'heim_laenge' || $k === 'ladeempf_grenze') {
+        // Duerfen negativ und gebrochen sein, auch mit Komma.
+        if ((string) $v !== '' && preg_match('/^-?[0-9]{1,7}([.,][0-9]{1,8})?$/', (string) $v) !== 1) {
+            return sprintf(au_t('EINST.SICH_WERT_ZAHL'), au_e((string) $k));
+        }
+        return '';
+    }
+    return '';
+}
+
+/**
+ * Die Sicherungsdatei bauen.
+ *
+ * NEU IN 0.9.12: die Zugangsdaten sind DRIN. Der Hausstandard verlangt es
+ * (Regeln/05: "Die Sicherungsdatei traegt den Aktionstoken und alle
+ * Zugangsdaten - ohne sie ist sie nach dem Zurueckspielen wertlos"), und der
+ * Warntext am Knopf hat es bis 0.9.11 auch behauptet, ohne dass es stimmte:
+ * gemessen trug die Datei 34 Schluessel, aber weder E-Mail noch Passwort noch
+ * S-PIN. Wer damit auf einen zweiten LoxBerry umzog, hatte alle Felder
+ * richtig und kam trotzdem nicht an die Anlage.
+ *
+ * Das Formulargeheimnis bleibt draussen (au_nicht_sichern()).
+ */
+function au_sicherung_bauen()
+{
+    $cfg = au_config();
+    $aus = array(
+        '_hinweis' => au_t('EINST.SICH_KOPF'),
+        '_plugin'  => 'audiconnect',
+        '_stand'   => date('Y-m-d H:i:s'),
+    );
+    foreach ($cfg as $k => $v) {
+        if (in_array($k, au_nicht_sichern(), true)) {
+            continue;
+        }
+        $aus[$k] = $v;
+    }
+    $z = au_json_lesen(au_paths()['zugang']);
+    $aus['zugang'] = array(
+        'email'    => isset($z['email']) ? (string) $z['email'] : '',
+        'passwort' => isset($z['passwort']) ? (string) $z['passwort'] : '',
+        'spin'     => isset($z['spin']) ? (string) $z['spin'] : '',
+    );
+    return $aus;
+}
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * BERICHTIGT IN 0.9.12, an drei Stellen. Bis 0.9.11 stand hier zwar dieser
+ * Anspruch, geprueft wurden aber nur die SCHLUESSELNAMEN:
+ *
+ *   1. Jeder Wert wird jetzt geprueft, gegen dieselbe Liste wie das Formular
+ *      (au_wert_pruefen). Gemessen an 0.9.11 wurde eine Datei mit
+ *      intervall = "abc" angenommen und geschrieben.
+ *   2. Fehlende Schluessel behalten ihren BISHERIGEN Wert. Bis 0.9.11 fing
+ *      die Funktion mit au_vorgaben() an - eine Sicherung aus einer aelteren
+ *      Fassung loeschte damit beide Token und setzte 32 Einstellungen auf
+ *      Werk zurueck, bei gruener Meldung "2 Werte uebernommen".
+ *   3. Der lesbare Kopf (Schluessel mit _ am Anfang) wird UEBERGANGEN, nicht
+ *      beanstandet.
+ *
+ * Grundlage ist der uebergebene Bestand, nicht die Werkseinstellung.
+ * Rueckgabe: array(Konfiguration|null, Zugang|null, Beanstandungen[],
+ *                  uebernommen, nicht enthalten).
+ */
+function au_sicherung_lesen($roh, $bestand = null)
 {
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(au_t('EINST.SICH_KEIN_JSON')), 0);
+        return array(null, null, array(au_t('EINST.SICH_KEIN_JSON')), 0, 0);
     }
-    $neu = au_vorgaben();
-    $bekannt = array_keys($neu);
+    if ($bestand === null) {
+        $bestand = au_config();
+    }
+    $neu = array_merge(au_vorgaben(), $bestand);
+    $bekannt = array_keys(au_vorgaben());
+    $zugang = null;
     $anzahl = 0;
+    $gesehen = array();
     foreach ($daten as $k => $w) {
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(au_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+        // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
+        if ((string) $k !== '' && substr((string) $k, 0, 1) === '_') {
             continue;
         }
-        $neu[$k] = $w;
+        if ((string) $k === 'zugang') {
+            if (!is_array($w)) {
+                $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang');
+                continue;
+            }
+            $z = array();
+            foreach (array('email', 'passwort', 'spin') as $zk) {
+                $zw = isset($w[$zk]) ? $w[$zk] : '';
+                if (!au_wert_taugt($zw)) {
+                    $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang.' . $zk);
+                    continue 2;
+                }
+                $z[$zk] = (string) $zw;
+            }
+            if ($z['email'] !== '' && !filter_var($z['email'], FILTER_VALIDATE_EMAIL)) {
+                $mangel[] = au_t('EINST.FEHLER_EMAIL');
+                continue;
+            }
+            if ($z['spin'] !== '' && !preg_match('/^[0-9]{4}$/', $z['spin'])) {
+                $mangel[] = au_t('EINST.FEHLER_SPIN');
+                continue;
+            }
+            $zugang = $z;
+            $anzahl++;
+            continue;
+        }
+        if (in_array($k, au_nicht_sichern(), true)) {
+            // Kein Fehler des Anwenders: eine aeltere Sicherung kann es
+            // enthalten. Es wird uebergangen, damit das Merkmal dieser
+            // Anlage nicht durch ein fremdes ersetzt wird.
+            continue;
+        }
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(au_t('EINST.SICH_FREMD'), au_e((string) $k));
+            continue;
+        }
+        $grund = au_wert_pruefen($k, $w);
+        if ($grund !== '') {
+            $mangel[] = $grund;
+            continue;
+        }
+        $neu[$k] = is_string($w) && isset(au_grenzen()[$k]) ? (int) $w : $w;
+        $gesehen[$k] = true;
         $anzahl++;
     }
     if ($anzahl === 0) {
         $mangel[] = au_t('EINST.SICH_LEER');
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    if (isset($neu['temp_min'], $neu['temp_max']) && $neu['temp_min'] > $neu['temp_max']) {
+        $mangel[] = au_t('EINST.FEHLER_TEMP_TAUSCH');
+    }
+    $fehlend = 0;
+    foreach ($bekannt as $k) {
+        if (!isset($gesehen[$k]) && !in_array($k, au_nicht_sichern(), true)) {
+            $fehlend++;
+        }
+    }
+    if ($mangel) {
+        return array(null, null, $mangel, $anzahl, $fehlend);
+    }
+    return array($neu, $zugang, $mangel, $anzahl, $fehlend);
 }

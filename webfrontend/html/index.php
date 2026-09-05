@@ -58,8 +58,18 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/au_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
-$au_cfg = au_config();
-$au_p = au_paths();
+/* au_config(false): der unangemeldete Endpunkt heilt NICHT.
+ * Gemessen an 0.9.11 hat ein Aufruf ganz ohne Token die Konfiguration aus
+ * der Zweitschrift zurueckgeschrieben - aus 2 Byte wurden 105 - und wurde
+ * danach korrekt mit GRUND=TOKEN abgewiesen. Wer seine Token bewusst
+ * verwirft, bekam sie damit vom naechsten Fremdaufruf zurueck, ohne dass
+ * irgendwo etwas davon stand.
+ *
+ * Nebenwirkung, die dazugehoert: steht in der Konfiguration nur "{}" und
+ * daneben eine Zweitschrift, antwortet der Endpunkt jetzt
+ * KEIN_TOKEN_GESETZT statt TOKEN. Das ist die richtige Antwort - die
+ * Oberflaeche wurde in dieser Lage wirklich noch nie geoeffnet. */
+$au_cfg = au_config(false);
 
 /* ---------------- Aktion (Weissliste) ----------------
  * Zuerst die Aktion, dann das Token: die Weissliste entscheidet, WELCHES
@@ -154,7 +164,11 @@ $au_dauer    = au_param('dauer', '/^[0-9]{1,2}$/', '');
 $au_name     = au_param('name', '/^[a-z_]{1,32}$/', '');
 $au_wert     = au_param('wert', '/^[01]$/', '');
 $au_probe    = au_param('probe', '/^[01]$/', '0');
-$au_tag      = au_param('tag', '/^[0-9]{8}$/', '');
+/* Der Parameter 'tag' ist in 0.9.12 entfallen. Er wurde geprueft - bei
+ * falschem Muster mit HTTP 400 abgewiesen - und danach nie gelesen; im
+ * Kopf dieser Datei stand er bei keiner Aktion. Ein Parameter, der
+ * geprueft wird, sieht benutzt aus. Soll 'ladungen' spaeter nach Tag
+ * filtern, kommt er zusammen mit der Auswertung zurueck. */
 
 $au_lox = au_loxone();
 $au_alter = au_alter();
@@ -220,17 +234,55 @@ if ($au_aktion === 'fahrzeuge') {
 }
 
 if ($au_aktion === 'ladungen') {
+    /* Der Filter, BERICHTIGT IN 0.9.12.
+     *
+     * Bis 0.9.11 stand hier
+     *     if ($au_fahrzeug !== '' && (string) $au_z['fahrzeug'] !== (string) $au_fahrzeug
+     *         && $au_fahrzeug !== '1') { continue; }
+     * und das ging dreifach daneben, gemessen mit zwei Fahrzeugen im
+     * Protokoll: bei fahrzeug=1 schaltete die dritte Bedingung den Filter
+     * ganz ab (beide Fahrzeuge kamen heraus - au_param liefert '1' auch
+     * ohne Parameter); bei fahrzeug=01 und bei einer VIN kam gar nichts
+     * heraus, weil dort die laufende Nummer verglichen wurde.
+     *
+     * Jetzt: eigene Vorgabe (Leerstring = alle), die VIN wird vorher in
+     * die Nummer aufgeloest, verglichen wird als Zahl. */
+    $au_lfz = au_param('fahrzeug', '/^([0-9]{1,2}|[A-Za-z0-9]{17})$/', '');
+    $au_lnr = 0;
+    if ($au_lfz !== '') {
+        if (preg_match('/^[0-9]{1,2}$/', $au_lfz)) {
+            $au_lnr = (int) $au_lfz;
+        } else {
+            foreach ($au_alle as $au_lk => $au_lv) {
+                if (isset($au_lv['vin'])
+                    && strcasecmp((string) $au_lv['vin'], $au_lfz) === 0) {
+                    $au_lnr = (int) $au_lk;
+                    break;
+                }
+            }
+            if ($au_lnr === 0) {
+                http_response_code(404);
+                echo "LADUNGEN;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=0\n";
+                exit;
+            }
+        }
+    }
     /* Die protokollierten Ladevorgaenge. Fuer Loxone selten brauchbar - dafuer
      * fuer eine Auswertung von Hand und fuer die Fehlersuche: hier steht
      * schwarz auf weiss, wann wie lange geladen wurde. */
     $au_l = au_ladungen_lesen(200);
-    echo 'LADUNGEN;OK=' . $au_ok . ';N=' . count($au_l) . ";\n";
-    echo "# fahrzeug;start;ende;dauer_min;soc_start;soc_ende;km;kwh\n";
+    /* Erst filtern, dann zaehlen: N nennt die Zahl der Zeilen, die
+     * darunter wirklich stehen. Bis 0.9.11 zaehlte es vorher. */
+    $au_gefiltert = array();
     foreach ($au_l as $au_z) {
-        if ($au_fahrzeug !== '' && (string) $au_z['fahrzeug'] !== (string) $au_fahrzeug
-            && $au_fahrzeug !== '1') {
+        if ($au_lnr > 0 && (int) $au_z['fahrzeug'] !== $au_lnr) {
             continue;
         }
+        $au_gefiltert[] = $au_z;
+    }
+    echo 'LADUNGEN;OK=' . $au_ok . ';N=' . count($au_gefiltert) . ";\n";
+    echo "# fahrzeug;start;ende;dauer_min;soc_start;soc_ende;km;kwh\n";
+    foreach ($au_gefiltert as $au_z) {
         echo $au_z['fahrzeug'] . ';' . $au_z['start'] . ';' . $au_z['ende'] . ';'
            . ($au_z['dauer'] === null ? '' : $au_z['dauer']) . ';'
            . ($au_z['soc_start'] === null ? '' : $au_z['soc_start']) . ';'
@@ -243,10 +295,26 @@ if ($au_aktion === 'ladungen') {
 
 $au_f = au_waehlen($au_alle, $au_fahrzeug);
 
-if (in_array($au_aktion, array('status', 'laden', 'wartung', 'position', 'text'), true)
-    && $au_f === null) {
+/* Ein unbekanntes Fahrzeug wird JETZT AUCH BEI SCHALTENDEN AKTIONEN
+ * abgewiesen. Bis 0.9.11 galt diese Pruefung nur den fuenf lesenden;
+ * schaltende schickten den Wert roh in die Warteschlange. Dort loest
+ * fahrzeug_waehlen() in bin/audi.py auf - und fiel bei einer VIN, die zu
+ * keinem Fahrzeug passt, auf Fahrzeug 1 zurueck. Gemessen an echten
+ * Bibliotheksobjekten: eine um eine Ziffer vertippte VIN entriegelte das
+ * FALSCHE Auto, und die Antwort lautete SET;OK=1.
+ *
+ * HTTP-Statuscode ergaenzt (C5): dies war der einzige Fehlerausgang
+ * dieser Datei ohne einen. Eine Ueberwachung, die den Code auswertet,
+ * hielt den Fehlfall fuer einen Erfolg. */
+$au_alle_befehle = au_befehle();
+$au_braucht_fz = in_array($au_aktion, array('status', 'laden', 'wartung',
+                                           'position', 'text'), true)
+    || ($au_schaltet && isset($au_alle_befehle[$au_aktion])
+        && empty($au_alle_befehle[$au_aktion]['ohne_fz']));
+if ($au_f === null && $au_braucht_fz) {
+    http_response_code(404);
     printf("%s;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d\n",
-        strtoupper($au_aktion), count($au_alle), $au_alter);
+           strtoupper($au_aktion), count($au_alle), $au_alter);
     exit;
 }
 

@@ -1,5 +1,7 @@
 # LoxBerry-Plugin: Audi Connect
 
+Version 0.9.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
 Verriegelung, Türen und Fenster — auch **welche** offen stehen —, Licht,
@@ -28,17 +30,22 @@ beseitigt zwölf Befunde aus einer Zeile-für-Zeile-Durchsicht, und sie stützt
 sich erstmals auf eine **Messung am Quelltext des Audi-Connectors** statt auf
 Annahmen darüber, was er liefert.
 
-### Sieben Werte bleiben dauerhaft leer — und das steht jetzt überall dabei
+### Sechs Werte bleiben dauerhaft leer — und das steht jetzt überall dabei
 
 Gemessen am Quelltext des Tags `v0.3.2`, also an genau der Fassung, die
 `postinstall.sh` festnagelt (der Stand von `main` ist byteweise derselbe):
-**der Audi-Connector füllt sieben Attribute an keiner Stelle.**
+**der Audi-Connector füllt sechs Attribute an keiner Stelle.**
+
+> Bis 0.9.11 waren es hier *sieben*, mit dem **Hersteller** in der Tabelle.
+> Das war falsch: der Connector setzt ihn in `vehicle.py` am Ende von
+> `__init__`, ausserhalb jeder Bedingung, für jedes Fahrzeug. An einem
+> echten Objekt nachgemessen ergibt `manufacturer` den Wert *Audi*. Die
+> übrigen sechs sind bestätigt.
 
 | Feld | Attribut im Kernmodell |
 |---|---|
 | Kennzeichen | `license_plate` |
 | Baujahr | `model_year` |
-| Hersteller | `manufacturer` |
 | Softwarestand | `software.version` |
 | Handbremse | `parking_brake` |
 | Batteriekapazität | `battery.total_capacity` |
@@ -294,11 +301,77 @@ deshalb schon in der Oberfläche ab. Fünf Minuten sind ein guter Anfang.
     cron/cron.01min           minütlicher Wächter
     webfrontend/htmlauth/     Bedienoberfläche (sechs Reiter)
     webfrontend/html/         Endpunkt für den Miniserver + gemeinsame Bibliothek
+    templates/lang/           Sprachdateien und Hilfetexte (de/en)
+    templates/help/help.html  Gerüst der Hilfe hinter dem Fragezeichen
+    postinstall.sh            venv, Bibliotheken, Rechte, Rückspielen
+    preupgrade.sh             Dienst anhalten und sichern, VOR dem Upgrade
+    postupgrade.sh            gibt an postinstall.sh ab
+    uninstall/uninstall       Dienst beenden, Sicherungen sicher entfernen
 
 Drei Aufgaben, drei Dateien: Die Oberfläche bedient, der Dienst ruft ab, der
 Endpunkt bedient den Miniserver. Weder Oberfläche noch Endpunkt sprechen je
 selbst mit Audi — sie lesen den Zwischenspeicher und legen Befehle in einer
 Warteschlange ab, die der Dienst im Sekundentakt abarbeitet.
+
+## Einstellungen sichern und zurückspielen
+
+Im Reiter *Einstellungen* stehen zwei Knöpfe.
+
+**Einstellungen sichern** lädt eine JSON-Datei mit allen Einstellungen dieses
+Plugins herunter — beide Token **und** die Zugangsdaten des myAudi-Kontos
+(E-Mail, Passwort, S-PIN). Damit ist sie alles, was ein zweiter LoxBerry
+braucht; damit ist sie aber auch ein Geheimnis. Behandeln Sie die Datei wie
+ein Passwort: nicht in ein Forum hängen und nicht an einen Fehlerbericht
+heften. Nicht enthalten ist das Merkmal gegen fremde Formulare — das entsteht
+auf jeder Anlage neu und darf nicht wandern.
+
+**Einstellungen zurückspielen** liest eine solche Datei wieder ein. Dabei gilt:
+
+* Jeder **Wert** wird geprüft, nicht nur der Schlüsselname — gegen dieselbe
+  Liste, die auch das Formular benutzt. Eine Datei mit einem unzulässigen Wert
+  wird abgelehnt, und dann ändert sich **gar nichts**.
+* Ein **unbekannter Schlüssel** ist eine Beanstandung, kein stiller Verlust.
+* Was in der Datei **fehlt**, behält seinen bisherigen Wert; die Zahl steht in
+  der Meldung. Eine Sicherung aus einer älteren Fassung setzt also nicht
+  stillschweigend alles auf Werk zurück.
+* Danach wird der **Dienst nachgezogen**, und die Meldung sagt, was mit ihm
+  geschah — neu gestartet, oder er lief nicht und bleibt gestoppt.
+
+> **Was sich gegenüber 0.9.11 geändert hat.** Dort prüfte das Zurückspielen
+> nur die Schlüsselnamen: eine Datei, in der das Abrufintervall gar keine
+> Zahl war, wurde angenommen und geschrieben. Fehlende Schlüssel fielen auf
+> die Werkseinstellung zurück — eine Sicherung aus einer älteren Fassung
+> löschte damit **beide Token**, und die Meldung war grün. Und der Warntext
+> versprach Zugangsdaten, die gar nicht in der Datei standen.
+
+## Was ein Update überlebt
+
+Der LoxBerry-Installer räumt beim Upgrade **beide** Plugin-Ordner ab —
+`config/plugins/<ordner>/` und `data/plugins/<ordner>/`. Nachgemessen an
+`sbin/plugininstall.pl` selbst: `purge_installation` wird an zwei Stellen
+gerufen, einmal beim Deinstallieren und einmal im Upgrade-Zweig, und der
+Block, der die Ordner löscht, prüft dabei nicht, welcher der beiden Fälle
+vorliegt.
+
+Was ein Update überstehen soll, muss deshalb **neben** den Ordnern liegen —
+ein `rm -rf <ordner>/` trifft den Nachbarn mit dem Punkt nicht:
+
+    config/plugins/<ordner>.backup.audi.json     die Einstellungen
+    config/plugins/<ordner>.backup.zugang.json   die Zugangsdaten (0600)
+    config/plugins/<ordner>.lief_vorher          Startmerker
+    data/plugins/<ordner>.rettung/               Verlauf, Ladeprotokoll,
+                                                 Merker, Anmeldemarken
+
+`preupgrade.sh` legt das an, `postinstall.sh` spielt es zurück, und das
+Deinstallationsskript räumt es wieder weg — im Rettungsordner stehen die
+Anmeldemarken des Kontos.
+
+> **Was sich gegenüber 0.9.11 geändert hat.** Bis dahin behaupteten
+> `preupgrade.sh`, `postinstall.sh` und der Quelltext des Dienstes, der
+> Datenordner überlebe ein Update. Er tut es nicht. Mit jedem Update gingen
+> das Ladeprotokoll, bis zu 90 Tage Verlauf, der angefangene Ladevorgang und
+> die Anmeldemarken verloren — und mit dem Sollmerker auch die Möglichkeit
+> des Wächters, den Dienst von selbst zurückzuholen.
 
 ## Zugangsdaten
 
@@ -307,8 +380,13 @@ Die Zugangsdaten des **myAudi-Kontos** liegen in
 Konfiguration, die die Oberfläche anzeigt, und nie in der Loxone-Projektdatei.
 
 Nach der ersten Anmeldung legt die Bibliothek Anmeldemarken in
-`data/plugins/audiconnect/token.json` ab (ebenfalls 0600, vom Dienst nach jedem
-Schreibvorgang nachgesetzt). Nach einem Passwortwechsel sind sie wertlos —
+`data/plugins/audiconnect/token.json` ab. Die Datei entsteht seit 0.9.12
+gleich mit den Rechten 0600 — der Dienst setzt dafür beim Anlegen der
+Bibliothek kurz die `umask` —, und er zieht die Rechte zusätzlich einmal je
+Abrufzyklus nach. Bis 0.9.11 stand hier, sie würden *nach jedem
+Schreibvorgang* nachgesetzt; das konnte nicht stimmen, denn geschrieben wird
+die Datei von der Bibliothek, und `rechte_sichern()` läuft an drei Stellen —
+einmal nach dem Einrichten, einmal je Zyklus, einmal beim Beenden. Nach einem Passwortwechsel sind sie wertlos —
 dafür gibt es den Knopf *Anmeldung neu erzwingen*.
 
 Die **S-PIN** wird ausschließlich für Ver- und Entriegeln gebraucht. Ohne sie
