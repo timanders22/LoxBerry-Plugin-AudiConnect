@@ -2107,7 +2107,6 @@ function au_sicherung_lesen($roh, $bestand = null)
     $bekannt = array_keys(au_vorgaben());
     $zugang = null;
     $anzahl = 0;
-    $gesehen = array();
     foreach ($daten as $k => $w) {
         // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
         if ((string) $k !== '' && substr((string) $k, 0, 1) === '_') {
@@ -2155,7 +2154,6 @@ function au_sicherung_lesen($roh, $bestand = null)
             continue;
         }
         $neu[$k] = is_string($w) && isset(au_grenzen()[$k]) ? (int) $w : $w;
-        $gesehen[$k] = true;
         $anzahl++;
     }
     if ($anzahl === 0) {
@@ -2164,11 +2162,31 @@ function au_sicherung_lesen($roh, $bestand = null)
     if (isset($neu['temp_min'], $neu['temp_max']) && $neu['temp_min'] > $neu['temp_max']) {
         $mangel[] = au_t('EINST.FEHLER_TEMP_TAUSCH');
     }
-    $fehlend = 0;
+    /* Fehlende Schluessel sind eine Beanstandung, kein stiller Rueckfall -
+     * ueber den Bestand ausgerollt am 07.09.2026. Der Hausstandard sagt:
+     * eine halb gueltige Datei aendert gar nichts.
+     *
+     * Bei DIESER Linie faellt nichts auf die Werkseinstellung zurueck: $neu
+     * geht vom BESTAND aus (array_merge(au_vorgaben(), $bestand)), damit
+     * 'formgeheimnis' den Wert DIESER Anlage behaelt. Eine unvollstaendige
+     * Datei ergaebe aber einen halb zurueckgespielten Stand, in dem sich
+     * Werte aus der Datei mit denen dieser Anlage mischen - ohne dass an der
+     * Oberflaeche etwas davon zu sehen waere. Der Text sagt genau das; der
+     * Satz von der Werkseinstellung waere hier eine Falschaussage.
+     *
+     * Verglichen wird gegen die VORGABEN. Was ausserhalb der
+     * Konfigurationsdatei liegt, darf fehlen: die Zugangsdaten ('zugang',
+     * eigene Datei mit 0600) stehen nicht in au_vorgaben(), und was diese
+     * Anlage kennzeichnet, nennt au_nicht_sichern(). */
+    $fehlend = array();
     foreach ($bekannt as $k) {
-        if (!isset($gesehen[$k]) && !in_array($k, au_nicht_sichern(), true)) {
-            $fehlend++;
+        if (!array_key_exists($k, $daten) && !in_array($k, au_nicht_sichern(), true)) {
+            $fehlend[] = $k;
         }
+    }
+    if ($fehlend) {
+        $mangel[] = sprintf(au_t('EINST.SICH_FEHLEND'), count($fehlend),
+            au_e(implode(', ', $fehlend)));
     }
     if ($mangel) {
         return array(null, null, $mangel, $anzahl, $fehlend);

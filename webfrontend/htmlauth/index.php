@@ -487,12 +487,6 @@ if ($au_post && isset($_POST['au_zurueck'])) {
                 $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
             }
             $au_meldungen[] = sprintf(au_t('EINST.SICH_UEBERNOMMEN'), $au_n);
-            if ($au_fehlend > 0) {
-                /* Was die Datei nicht enthielt, behaelt seinen bisherigen
-                 * Wert - und das wird gesagt, statt es stillschweigend auf
-                 * die Werkseinstellung zu setzen. */
-                $au_meldungen[] = sprintf(au_t('EINST.SICH_FEHLEND'), $au_fehlend);
-            }
             /* Punkt 7 des Hausstandards: den Dienst nachziehen UND sagen, was
              * mit ihm geschah. intervall, mqtt_topic und die Automatikwerte
              * liest bin/audi.py beim Start; ein laufender Dienst arbeitete

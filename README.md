@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,26 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.14
+
+- **Nur Schreibweise.** Die Sprachdateien führten für sichtbare Zeichen
+  noch HTML-Entitäten (`&mdash;`, `&auml;`, `&bdquo;`); jetzt stehen dort die
+  Zeichen selbst — in dieser Fassung **2** Stück. Das ist der Hausbeschluss
+  vom 14.08.2026: mit direkten Zeichen darf `htmlspecialchars` folgenlos
+  zweimal laufen, und die Doppelmaskierung fällt als Fehlerklasse weg.
+  `&nbsp;` und `&shy;` bleiben Entität (unsichtbares Zeichen im Quelltext ist
+  eine Wartungsfalle), ebenso die bedeutungstragenden `&amp;`, `&lt;`, `&gt;`,
+  `&quot;` und `&apos;`. **Am Verhalten ändert sich nichts.**
+
+- **Eine unvollständige Sicherung wird nicht mehr zurückgespielt.** Bis 0.9.13
+  war die Vorgabenliste der Ausgangspunkt, und nur was in der Datei stand wurde
+  darübergeschrieben: eine Sicherung mit einem einzigen Schlüssel lief ohne
+  Beanstandung durch, wurde gespeichert, und alle übrigen Einstellungen fielen
+  auf Werk zurück — quittiert mit „1 Wert übernommen". Das **Aktionstoken** fiel
+  dabei mit, und damit war jede im Miniserver eingetragene Adresse stumm
+  ungültig. Jetzt zählt der Rückspieler gegen die Vorgabenliste und nennt, was
+  fehlt; eine halb gültige Datei ändert gar nichts.
 
 ## Neu in 0.9.13
 
