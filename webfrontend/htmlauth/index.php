@@ -78,6 +78,18 @@ if (isset($_POST['activetab']) && preg_match($au_muster, (string) $_POST['active
 
 $au_meldungen = array();   // Erfolgsmeldungen
 $au_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
+/* Zwei Listen mehr SEIT 0.9.15. Bis 0.9.14 landete alles, was nicht
+ * geklappt hatte, in $au_fehler - und die steht unter der Ueberschrift der
+ * Beanstandungsliste ("... nichts gespeichert. Bitte ... berichtigen").
+ * Am Geraet gemessen (11.09.2026): der Knopf "Dienst starten" meldete damit
+ * eine Beanstandung des Speicherns, obwohl gar nichts gespeichert werden
+ * sollte. Und zwei blosse Hinweise (Regeln/05: ein Hinweis gehoert nicht in
+ * die Beanstandungsliste) verhinderten das ganze Speichern, obwohl ihr
+ * Kommentar und ihr Text das Gegenteil sagten.
+ *   $au_stoerungen - ein Knopf, der nichts speichert, hat nicht geklappt
+ *   $au_hinweise   - gespeichert wird trotzdem, aber das sollte man wissen */
+$au_stoerungen = array();
+$au_hinweise = array();
 $au_testausgabe = '';
 $au_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
@@ -181,14 +193,20 @@ if ($au_post && isset($_POST['speichern'])) {
 
     /* Der zweite Haken ohne S-PIN ist eine Freigabe ins Leere: der Connector
      * weist Ver- und Entriegeln ohne S-PIN ab. Beanstanden, nicht das ganze
-     * Speichern verhindern - der Anwender traegt die S-PIN gleich nach. */
+     * Speichern verhindern - der Anwender traegt die S-PIN gleich nach.
+     *
+     * BERICHTIGT IN 0.9.15. Beide Hinweise standen in $au_fehler, und der
+     * Speichern-Zweig darunter speichert nur bei leerer Liste. Gemessen
+     * (au_startweg_test.py, Fall A und B, PHP 7.4 und 8.4): nichts wurde
+     * gespeichert, auch die gueltig geaenderten Felder nicht. Jetzt
+     * Hinweise - der Haken wird gespeichert, und die Seite sagt, was fehlt. */
     $au_zg_vorher = au_zugang();
     $au_spin_neu = isset($_POST['spin']) ? trim((string) $_POST['spin']) : '';
     if ($au_cfg['gefahr_ein'] && $au_spin_neu === '' && $au_zg_vorher['spin_laenge'] === 0) {
-        $au_fehler[] = au_t('EINST.WARN_GEFAHR_OHNE_SPIN');
+        $au_hinweise[] = au_e(au_t('EINST.WARN_GEFAHR_OHNE_SPIN'));
     }
     if ($au_cfg['nur_miniserver'] && !au_miniserver_adressen()) {
-        $au_fehler[] = au_t('EINST.WARN_KEIN_MINISERVER');
+        $au_hinweise[] = au_e(au_t('EINST.WARN_KEIN_MINISERVER'));
     }
 
     /* Zugangsdaten: eigene Datei mit Rechten 0600.
@@ -357,11 +375,24 @@ if ($au_post && isset($_POST['save_mqtt'])) {
 /* ---------------- Dienst starten, anhalten, neu starten ---------------- */
 if ($au_post && isset($_POST['dienst'])) {
     $au_befehl = (string) $_POST['dienst'];
-    list($au_ok, $au_ausgabe) = au_dienst($au_befehl);
-    if ($au_ok) {
-        $au_meldungen[] = au_t('EINST.DIENST_' . strtoupper($au_befehl)) . ' ' . au_e($au_ausgabe);
+    /* SEIT 0.9.15: ohne Zugangsdaten gar nicht erst anlaufen lassen, und es
+     * in der Sprache der Oberflaeche sagen. dienst.sh prueft dasselbe noch
+     * einmal (fuer den Waechter und den Aufruf von Hand) - hier geht es um
+     * die Meldung: die von dienst.sh ist deutsch und nennt Pfade.
+     * Anhalten bleibt immer erlaubt. */
+    $au_zg_jetzt = au_zugang();
+    if (in_array($au_befehl, array('start', 'restart'), true)
+        && ($au_zg_jetzt['email'] === '' || $au_zg_jetzt['laenge'] === 0)) {
+        $au_stoerungen[] = au_e(au_t('EINST.DIENST_OHNE_ZUGANG'));
     } else {
-        $au_fehler[] = au_e($au_ausgabe);
+        list($au_ok, $au_ausgabe) = au_dienst($au_befehl);
+        if ($au_ok) {
+            $au_meldungen[] = au_t('EINST.DIENST_' . strtoupper($au_befehl)) . ' ' . au_e($au_ausgabe);
+        } else {
+            // Mehrzeilig seit 0.9.15: dienst.sh haengt die letzten
+            // Protokollzeilen an, und die sollen lesbar untereinander stehen.
+            $au_stoerungen[] = nl2br(au_e($au_ausgabe));
+        }
     }
     $au_tab = 'tab-settings';
 }
@@ -438,7 +469,7 @@ if ($au_post && isset($_POST['test'])) {
     if ($au_stand === 1) {
         $au_meldungen[] = au_e($au_text);
     } else {
-        $au_fehler[] = au_e($au_text);
+        $au_stoerungen[] = au_e($au_text);
     }
     $au_tab = 'tab-test';
 }
@@ -560,7 +591,7 @@ if ($au_post && isset($_POST['au_sichern'])) {
         echo $au_js;
         exit;
     }
-    $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
+    $au_stoerungen[] = au_t('EINST.SICH_SCHREIBFEHLER');
 }
 
 if ($au_rahmen) {
@@ -663,6 +694,15 @@ if ($au_rahmen) {
 <ul style="margin:6px 0 0 18px;padding:0;">
 <?php foreach ($au_fehler as $au_f) { ?><li><?= $au_f ?></li><?php } ?>
 </ul></div>
+<?php } ?>
+<?php if ($au_stoerungen) { ?>
+<div class="sm-fehler"><b><?= au_e(au_t('ALLG.VORGANG_FEHLER')) ?></b>
+<ul style="margin:6px 0 0 18px;padding:0;">
+<?php foreach ($au_stoerungen as $au_stoer) { ?><li><?= $au_stoer ?></li><?php } ?>
+</ul></div>
+<?php } ?>
+<?php foreach ($au_hinweise as $au_hinw) { ?>
+<div class="sm-warnung"><?= $au_hinw ?></div>
 <?php } ?>
 
 <?php if (!empty($au_cfg['probe_ein'])) { ?>

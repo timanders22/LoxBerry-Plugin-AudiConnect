@@ -1584,8 +1584,21 @@ function au_fehlergrund($lox, $ok, $alter)
     $text = trim((string) (isset($lox['fehler']) ? $lox['fehler'] : ''));
     $code = isset($lox['fehler_code']) ? (int) $lox['fehler_code'] : 9;
     if ($text === '' && $alter < 0) {
-        $code = 1;                                        // noch nie gelaufen
-        $text = 'Es hat noch kein Abruf stattgefunden. Laeuft der Dienst?';
+        /* Noch kein Abbild. SEIT 0.9.15 wird dann der Grund aus
+         * zustand.json genommen, falls der Dienst einen hinterlassen hat.
+         * Am Geraet gemessen (11.09.2026): der Dienst brach mit
+         * "Zugangsdaten fehlen." (Klasse 7) ab, BEVOR er loxone.json
+         * schrieb. Der Endpunkt meldete deshalb GRUND=1 "Laeuft der
+         * Dienst?" - der Dienst lief durchaus an, nur eben nicht weit. */
+        $zst = au_zustand();
+        $ztext = trim((string) (isset($zst['fehler']) ? $zst['fehler'] : ''));
+        if ($ztext !== '') {
+            $text = $ztext;
+            $code = isset($zst['fehler_code']) ? (int) $zst['fehler_code'] : 9;
+        } else {
+            $code = 1;                                    // noch nie gelaufen
+            $text = 'Es hat noch kein Abruf stattgefunden. Laeuft der Dienst?';
+        }
     }
     if ($code === 0) {
         $code = 9;   // ok=0, aber keine Klasse: unbekannt, nicht "in Ordnung"

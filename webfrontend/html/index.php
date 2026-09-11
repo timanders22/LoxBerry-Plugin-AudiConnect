@@ -311,7 +311,18 @@ $au_braucht_fz = in_array($au_aktion, array('status', 'laden', 'wartung',
                                            'position', 'text'), true)
     || ($au_schaltet && isset($au_alle_befehle[$au_aktion])
         && empty($au_alle_befehle[$au_aktion]['ohne_fz']));
-if ($au_f === null && $au_braucht_fz) {
+/* SEIT 0.9.15: steht noch GAR KEIN Fahrzeug im Abbild - es gab keinen
+ * Abruf, oder der Dienst brach vorher ab -, dann ist nicht die Nummer
+ * unbekannt, sondern es fehlt der Abruf. Lesende Aktionen liefern dann
+ * ihre gewohnte Zeile mit OK=0 und dem Grund (GRUND=1, 7, ...).
+ * Am Geraet gemessen (11.09.2026, keine Zugangsdaten): status und text
+ * antworteten mit HTTP 404 und GRUND=FAHRZEUG_UNBEKANNT - die Ursache
+ * "Zugangsdaten fehlen" kam beim Miniserver nie an, und ein Suchtext auf
+ * das Feld GRUND fand eine Zeichenkette statt einer Zahl.
+ * Schaltende Aktionen bleiben abgewiesen: ohne Abbild laesst sich nicht
+ * pruefen, welches Fahrzeug gemeint ist. */
+$au_ohne_abbild = (count($au_alle) === 0 && !$au_schaltet);
+if ($au_f === null && $au_braucht_fz && !$au_ohne_abbild) {
     http_response_code(404);
     printf("%s;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d\n",
            strtoupper($au_aktion), count($au_alle), $au_alter);

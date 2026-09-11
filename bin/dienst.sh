@@ -102,33 +102,89 @@ laeuft() {
     return 0
 }
 
+# Stehen E-Mail UND Passwort in der Zugangsdatei? NEU IN 0.9.15.
+#
+# Bis 0.9.14 fragte starten() nur, ob die Datei EXISTIERT. postinstall.sh
+# legt sie aber bei jeder Neuinstallation als "{}" an - die Pruefung war
+# damit immer erfuellt. Am Geraet gemessen (11.09.2026, 0.9.14,
+# Neuinstallation ohne Zugangsdaten, einmal "Dienst starten" gedrueckt):
+# der Sollmerker blieb liegen, audi.py brach jedes Mal mit "Zugangsdaten
+# fehlen" ab, und der Waechter startete es zwischen 01:40 und 09:03 genau
+# 444 Mal neu - 889 Protokollzeilen, auf den Tag gerechnet rund 2.880.
+# Regeln/03 verlangt: der Sollmerker wird erst nach erfolgreicher Pruefung
+# gesetzt oder im Fehlerzweig entfernt.
+#
+# Gelesen wird mit dem Python der eigenen Umgebung, nicht mit grep: eine
+# Zeichenkettensuche hielte {"email": "", "passwort": ""} fuer vollstaendig.
+# Ausgegeben wird nichts aus der Datei - weder hier noch im Fehlerfall.
+zugang_vollstaendig() {
+    [ -r "$PCONFIG/zugang.json" ] || return 1
+    "$PY" -c 'import json, sys
+try:
+    z = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+ok = isinstance(z, dict) and str(z.get("email") or "").strip() != "" and str(z.get("passwort") or "") != ""
+sys.exit(0 if ok else 1)' "$PCONFIG/zugang.json" 2>/dev/null
+}
+
 starten() {
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
     fi
     if [ ! -x "$PY" ]; then
+        rm -f "$SOLL"
         echo "FEHLER: virtuelle Python-Umgebung fehlt ($PY). Plugin neu installieren."
         return 1
     fi
-    if [ ! -f "$PCONFIG/zugang.json" ]; then
-        echo "FEHLER: Zugangsdaten fehlen ($PCONFIG/zugang.json). Erst in der Oberflaeche eintragen."
+    if ! zugang_vollstaendig; then
+        rm -f "$SOLL"
+        echo "FEHLER: Es sind keine vollstaendigen Zugangsdaten hinterlegt ($PCONFIG/zugang.json)."
+        echo "        Erst im Reiter Einstellungen E-Mail und Passwort des myAudi-Kontos eintragen"
+        echo "        und speichern. Der Dienst bleibt angehalten; der Waechter startet ihn nicht."
         return 1
     fi
     touch "$SOLL"
     # Die Ausgabe des Dienstes geht in die Startdatei, NICHT in das Protokoll:
     # dort schreibt allein der Handler des Programms. Beim Start gekappt, damit
     # sie nur die Ausgabe EINES Laufes sammelt und nicht unbegrenzt waechst.
-    : > "$STARTLOG"
+    # Der Waechter kappt selbst, bevor er seine Fehlerausgabe hineinlenkt,
+    # und setzt STARTLOG_KAPPEN=0 - sonst ginge hier verloren, was er
+    # vorher schon hineingeschrieben hat.
+    [ "${STARTLOG_KAPPEN:-1}" = 0 ] || : > "$STARTLOG"
     nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 &
     echo $! > "$PID"
-    sleep 1
+    # Drei Sekunden hinsehen, nicht eine - BERICHTIGT IN 0.9.15.
+    #
+    # Bis 0.9.14 stand hier ein einzelnes "sleep 1". Im Sandkasten am Geraet
+    # gemessen (11.09.2026): audi.py braucht auf dem Pi laenger als eine
+    # Sekunde, um die Bibliothek zu laden und abzubrechen; dienst.sh meldete
+    # "gestartet (PID ...)" mit Rueckgabewert 0 fuer einen Dienst, der zwei
+    # Sekunden spaeter tot war. Am Knopf derselben Anlage kam dagegen "Start
+    # fehlgeschlagen" - welche Antwort erschien, entschied der Zufall.
+    for i in 1 2 3; do
+        sleep 1
+        laeuft || break
+    done
     if laeuft; then
         echo "gestartet (PID $(cat "$PID"))"
         return 0
     fi
-    echo "FEHLER: Start fehlgeschlagen - siehe $STARTLOG und $LOGDATEI"
-    rm -f "$PID"
+    # Stirbt er gleich nach dem Start, hilft ein Neustart je Minute nicht:
+    # Sollmerker fort, und die letzten Zeilen gehoeren in die Meldung
+    # (Regeln/03), nicht nur ein Verweis auf zwei Dateien.
+    rm -f "$PID" "$SOLL"
+    echo "FEHLER: Der Dienst hat sich gleich nach dem Start wieder beendet."
+    echo "        Der Waechter startet ihn nicht erneut."
+    if [ -s "$LOGDATEI" ]; then
+        echo "Letzte Zeilen aus $LOGDATEI:"
+        tail -n 3 "$LOGDATEI" | sed 's/^/    /'
+    fi
+    if [ -s "$STARTLOG" ]; then
+        echo "Ausgabe des Starts ($STARTLOG):"
+        tail -n 5 "$STARTLOG" | sed 's/^/    /'
+    fi
     return 1
 }
 
@@ -186,9 +242,38 @@ case "$1" in
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
+        #
+        # SEIT 0.9.15: ohne Zugangsdaten gar nicht erst anlaufen, sondern den
+        # Sollmerker zuruecknehmen und es EINMAL sagen. Und scheitert der
+        # Neustart, sagt das Protokoll es, statt nur die Startdatei.
+        # Die Ausgabe von starten() wird gesammelt und danach angehaengt:
+        # starten() kappt die Startdatei selbst, und eine Umleitung in
+        # dieselbe Datei, aus der es im Fehlerfall zitiert, liefe im Kreis.
         if [ -f "$SOLL" ] && ! laeuft; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
-            starten >> "$STARTLOG" 2>&1
+            # Die Fehlerausgabe DIESES Skripts geht, sobald der Waechter
+            # etwas tut, in die Startdatei - SEIT 0.9.15. Der Cron-Eintrag
+            # ruft mit ">/dev/null 2>&1" auf (am Geraet gelesen, 11.09.2026),
+            # und damit verschwand jede Meldung der Schale, etwa ein
+            # Protokoll ohne Schreibrecht. Regeln/03: der Cron verschluckt
+            # seine Fehlerausgabe nicht. Die Cron-Datei selbst bleibt, wie
+            # sie ist - sie wird bei einem Update nicht zuverlaessig
+            # erneuert, dieses Skript schon. Erst kappen, dann umlenken;
+            # starten() kappt deshalb hier nicht noch einmal.
+            : > "$STARTLOG"
+            exec 2>>"$STARTLOG"
+            jetzt=$(date '+%Y-%m-%d %H:%M:%S')
+            if [ -x "$PY" ] && ! zugang_vollstaendig; then
+                rm -f "$SOLL"
+                echo "[$jetzt] Waechter: keine Zugangsdaten - Dienst bleibt angehalten, Sollmerker entfernt." >> "$LOGDATEI"
+                exit 0
+            fi
+            echo "[$jetzt] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
+            if ausgabe=$(STARTLOG_KAPPEN=0 starten 2>&1); then
+                printf '%s\n' "$ausgabe" >> "$STARTLOG"
+            else
+                printf '%s\n' "$ausgabe" >> "$STARTLOG"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Neustart gescheitert - Sollmerker entfernt, Einzelheiten in $STARTLOG." >> "$LOGDATEI"
+            fi
         fi
         ;;
     *)

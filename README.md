@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.15 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -23,6 +23,55 @@ Plugin beide Antriebe getrennt.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
 
+## Neu in 0.9.15
+
+Alles hier ist am LoxBerry gemessen (11.09.2026, 0.9.14 frisch installiert,
+**ohne** Zugangsdaten) und dann im Prüfstand beidseitig nachgestellt. Ein
+myAudi-Konto braucht keiner der Fälle.
+
+- **Ohne Zugangsdaten startet der Dienst nicht mehr — und der Wächter hört
+  auf.** `postinstall.sh` legt die Zugangsdatei als `{}` an; `dienst.sh`
+  fragte nur, ob es sie *gibt*. Ein Druck auf „Dienst starten" setzte den
+  Sollmerker, der Dienst brach sofort mit „Zugangsdaten fehlen" ab, und der
+  minütliche Wächter startete ihn neu — am Gerät **444 Mal** zwischen 01:40
+  und 09:03, rund 2.880 Protokollzeilen am Tag. Jetzt prüft `dienst.sh`, ob
+  E-Mail **und** Passwort eingetragen sind, bevor es irgendetwas anlegt; der
+  Wächter nimmt den Sollmerker zurück und sagt es einmal; und `audi.py` räumt
+  ihn selbst weg, wenn es vor der Abrufschleife aus einem Grund abbricht, den
+  ein Neustart nicht behebt. Eine vorübergehende Störung (Netz, Audi) startet
+  der Wächter weiter neu — das ist sein Zweck.
+- **„gestartet" heißt jetzt gestartet.** `dienst.sh` sah eine Sekunde nach
+  dem Start hin. Auf dem Pi braucht `audi.py` länger, um die Bibliothek zu
+  laden und abzubrechen: im Sandkasten meldete `dienst.sh` „gestartet (PID …)"
+  für einen Dienst, der zwei Sekunden später tot war. Jetzt drei Sekunden, und
+  im Fehlerfall stehen die letzten Protokollzeilen in der Meldung statt nur
+  zweier Dateinamen.
+- **Ein Knopf, der nichts speichert, meldet keine Beanstandung des
+  Speicherns.** „Dienst starten" und die Knöpfe des Reiters Test schrieben
+  ihr Scheitern unter „Es wurde nichts gespeichert. Bitte diese Punkte
+  berichtigen" — obwohl gar nichts gespeichert werden sollte. Sie haben
+  jetzt einen eigenen Kasten: „Der Vorgang ist nicht gelungen".
+- **Zwei Hinweise verhinderten das ganze Speichern.** „Eingreifende Befehle
+  ohne S-PIN" und „nur Miniserver, aber LoxBerry kennt keinen" standen in der
+  Beanstandungsliste — und gespeichert wird nur, wenn die leer ist. Kommentar
+  und Text sagten, der Haken werde gespeichert; gemessen wurde **nichts**
+  gespeichert, auch nicht die übrigen, gültig geänderten Felder. Jetzt wird
+  gespeichert, und der Hinweis steht darüber.
+- **Der Endpunkt nennt vor dem ersten Abruf den Grund.** `status` und `text`
+  antworteten ohne jedes Fahrzeug im Abbild mit HTTP 404 und
+  `GRUND=FAHRZEUG_UNBEKANNT`; `fahrzeuge` mit `GRUND=1` („läuft der
+  Dienst?"). Die eigentliche Ursache stand in `zustand.json` und kam beim
+  Miniserver nie an. Jetzt liefern die lesenden Aktionen ihre gewohnte Zeile
+  mit `OK=0` und dem Grund aus `zustand.json` — ohne Zugangsdaten also
+  `GRUND=7`. Bei vorhandenen Fahrzeugen bleibt eine unbekannte Nummer
+  `FAHRZEUG_UNBEKANNT`, und schaltende Aufrufe ohne Abbild bleiben abgewiesen.
+
+Nicht geändert und am Gerät nachgemessen: der Endpunkt ohne oder mit falschem
+Token (403, nichts angelegt), das Lesetoken schaltet nicht, und der Horcher
+meldet sich mit paho-mqtt **2.1.0** am Broker des LoxBerry an, empfängt ein
+abonniertes Thema und meldet ein falsches Kennwort mit dem CONNACK-Code
+statt „verbunden".
+
 ## Neu in 0.9.14
 
 - **Nur Schreibweise.** Die Sprachdateien führten für sichtbare Zeichen
@@ -34,14 +83,20 @@ Plugin beide Antriebe getrennt.
   eine Wartungsfalle), ebenso die bedeutungstragenden `&amp;`, `&lt;`, `&gt;`,
   `&quot;` und `&apos;`. **Am Verhalten ändert sich nichts.**
 
-- **Eine unvollständige Sicherung wird nicht mehr zurückgespielt.** Bis 0.9.13
-  war die Vorgabenliste der Ausgangspunkt, und nur was in der Datei stand wurde
-  darübergeschrieben: eine Sicherung mit einem einzigen Schlüssel lief ohne
-  Beanstandung durch, wurde gespeichert, und alle übrigen Einstellungen fielen
-  auf Werk zurück — quittiert mit „1 Wert übernommen". Das **Aktionstoken** fiel
-  dabei mit, und damit war jede im Miniserver eingetragene Adresse stumm
-  ungültig. Jetzt zählt der Rückspieler gegen die Vorgabenliste und nennt, was
-  fehlt; eine halb gültige Datei ändert gar nichts.
+- **Eine unvollständige Sicherung wird nicht mehr zurückgespielt.** In 0.9.12
+  und 0.9.13 wurde sie angenommen: was in der Datei stand, wurde übernommen, alles
+  Übrige **behielt den Wert dieser Anlage**, und die Seite nannte die Zahl der
+  fehlenden Einstellungen. Das ergab einen halb zurückgespielten Stand, in dem
+  sich Werte aus der Datei mit denen dieser Anlage mischen. Jetzt nennt der
+  Rückspieler, welche Einstellungen fehlen, und eine halb gültige Datei ändert
+  gar nichts.
+
+  *Berichtigt in 0.9.15:* hier stand bis dahin, die übrigen Einstellungen
+  seien „auf Werk zurückgefallen" und das Aktionstoken sei „dabei mitgefallen".
+  Das stimmte für andere Linien des Bestands, nicht für diese — hier ging die
+  Mischung seit 0.9.12 vom Bestand aus, und der Prüfstand hat an 0.9.12
+  gemessen, dass beide Token stehen bleiben (`au_sicherungstest.py`, Fall 4).
+  Die Umbaunotiz zu 0.9.13 hatte genau davor gewarnt.
 
 ## Neu in 0.9.13
 

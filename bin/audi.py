@@ -197,6 +197,7 @@ DATEI_ZUSTAND = PDATA / "zustand.json"
 DATEI_TOKEN = PDATA / "token.json"          # Anmeldemarken der Bibliothek
 DATEI_ZWISCHEN = PDATA / "bibliothek_cache.json"
 DATEI_MERKER = PDATA / "merker.json"        # ueberlebt einen Neustart
+DATEI_SOLL = PDATA / "soll_laufen"          # legt dienst.sh an; der Waechter braucht ihn
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
 ORDNER_VERLAUF = PDATA / "verlauf"
@@ -2291,15 +2292,47 @@ def signal_behandeln(*_):
     _LOG.info("Beendigungssignal erhalten - Dienst haelt an.")
 
 
+def sollmerker_zuruecknehmen(grund: str) -> None:
+    """Den Sollmerker von bin/dienst.sh entfernen - NEU IN 0.9.15.
+
+    Fuer die Abbrueche VOR der Abrufschleife, die ein Neustart nicht behebt:
+    keine Zugangsdaten, Bibliothek fehlt, Einrichtung abgewiesen. Blieb der
+    Merker liegen, startete der minuetliche Waechter den Dienst jede Minute
+    neu - am Geraet gemessen 444 Mal in gut sieben Stunden. Regeln/03: der
+    Sollmerker wird im Fehlerzweig entfernt.
+
+    dienst.sh prueft die Zugangsdaten seit 0.9.15 selbst, bevor es startet.
+    Diese Stelle deckt, was dort nicht ankommt: den Aufruf von Hand, und
+    einen Dienst, dessen Zugangsdaten zwischen Pruefung und Lesen verschwinden.
+    """
+    try:
+        DATEI_SOLL.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        _LOG.warning("Der Sollmerker %s liess sich nicht entfernen: %s", DATEI_SOLL, err)
+        return
+    _LOG.warning("Sollmerker zurueckgenommen (%s): der Waechter startet den Dienst nicht "
+                 "erneut. Wieder anlaufen laesst ihn der Knopf 'Dienst starten'.", grund)
+
+
 def dienst(einmal: bool = False) -> int:
     ntp_entschaerfen()
-    from carconnectivity.carconnectivity import CarConnectivity
+    try:
+        from carconnectivity.carconnectivity import CarConnectivity
+    except ImportError as err:
+        meldung = "Die Bibliothek carconnectivity laesst sich nicht laden: %s" % err
+        _LOG.error(meldung)
+        zustand_schreiben(ok=0, fehler=meldung, fehler_code=CODE_EINRICHTUNG)
+        sollmerker_zuruecknehmen("Bibliothek fehlt")
+        return 1
 
     cfg = config()
     z = zugang()
     if not z["email"] or not z["passwort"]:
         _LOG.error("Zugangsdaten fehlen. Reiter Einstellungen der Plugin-Oberflaeche oeffnen.")
         zustand_schreiben(ok=0, fehler="Zugangsdaten fehlen.", fehler_code=CODE_ZUGANG_FEHLT)
+        sollmerker_zuruecknehmen("keine Zugangsdaten")
         return 1
 
     _LOG.info("Dienst startet (Takt %s s, Steuerung %s, eingreifende Befehle %s).",
@@ -2333,6 +2366,14 @@ def dienst(einmal: bool = False) -> int:
         zustand_schreiben(ok=0, fehler=meldung, fehler_code=code)
         melden("einrichtung", 3,
                "Audi Connect: die Bibliothek liess sich nicht einrichten. " + meldung)
+        # Eine voruebergehende Stoerung (Netz, Audi gestoert, gedrosselt)
+        # behebt der Waechter mit dem naechsten Anlauf - etwa nach einem
+        # Neustart des LoxBerry, bevor das Netz steht. Alles andere nicht.
+        # Gemessen (11.09.2026, Netz gesperrt): der Konstruktor wirft bei
+        # fehlendem Netz gar nicht, erst fetch_all() - dieser Zweig trifft
+        # also im Regelfall die Einrichtung selbst.
+        if code not in (CODE_UNERREICHBAR, CODE_STOERUNG, CODE_GEDROSSELT):
+            sollmerker_zuruecknehmen("Einrichtung abgewiesen")
         return 1
     rechte_sichern()
 
