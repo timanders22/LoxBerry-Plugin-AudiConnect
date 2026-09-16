@@ -220,6 +220,10 @@ if ($au_aktion === 'roh') {
 }
 
 if ($au_aktion === 'fahrzeuge') {
+    if (count($au_alle) === 0) {
+        // Keine Daten: 503 mit dem Grund - Regeln/07:461, seit 0.9.16.
+        http_response_code(503);
+    }
     echo 'FAHRZEUGE;OK=' . $au_ok . ';N=' . count($au_alle) . ';ALTER=' . $au_alter
        . ';GRUND=' . (int) $au_grund . "\n";
     foreach ($au_alle as $au_nr => $au_f) {
@@ -320,8 +324,18 @@ $au_braucht_fz = in_array($au_aktion, array('status', 'laden', 'wartung',
  * "Zugangsdaten fehlen" kam beim Miniserver nie an, und ein Suchtext auf
  * das Feld GRUND fand eine Zeichenkette statt einer Zahl.
  * Schaltende Aktionen bleiben abgewiesen: ohne Abbild laesst sich nicht
- * pruefen, welches Fahrzeug gemeint ist. */
+ * pruefen, welches Fahrzeug gemeint ist.
+ *
+ * BERICHTIGT IN 0.9.16: HTTP 503, nicht 200. 0.9.15 lieferte die Zeile mit
+ * dem richtigen Grund, aber mit 200 - Regeln/07:461 sagt: gibt es keine
+ * Daten, antwortet der Endpunkt mit 503. Sonst sieht OK=0 in Loxone aus wie
+ * ein gewoehnlicher Zustand, und der Behaelter zeigt nicht "offline". Der
+ * Pruefstand der 0.9.15 lief ueber die Kommandozeile und sah den Status
+ * nicht; au_startweg_test.py misst ihn seither ueber php -S (E5). */
 $au_ohne_abbild = (count($au_alle) === 0 && !$au_schaltet);
+if ($au_f === null && $au_braucht_fz && $au_ohne_abbild) {
+    http_response_code(503);
+}
 if ($au_f === null && $au_braucht_fz && !$au_ohne_abbild) {
     http_response_code(404);
     printf("%s;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d\n",

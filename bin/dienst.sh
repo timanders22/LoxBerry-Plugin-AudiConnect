@@ -255,10 +255,13 @@ case "$1" in
             # ruft mit ">/dev/null 2>&1" auf (am Geraet gelesen, 11.09.2026),
             # und damit verschwand jede Meldung der Schale, etwa ein
             # Protokoll ohne Schreibrecht. Regeln/03: der Cron verschluckt
-            # seine Fehlerausgabe nicht. Die Cron-Datei selbst bleibt, wie
-            # sie ist - sie wird bei einem Update nicht zuverlaessig
-            # erneuert, dieses Skript schon. Erst kappen, dann umlenken;
-            # starten() kappt deshalb hier nicht noch einmal.
+            # seine Fehlerausgabe nicht. Die Umlenkung steht HIER und nicht
+            # in der Cron-Datei, damit sie auch fuer einen Aufruf von Hand
+            # gilt. BERICHTIGT IN 0.9.16: hier stand, die Cron-Datei werde bei
+            # einem Update nicht zuverlaessig erneuert. Das war falsch -
+            # plugininstall.pl loescht sie bei jedem Upgrade (:1554 rm -fv)
+            # und kopiert sie neu (:990 cp), Regeln/06. Erst kappen, dann
+            # umlenken; starten() kappt deshalb hier nicht noch einmal.
             : > "$STARTLOG"
             exec 2>>"$STARTLOG"
             jetzt=$(date '+%Y-%m-%d %H:%M:%S')

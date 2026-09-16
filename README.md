@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.15 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.16 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,23 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.16
+
+- **Vor dem ersten Abruf antwortet der Endpunkt mit HTTP 503.** 0.9.15 hatte
+  den Grund berichtigt (`GRUND=7` statt `FAHRZEUG_UNBEKANNT`), lieferte ihn
+  aber mit HTTP 200. Nach der Hausregel antwortet ein Endpunkt ohne jede Daten
+  mit 503: dann schaltet Loxone den Onlinestatus des Behälters ab, und der
+  Ausfall ist sichtbar. Mit 200 und `OK=0` sah er aus wie ein gewöhnlicher
+  Zustand. Betroffen sind `status`, `laden`, `wartung`, `position`, `text` und
+  `fahrzeuge`, solange kein Fahrzeug im Abbild steht. Die Zeile mit dem Grund
+  kommt weiter mit. Unverändert bleiben: eine unbekannte Nummer bei
+  vorhandenen Fahrzeugen antwortet mit 404, und ein bekanntes Fahrzeug mit
+  200. Der Prüfstand misst den Status jetzt über HTTP. Die Kommandozeile, über
+  die 0.9.15 geprüft wurde, zeigt ihn nicht.
+- **Ein falscher Kommentar in `bin/dienst.sh` ist berichtigt.** Er behauptete,
+  die Cron-Datei werde bei einem Update nicht zuverlässig erneuert. Der
+  Installer ersetzt sie bei jeder Installation. Am Verhalten ändert sich nichts.
 
 ## Neu in 0.9.15
 

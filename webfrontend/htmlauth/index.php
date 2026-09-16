@@ -980,11 +980,11 @@ if ($au_rahmen) {
 </div>
 <div class="sm-feld">
   <label for="heim_breite"><?= au_e(au_t('EINST.L_HEIM_BREITE')) ?></label>
-  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= au_e($au_cfg['heim_breite']) ?>" placeholder="48.137">
+  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= au_e($au_cfg['heim_breite']) ?>" placeholder="51.318">
 </div>
 <div class="sm-feld">
   <label for="heim_laenge"><?= au_e(au_t('EINST.L_HEIM_LAENGE')) ?></label>
-  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= au_e($au_cfg['heim_laenge']) ?>" placeholder="11.575">
+  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= au_e($au_cfg['heim_laenge']) ?>" placeholder="9.490">
 </div>
 <div class="sm-feld">
   <label for="heim_radius"><?= au_e(au_t('EINST.L_HEIM_RADIUS')) ?></label>
