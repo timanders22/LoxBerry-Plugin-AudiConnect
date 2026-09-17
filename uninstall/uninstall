@@ -48,9 +48,12 @@ PDIR=$3                      # Installationsordner des Plugins
 BASE="${5:-$LBHOMEDIR}"
 # Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
 # Systempfad - LoxBerry laesst sich anderswohin installieren.
-# Diese Datei liegt unter <home>/data/plugins/<ordner>/uninstall/
+# Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
+# ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
+# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
+# dieser Zweig greift nur, wenn beides fehlt.
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
+    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
 fi
 
 PDATA="$BASE/data/plugins/$PDIR"
