@@ -143,12 +143,61 @@ fi
 # und die Schlusszeile meldete danach bedingungslos <OK>. Ein volles
 # Dateisystem, fehlende Rechte, ein Schreibfehler - alles endete in "in
 # Ordnung", und der Anwender hatte keine Sicherung seiner Zugangsdaten.
+#
+# NEU IN 0.9.18: DIE SICHERUNG WIRD NICHT MIT EINEM STAND OHNE GEHEIMNIS
+# UEBERSCHRIEBEN. Bis dahin ging jede vorhandene audi.json ungefragt ueber die
+# Sicherung - auch eine abgeschnittene. Gemessen am 18.09.2026 in WSL/Ubuntu
+# (Pruefung-AudiConnect-0.9.18/Pruefstaende/messe_au_klasseA.sh, Fall
+# "upgrade"): eine halb geschriebene audi.json machte aus der heilen Sicherung
+# eine unlesbare, und danach half auch die Selbstheilung der Oberflaeche nicht
+# mehr - es gab nichts mehr, woraus sie haette heilen koennen. Regeln/05:
+# "auch in preupgrade.sh: [ -s "$datei" ] heisst nur 'nicht leer' und ist zu
+# schwach".
 # ---------------------------------------------------------------------------
 FEHLER=0
 
+# Traegt DATEI gueltiges JSON mit mindestens einem nichtleeren der genannten
+# Schluessel? Rueckgabe 0 = ja.
+#
+# Es muss ein JSON-Leser sein, kein grep: eine ABGESCHNITTENE Datei enthaelt
+# den Text des Tokens noch, ist als Ganzes aber unbrauchbar - genau der Fall,
+# um den es hier geht. perl mit JSON::PP ist auf jedem LoxBerry da
+# (plugininstall.pl selbst ist Perl und benutzt es). Fehlt es wider Erwarten,
+# antwortet die Funktion "nein", die Sicherung wird wie bisher geschrieben,
+# und die Zeile darunter sagt, dass nicht geprueft werden konnte.
+traegt() {
+    d=$1; shift
+    [ -f "$d" ] || return 1
+    perl -MJSON::PP -e '
+        my $f = shift; local $/;
+        open my $fh, "<", $f or exit 1;
+        my $d = eval { JSON::PP->new->decode(scalar <$fh>) };
+        exit 1 unless ref $d eq "HASH";
+        for my $k (@ARGV) {
+            my $v = $d->{$k};
+            next if !defined $v || ref $v;
+            $v =~ s/^\s+|\s+$//g;
+            exit 0 if $v ne "";
+        }
+        exit 1;
+    ' "$d" "$@" 2>/dev/null
+}
+command -v perl >/dev/null 2>&1 || \
+    echo "<INFO> perl fehlt - die Sicherung wird OHNE Inhaltspruefung geschrieben."
+
 for f in audi.json zugang.json; do
+    case $f in
+        audi.json)   SCHL="aktionstoken schalttoken formgeheimnis" ;;
+        zugang.json) SCHL="email passwort spin" ;;
+    esac
+    ZIEL="$BASE/config/plugins/$PFOLDER.backup.$f"
     if [ -f "$CFGDIR/$f" ]; then
-        if cp -p "$CFGDIR/$f" "$BASE/config/plugins/$PFOLDER.backup.$f"; then
+        if [ -f "$ZIEL" ] && traegt "$ZIEL" $SCHL && ! traegt "$CFGDIR/$f" $SCHL; then
+            echo "<INFO> $f traegt kein Geheimnis mehr - die vorhandene Sicherung"
+            echo "<INFO> bleibt unveraendert, sie ist der einzige Rueckweg."
+            continue
+        fi
+        if cp -p "$CFGDIR/$f" "$ZIEL"; then
             echo "<OK> $f gesichert."
         else
             echo "<FAIL> $f liess sich nicht sichern ($CFGDIR/$f)."

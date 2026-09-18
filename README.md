@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.17 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,51 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.18
+
+- **Die Selbstheilung der Konfiguration entscheidet nach Inhalt, nicht mehr
+  nach Form.** Bis 0.9.18 fragte `au_config()`, ob `audi.json` *fehlt, leer
+  ist oder `{}` enthält*. Eine **abgeschnittene** Datei — eine, deren
+  Schreibvorgang durch Stromausfall oder ein volles Dateisystem in der Mitte
+  abbrach — ist nichts davon: sie ist nicht leer, nicht `{}`, aber für den
+  JSON-Leser unbrauchbar. Sie kam deshalb nie in die Selbstheilung; das Plugin
+  las die blanken Vorgaben, würfelte **alle drei Geheimnisse** neu und
+  kopierte sie über die Zweitschrift. Danach antwortete der Endpunkt jedem
+  virtuellen Eingang im Miniserver mit HTTP 403, und es gab keinen Weg zurück.
+  Gemessen am 18.09.2026 in WSL/Ubuntu (PHP 8.3.6) und unter PHP 7.4.33:
+  aktionstoken, schalttoken und formgeheimnis waren in **beiden** Dateien
+  fort. Jetzt entscheidet, ob der Stand die Geheimnisse trägt — **jedes
+  einzeln**, damit eine Zweitschrift aus der Zeit vor 0.9.12, die noch kein
+  `formgeheimnis` kennt, das Aktionstoken trotzdem retten kann.
+- **Der verdrängte Stand wird nicht weggeworfen.** Was vor einer Heilung in
+  `audi.json` stand, liegt danach als `audi.json.kaputt` mit den Rechten 0600
+  daneben. Ein geheilter Schaden ist kein Nicht-Schaden: die Zweitschrift kann
+  älter sein als das, was verlorenging.
+- **Die Zweitschrift wird nie mit einem Stand ohne Geheimnis überschrieben.**
+  `au_config_speichern()` zieht sie seither über `au_zweitschrift_ziehen()`
+  nach. Trägt die Zweitschrift ein Geheimnis, das der zu schreibende Stand
+  nicht mehr trägt, bleibt sie unverändert; gespeichert wird trotzdem, und das
+  Protokoll sagt, was unterblieben ist. Zerstört wird damit nur eines nicht:
+  der einzige Rückweg.
+- **Dieselbe Frage stellen jetzt auch die beiden Hakenskripte.**
+  `preupgrade.sh` schrieb bis dahin jede vorhandene `audi.json` ungefragt über
+  die Sicherung — auch eine abgeschnittene; danach war die Sicherung ebenfalls
+  unlesbar, und der Selbstheilung der Oberfläche blieb nichts mehr, woraus sie
+  hätte heilen können. `postinstall.sh` spielte umgekehrt nur zurück, wenn die
+  Konfigurationsdatei leer war oder `{}` enthielt — eine abgeschnittene blieb
+  liegen, obwohl die Sicherung danebenlag. Beide entscheiden jetzt nach
+  Inhalt. Gelesen wird dafür mit `perl` und `JSON::PP` (beides Bestandteil
+  jedes LoxBerry, `plugininstall.pl` selbst ist Perl): eine Textsuche genügt
+  hier nicht, weil eine abgeschnittene Datei den Text des Tokens noch enthält.
+  Fehlt `perl` wider Erwarten, sagt das Skript es und verhält sich wie bisher.
+- **Am Verhalten im Normalfall ändert sich nichts.** Eine Neuinstallation
+  fängt weiter bei null an und erzeugt jedes Geheimnis genau einmal; eine
+  heile Konfiguration wird nicht angefasst; und ein Wert, den jemand in der
+  Oberfläche bewusst geleert hat, wird nicht aus der Zweitschrift
+  „geheilt" — geheilt wird nach Geheimnis, nicht nach Vollständigkeit.
+  Prüfstand und Rückbau-Eichung dazu:
+  `Pruefung-AudiConnect-0.9.18/Pruefstaende/messe_au_klasseA.sh`.
 
 ## Neu in 0.9.16
 
@@ -520,6 +565,11 @@ ein `rm -rf <ordner>/` trifft den Nachbarn mit dem Punkt nicht:
 `preupgrade.sh` legt das an, `postinstall.sh` spielt es zurück, und das
 Deinstallationsskript räumt es wieder weg — im Rettungsordner stehen die
 Anmeldemarken des Kontos.
+
+Seit 0.9.18 entscheiden beide dabei nach **Inhalt**: eine Konfiguration, die
+kein Geheimnis mehr trägt, überschreibt keine Sicherung, die eines trägt, und
+eine Konfiguration ohne Geheimnis wird aus der Sicherung zurückgeholt — auch
+dann, wenn sie weder leer noch `{}` ist.
 
 > **Was sich gegenüber 0.9.11 geändert hat.** Bis dahin behaupteten
 > `preupgrade.sh`, `postinstall.sh` und der Quelltext des Dienstes, der

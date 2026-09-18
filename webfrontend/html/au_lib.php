@@ -205,6 +205,123 @@ function au_json_lesen($pfad)
 }
 
 /**
+ * Eine Zeile ins Plugin-Protokoll.
+ *
+ * Form wie in der Oberflaeche (webfrontend/htmlauth/index.php:461). Ruft
+ * NICHTS auf, was seinerseits die Konfiguration liest - diese Funktion wird
+ * aus au_config() heraus gerufen.
+ */
+function au_log($text)
+{
+    $p = au_paths();
+    if (!is_dir($p['logdir'])) {
+        @mkdir($p['logdir'], 0775, true);
+    }
+    @file_put_contents($p['log'], '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n", FILE_APPEND);
+}
+
+/**
+ * DIE DREI GEHEIMNISSE DIESER LINIE - an genau einer Stelle.
+ *
+ *   aktionstoken    steht in jeder LESENDEN Loxone-Adresse
+ *   schalttoken     steht in jeder SCHALTENDEN Loxone-Adresse (seit 0.9.8)
+ *   formgeheimnis   Grundlage des Formularmerkmals der Oberflaeche (seit 0.9.12)
+ *
+ * Keines laesst sich zurueckrechnen; geht eines verloren, antwortet der
+ * Endpunkt jedem virtuellen Eingang im Miniserver mit HTTP 403. Alles
+ * andere in dieser Datei laesst sich in der Oberflaeche noch einmal
+ * eintragen.
+ */
+function au_geheimnisse()
+{
+    return array('aktionstoken', 'schalttoken', 'formgeheimnis');
+}
+
+/**
+ * Traegt dieser Stand das genannte Geheimnis?
+ *
+ * Unterschieden wird am WERT (leer nach trim), nicht mit empty() - ein
+ * Token '0' waere sonst fuer immer 'fehlend'. Dieselbe Regel wie in
+ * au_token_ergaenzen().
+ */
+function au_geheimnis_da($c, $k)
+{
+    return is_array($c) && trim((string) (isset($c[$k]) ? $c[$k] : '')) !== '';
+}
+
+/**
+ * Traegt diese Datei ueberhaupt etwas?
+ *
+ * Nicht "ist sie leer?", sondern "laesst sie sich als JSON-Objekt mit
+ * mindestens einem Schluessel lesen?". Der Unterschied ist an dieser Linie
+ * gemessen (18.09.2026, WSL/Ubuntu PHP 8.3.6,
+ * Pruefung-AudiConnect-0.9.18/Pruefstaende/messe_au_klasseA.sh, Fall
+ * "kaputt"): eine ABGESCHNITTENE audi.json - nicht leer, nicht "{}", aber
+ * fuer json_decode unbrauchbar - ging bis 0.9.18 an der Selbstheilung
+ * vorbei. au_json_lesen() gab daraus array(), au_config() die blanken
+ * Vorgaben, au_token() wuerfelte ALLE DREI Geheimnisse neu und
+ * au_config_speichern() kopierte sie ueber die Zweitschrift. Gemessen:
+ * aktionstoken, schalttoken und formgeheimnis waren in BEIDEN Dateien fort.
+ *
+ * Rueckgabe: die gelesenen Daten oder null, wenn die Datei nichts traegt.
+ */
+function au_inhalt_oder_null($pfad)
+{
+    if (!is_file($pfad)) {
+        return null;
+    }
+    $roh = trim((string) @file_get_contents($pfad));
+    if ($roh === '') {
+        return null;
+    }
+    $d = json_decode($roh, true);
+    if (!is_array($d) || $d === array()) {
+        return null;
+    }
+    return $d;
+}
+
+/**
+ * Traegt dieser Stand, was nur er tragen kann - alle drei Geheimnisse?
+ *
+ * Eine Konfiguration ohne sie gibt es auf keinem Weg der Oberflaeche:
+ * au_token() fuellt alle drei beim ersten Seitenaufbau. Fehlt eines, ist
+ * die Datei nicht aus einem gespeicherten Stand hervorgegangen.
+ */
+function au_config_hat_inhalt($c)
+{
+    if (!is_array($c) || $c === array()) {
+        return false;
+    }
+    foreach (au_geheimnisse() as $k) {
+        if (!au_geheimnis_da($c, $k)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Welche Geheimnisse traegt die Zweitschrift, die der jetzige Stand nicht traegt?
+ *
+ * JEDES EINZELN, nicht "alle oder keines". Der Grund ist die Aufwaertslage:
+ * eine Anlage, die zuletzt unter 0.9.11 gespeichert hat, fuehrt in BEIDEN
+ * Dateien kein formgeheimnis - das gab es damals nicht. Wuerde hier "traegt
+ * alle drei" verlangt, kaeme eine solche Zweitschrift nie zum Zuge, und ein
+ * abgeschnittenes audi.json haette das aktionstoken doch verloren.
+ */
+function au_geheimnis_luecke($jetzt, $sicherung)
+{
+    $luecke = array();
+    foreach (au_geheimnisse() as $k) {
+        if (au_geheimnis_da($sicherung, $k) && !au_geheimnis_da($jetzt, $k)) {
+            $luecke[] = $k;
+        }
+    }
+    return $luecke;
+}
+
+/**
  * Die Konfiguration, mit den Vorgaben aufgefuellt.
  *
  * $heilen ist NEU IN 0.9.12 und ab Werk true - die angemeldete Oberflaeche
@@ -214,17 +331,49 @@ function au_json_lesen($pfad)
  * anschliessend korrekt mit GRUND=TOKEN abgewiesen. Wer seine Token
  * bewusst verwirft, bekam sie damit vom naechsten Fremdaufruf zurueck.
  * Der Hausstandard verlangt: der unangemeldete Bereich legt nichts an.
+ *
+ * GEHEILT WIRD NACH INHALT, NICHT NACH FORM. Bis 0.9.18 stand hier
+ * ($roh === '' || $roh === '{}') - eine Frage nach der Form der Datei. Eine
+ * abgeschnittene audi.json ist weder leer noch "{}" und kam damit nie in
+ * diesen Zweig; siehe die Messung ueber au_inhalt_oder_null(). Jetzt
+ * entscheidet, ob der Stand die drei Geheimnisse traegt, und geheilt wird
+ * nur aus einer Zweitschrift, die selbst eines traegt, das hier fehlt. Was
+ * vorher in der Datei stand, wird nicht weggeworfen, sondern liegt als
+ * <datei>.kaputt daneben (0600 - es koennen Geheimnisse darin stehen).
  */
 function au_config($heilen = true)
 {
+    static $gemeldet = false;
     $p = au_paths();
-    // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen.
-    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if ($heilen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        if (!is_dir($p['configdir'])) {
-            @mkdir($p['configdir'], 0775, true);
+    $jetzt = au_inhalt_oder_null($p['config']);
+    if ($heilen && !au_config_hat_inhalt($jetzt)) {
+        $luecke = au_geheimnis_luecke($jetzt, au_inhalt_oder_null($p['sicherung']));
+        if ($luecke) {
+            if (!is_dir($p['configdir'])) {
+                @mkdir($p['configdir'], 0775, true);
+            }
+            // Der verdraengte Stand bleibt liegen. Nur wenn wirklich etwas
+            // darin stand - eine fehlende oder leere Datei ist nichts, was
+            // sich aufzuheben lohnt.
+            $alt = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+            $rest = preg_replace('/\s+/', '', $alt);
+            $verdraengt = ($rest !== '' && $rest !== '{}' && $rest !== '[]');
+            if ($verdraengt) {
+                @copy($p['config'], $p['config'] . '.kaputt');
+                @chmod($p['config'] . '.kaputt', 0600);
+            }
+            if (@copy($p['sicherung'], $p['config'])) {
+                @chmod($p['config'], 0644);
+                if (!$gemeldet) {
+                    $gemeldet = true;
+                    au_log('Die Konfiguration trug nicht mehr ' . implode(', ', $luecke)
+                        . ' und wurde aus der Zweitschrift wiederhergestellt: '
+                        . $p['sicherung']
+                        . ($verdraengt ? ' (der vorherige Inhalt liegt unter '
+                                         . $p['config'] . '.kaputt)' : '') . '.');
+                }
+            }
         }
-        @copy($p['sicherung'], $p['config']);
     }
     $cfg = au_json_lesen($p['config']);
     return array_merge(au_vorgaben(), $cfg);
@@ -273,7 +422,60 @@ function au_config_speichern($cfg)
     if (!au_datei_schreiben($p['config'], $json, 0644)) {
         return false;
     }
-    @copy($p['config'], $p['sicherung']);
+    // Die Zweitschrift wird NICHT erneuert, wenn der neue Stand ein
+    // Geheimnis nicht traegt, das dort steht. Gespeichert wird trotzdem -
+    // nur der einzige Rueckweg bleibt stehen, und das Protokoll sagt es.
+    au_zweitschrift_ziehen($p['config'], $p['sicherung'], (array) $cfg);
+    return true;
+}
+
+/**
+ * Welche Geheimnisse wuerde die Zweitschrift verlieren, wenn sie durch
+ * $neu ersetzt wird?
+ *
+ * Gefragt wird JE GEHEIMNIS und nur nach denen, die die Zweitschrift
+ * wirklich fuehrt: eine Zweitschrift aus der Zeit vor 0.9.12 kennt kein
+ * formgeheimnis, und dessen Fehlen auf beiden Seiten ist kein Verlust.
+ *
+ * Bauart uebernommen aus Sprachsteuerung 0.11.8 (sp_zweitschrift_fehlt())
+ * und Intercom 2.2.11: eine Zweitschrift MIT Geheimnis darf nie durch einen
+ * Stand OHNE ersetzt werden - in keine der beiden Richtungen.
+ */
+function au_zweitschrift_fehlt($sicherung, array $neu)
+{
+    $z = au_inhalt_oder_null($sicherung);
+    if ($z === null) {
+        return array();
+    }
+    $fehlt = array();
+    foreach (au_geheimnisse() as $k) {
+        if (au_geheimnis_da($z, $k) && !au_geheimnis_da($neu, $k)) {
+            $fehlt[] = $k;
+        }
+    }
+    return $fehlt;
+}
+
+/** Die Zweitschrift erneuern - oder begruendet nicht. */
+function au_zweitschrift_ziehen($quelle, $ziel, array $neu)
+{
+    static $gemeldet = false;
+    $fehlt = au_zweitschrift_fehlt($ziel, $neu);
+    if ($fehlt) {
+        if (!$gemeldet) {
+            $gemeldet = true;
+            au_log('WARNUNG: Die Zweitschrift bleibt unveraendert - der gespeicherte '
+                . 'Stand traegt nicht mehr, was dort steht ('
+                . implode(', ', $fehlt) . '): ' . $ziel);
+        }
+        return false;
+    }
+    if (!@copy($quelle, $ziel)) {
+        return false;
+    }
+    // Gleiche Rechte wie das Original (Hausstandard, CLAUDE.md Punkt 9).
+    // Ohne diese Zeile haengen sie an der umask des aufrufenden Prozesses.
+    @chmod($ziel, 0644);
     return true;
 }
 
@@ -412,7 +614,7 @@ function au_token($art = 'lesen')
 function au_token_kennung($cfg)
 {
     $teil = array();
-    foreach (array('aktionstoken', 'schalttoken', 'formgeheimnis') as $k) {
+    foreach (au_geheimnisse() as $k) {
         $teil[] = (string) (isset($cfg[$k]) ? $cfg[$k] : '');
     }
     return implode('|', $teil);
@@ -422,12 +624,13 @@ function au_token_kennung($cfg)
  * Ergaenzt fehlende Geheimnisse, ohne vorhandene anzufassen.
  *
  * Unterschieden wird am WERT (leer nach trim), nicht mit empty() - ein
- * Token '0' waere sonst fuer immer 'fehlend'.
+ * Token '0' waere sonst fuer immer 'fehlend'. Dieselbe Frage stellt
+ * au_geheimnis_da().
  */
 function au_token_ergaenzen($cfg)
 {
-    foreach (array('aktionstoken', 'schalttoken', 'formgeheimnis') as $k) {
-        if (trim((string) (isset($cfg[$k]) ? $cfg[$k] : '')) === '') {
+    foreach (au_geheimnisse() as $k) {
+        if (!au_geheimnis_da($cfg, $k)) {
             $cfg[$k] = au_token_erzeugen();
         }
     }

@@ -77,12 +77,47 @@ fi
 chmod 600 "$PCONFIG/zugang.json"
 
 # Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
+#
+# NEU IN 0.9.18: entschieden wird nach INHALT, nicht nach FORM. Bis dahin
+# stand hier [ ! -s "$CF" ] || [ "$INHALT" = "{}" ] - eine ABGESCHNITTENE
+# audi.json ist weder das eine noch das andere und blieb deshalb liegen,
+# obwohl die Sicherung daneben lag. Gemessen am 18.09.2026 in WSL/Ubuntu
+# (Pruefung-AudiConnect-0.9.18/Pruefstaende/messe_au_klasseA.sh, Fall
+# "postinst"). Die neue Bedingung deckt die alte vollstaendig ab: eine leere
+# Datei und "{}" tragen kein Geheimnis.
+#
+# traegt() wie in preupgrade.sh - beide Hakenskripte laufen getrennt, es gibt
+# keine gemeinsame Datei, die sie beide einbinden koennten.
+traegt() {
+    d=$1; shift
+    [ -f "$d" ] || return 1
+    perl -MJSON::PP -e '
+        my $f = shift; local $/;
+        open my $fh, "<", $f or exit 1;
+        my $d = eval { JSON::PP->new->decode(scalar <$fh>) };
+        exit 1 unless ref $d eq "HASH";
+        for my $k (@ARGV) {
+            my $v = $d->{$k};
+            next if !defined $v || ref $v;
+            $v =~ s/^\s+|\s+$//g;
+            exit 0 if $v ne "";
+        }
+        exit 1;
+    ' "$d" "$@" 2>/dev/null
+}
+command -v perl >/dev/null 2>&1 || \
+    echo "<INFO> perl fehlt - es wird nur eine leere Konfiguration zurueckgespielt."
+
 for f in audi.json zugang.json; do
+    case $f in
+        audi.json)   SCHL="aktionstoken schalttoken formgeheimnis" ;;
+        zugang.json) SCHL="email passwort spin" ;;
+    esac
     BK="$BASE/config/plugins/$PFOLDER.backup.$f"
     CF="$PCONFIG/$f"
     if [ -f "$BK" ]; then
         INHALT=$(cat "$CF" 2>/dev/null)
-        if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
+        if ! traegt "$CF" $SCHL || [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
             if cp -p "$BK" "$CF"; then
                 echo "<OK> $f aus Sicherung wiederhergestellt."
             else
