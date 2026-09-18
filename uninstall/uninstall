@@ -173,6 +173,13 @@ done
 # ungefragt - auch dann, wenn er absichtlich abgeschaltet worden war.
 rm -f "$PCONFIG/$PDIR.lief_vorher" 2>/dev/null
 
+# Und die Marke "Aktualisierung laeuft" aus preupgrade.sh. Sie liegt NEBEN
+# dem Datenordner und ueberlebt damit auch die Deinstallation. Solange sie
+# liegt und keine Stunde alt ist, verweigert bin/dienst.sh den Start -
+# eine Neuinstallation gleich nach einer Deinstallation traefe sonst auf
+# eine Sperre, die niemand mehr erklaeren kann.
+rm -f "$BASE/data/plugins/$PDIR.upgrade_laeuft" 2>/dev/null
+
 # ---------------------------------------------------------------
 # 4. Was noch da ist, und was LoxBerry selbst wegraeumt
 # ---------------------------------------------------------------

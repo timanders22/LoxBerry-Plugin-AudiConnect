@@ -34,6 +34,37 @@ SOLL="$PDATA/soll_laufen"
 MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
 RETTUNG="$BASE/data/plugins/$PFOLDER.rettung"
 SKRIPT="$BASE/bin/plugins/$PFOLDER/audi.py"
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+
+# ---------------------------------------------------------------------------
+# ZUERST die Marke "Aktualisierung laeuft" - vor jeder Sicherung.
+#
+# Der Installer legt die Cron-Datei rund eine Minute VOR postinstall.sh neu
+# an (Regeln/06, am Geraet 08.09.2026: Cron 03:31:32, postinstall 03:32:24).
+# In dieser Luecke sind config/, data/ und bin/ dieses Plugins geloescht.
+# In WSL nachgestellt (Pruefung-AudiConnect-0.9.19/Pruefstaende/messe_au_marke.sh):
+#   Fall takt        der Minutentakt startet hier NICHTS - der Sollmerker lag
+#                    im geloeschten Datenordner (0 Prozesse).
+#   Fall knopf       der Knopf "Dienst starten" scheitert unmittelbar nach
+#                    purge_installation an der fehlenden virtuellen Umgebung.
+#   Fall knopf_venv  sobald postinstall.sh die Umgebung angelegt hat und beim
+#                    pip-Lauf steht, startet derselbe Knopf den Dienst -
+#                    gemessen rc=0, "gestartet", 1 Prozess, mitten im Upgrade.
+# Die Marke liegt NEBEN dem Datenordner; ein "rm -rf <ordner>/" trifft den
+# Nachbarn mit dem Punkt nicht. Sie traegt die Unixzeit: bin/dienst.sh nimmt
+# sie nur, solange sie juenger als 3600 s ist.
+#
+# Sie entsteht vor dem Abbruchzweig der Sicherung weiter unten - bricht
+# preupgrade.sh ab, laeuft trotzdem eine Installation.
+# ---------------------------------------------------------------------------
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+date +%s > "$MARKE" 2>/dev/null
+if [ -s "$MARKE" ]; then
+    echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
+else
+    echo "<INFO> Die Marke $MARKE liess sich nicht anlegen - der Dienst kann"
+    echo "<INFO> waehrend der Installation anlaufen. Das ist kein Abbruchgrund."
+fi
 
 # ---------------------------------------------------------------------------
 # WAS EIN UPGRADE UEBERLEBT - und was nicht

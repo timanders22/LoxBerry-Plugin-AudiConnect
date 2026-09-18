@@ -380,8 +380,18 @@ if ($au_post && isset($_POST['dienst'])) {
      * einmal (fuer den Waechter und den Aufruf von Hand) - hier geht es um
      * die Meldung: die von dienst.sh ist deutsch und nennt Pfade.
      * Anhalten bleibt immer erlaubt. */
+    /* Liegt die Marke aus preupgrade.sh, startet bin/dienst.sh nicht - und
+     * meldet das mit Rueckgabewert 0. Ohne diesen Zweig stuende auf der
+     * Seite "Dienst gestartet:" und darunter die Zeile, dass gerade eine
+     * Aktualisierung laeuft: eine Erfolgsmeldung fuer etwas, das nicht
+     * geschehen ist (CLAUDE.md Punkt 2). Anhalten bleibt erlaubt - wer den
+     * Dienst waehrend einer Installation anhalten will, darf das. */
     $au_zg_jetzt = au_zugang();
+    $au_marke_jetzt = au_marke();
     if (in_array($au_befehl, array('start', 'restart'), true)
+        && $au_marke_jetzt !== null && $au_marke_jetzt['gilt']) {
+        $au_hinweise[] = au_e(au_t('EINST.DIENST_UPGRADE_LAEUFT'));
+    } elseif (in_array($au_befehl, array('start', 'restart'), true)
         && ($au_zg_jetzt['email'] === '' || $au_zg_jetzt['laenge'] === 0)) {
         $au_stoerungen[] = au_e(au_t('EINST.DIENST_OHNE_ZUGANG'));
     } else {

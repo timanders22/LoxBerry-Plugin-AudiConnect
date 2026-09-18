@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.19 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,54 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.19
+
+- **Während einer Aktualisierung startet der Dienst nicht mehr.** Der
+  LoxBerry-Installer legt die Cron-Datei des Plugins rund eine Minute *vor*
+  `postinstall.sh` neu an; dazwischen sind `config/`, `data/` und `bin/`
+  dieses Plugins gelöscht. Was in dieser Lücke anläuft, arbeitet gegen eine
+  halb eingerichtete Installation. Für dieses Plugin ist die Lücke in
+  WSL/Ubuntu nachgestellt und **jeder** Startweg einzeln gemessen worden:
+
+  | Weg | ohne Marke gemessen |
+  |---|---|
+  | Minutentakt (`cron.01min` → `dienst.sh waechter`) | startet nichts — der Sollmerker lag im gelöschten Datenordner |
+  | Knopf *Dienst starten*, unmittelbar nach dem Abräumen | startet nichts — die virtuelle Python-Umgebung ist mit `bin/` gelöscht |
+  | Knopf *Dienst starten*, während `postinstall.sh` beim `pip`-Lauf steht | **startet den Dienst** (Rückgabewert 0, „gestartet“, ein Prozess) |
+  | Oberfläche öffnen und Einstellungen speichern | verliert nichts; die drei Geheimnisse kommen aus der Zweitschrift zurück, die Zugangsdaten holt `postinstall.sh` |
+  | Unangemeldeter Loxone-Endpunkt | legt nichts an |
+
+  Der dritte Fall ist der Grund für die Änderung: der `pip`-Lauf dauert auf
+  einem Raspberry Pi Minuten, und in dieser Zeit ist die Oberfläche
+  erreichbar. `preupgrade.sh` legt deshalb als **Erstes**
+  `data/plugins/<ordner>.upgrade_laeuft` mit der Unixzeit an — neben dem
+  Datenordner, weil der Ordner selbst gelöscht wird. `bin/dienst.sh` startet
+  nicht, solange diese Marke gilt, und der minütliche Wächter ebenso wenig.
+  `postinstall.sh` entfernt sie unmittelbar **vor** dem Dienststart; das
+  Deinstallationsskript räumt sie weg.
+
+- **Eine abgebrochene Installation legt das Plugin nicht still.** Die Marke
+  gilt nur eine Stunde. Ist sie älter, trägt sie keinen Zeitpunkt oder liegt
+  ihr Zeitpunkt in der Zukunft, dann gilt sie nicht — gemessen: der Dienst
+  startet. Steigt `postinstall.sh` vorzeitig aus (kein Python, kein `pip`,
+  keine Bibliothek), fällt die Marke über einen `trap` trotzdem.
+  **Umgekehrt** fällt die Prüfung geschlossen aus, wenn die Uhr nicht
+  lesbar ist: dann gilt die Marke, und der Dienst startet nicht.
+
+- **Der Reiter Test nennt die Marke.** Eine neue Zeile beantwortet, ob gerade
+  eine Aktualisierung läuft. Liegt eine Marke, die nicht mehr gilt, steht dort
+  ein Kreuz samt Dateiname — sie hätte am Ende der Installation entfernt
+  werden sollen.
+
+- **Die Oberfläche sperrt nicht.** Das ist eine Messung, keine Annahme: in
+  der Lücke geöffnet und mit unverändertem Formular abgeschickt, verliert
+  diese Oberfläche nichts. Eine Sperre ohne Schaden nähme dem Anwender nur
+  die Seite. Wer während der Installation auf *Dienst starten* oder *Dienst
+  neu starten* drückt, bekommt den Hinweis, dass gerade eine Aktualisierung
+  läuft und sie den Dienst an ihrem Ende selbst startet — **nicht** die
+  Meldung „Dienst gestartet“. `bin/dienst.sh` endet in diesem Fall mit 0,
+  und ein Rückgabewert ist keine Wirkung. *Dienst anhalten* bleibt erlaubt.
 
 ## Neu in 0.9.18
 
@@ -561,6 +609,8 @@ ein `rm -rf <ordner>/` trifft den Nachbarn mit dem Punkt nicht:
     config/plugins/<ordner>.lief_vorher          Startmerker
     data/plugins/<ordner>.rettung/               Verlauf, Ladeprotokoll,
                                                  Merker, Anmeldemarken
+    data/plugins/<ordner>.upgrade_laeuft         Marke: es läuft gerade
+                                                 eine Aktualisierung
 
 `preupgrade.sh` legt das an, `postinstall.sh` spielt es zurück, und das
 Deinstallationsskript räumt es wieder weg — im Rettungsordner stehen die

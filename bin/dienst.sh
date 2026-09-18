@@ -49,6 +49,11 @@ PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
 PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
+# Die Marke "Aktualisierung laeuft". preupgrade.sh legt sie als Erstes an,
+# postinstall.sh entfernt sie unmittelbar vor dem Dienststart. Sie liegt
+# NEBEN dem Datenordner, weil purge_installation den Ordner selbst loescht
+# (Regeln/06, sbin/plugininstall.pl:1629/1631).
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
 LOGDATEI="$PLOG/audi.log"
 # Eigene Datei fuer alles, was NEBEN dem Protokoll anfaellt: Meldungen des
 # Starts und alles, was das Programm nach stderr schreibt, bevor sein
@@ -93,6 +98,36 @@ ist_unser_dienst() {
     [ "$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n '2p')" = "$SKRIPT" ]
 }
 
+# Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# Der Installer legt die Cron-Datei rund eine Minute VOR postinstall.sh neu
+# an; dazwischen hat purge_installation config/, data/ und bin/ dieses
+# Plugins geloescht (Regeln/06, am Geraet 08.09.2026 an der Einspeisebremse
+# gemessen). In WSL nachgestellt (Pruefung-AudiConnect-0.9.19,
+# messe_au_marke.sh): der Minutentakt startet in dieser Luecke nichts, weil
+# der Sollmerker mit dem Datenordner verschwunden ist - der Knopf "Dienst
+# starten" der Oberflaeche aber schon, sobald postinstall.sh die virtuelle
+# Umgebung angelegt hat und noch beim pip-Lauf steht (Fall knopf_venv:
+# rc=0, "gestartet", 1 Prozess). Der Dienst laeuft dann gegen eine halb
+# eingerichtete Umgebung.
+#
+# Die Marke traegt die Unixzeit ihrer Entstehung:
+#   juenger als 3600 s  -> es laeuft eine Installation, nicht starten
+#   aelter, aus der Zukunft oder unlesbar -> sie gilt nicht. Eine
+#     abgebrochene Installation darf den Dienst nicht fuer immer stilllegen.
+#   ohne lesbare Uhr faellt die Pruefung GESCHLOSSEN aus (die Marke gilt):
+#     ein Schutz, der seine Entscheidungsgrundlage verliert, laesst nicht
+#     durch (CLAUDE.md Punkt 4).
+upgrade_laeuft() {
+    [ -f "$MARKE" ] || return 1
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in ''|*[!0-9]*) return 0 ;; esac
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$SEIT" -gt "$JETZT" ] && return 1
+    [ $((JETZT - SEIT)) -lt 3600 ]
+}
+
 laeuft() {
     [ -f "$PID" ] || return 1
     P=$(cat "$PID" 2>/dev/null)
@@ -131,6 +166,14 @@ sys.exit(0 if ok else 1)' "$PCONFIG/zugang.json" 2>/dev/null
 starten() {
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
+        return 0
+    fi
+    # Der Sollmerker wird hier NICHT angefasst: waehrend einer Aktualisierung
+    # soll sich am Willen des Anwenders nichts aendern. postinstall.sh startet
+    # den Dienst am Ende selbst und entfernt die Marke vorher.
+    if upgrade_laeuft; then
+        echo "Es laeuft gerade eine Aktualisierung dieses Plugins."
+        echo "Der Dienst wird nach der Installation gestartet."
         return 0
     fi
     if [ ! -x "$PY" ]; then
@@ -249,7 +292,11 @@ case "$1" in
         # Die Ausgabe von starten() wird gesammelt und danach angehaengt:
         # starten() kappt die Startdatei selbst, und eine Umleitung in
         # dieselbe Datei, aus der es im Fehlerfall zitiert, liefe im Kreis.
-        if [ -f "$SOLL" ] && ! laeuft; then
+        # upgrade_laeuft in DERSELBEN Bedingung, nicht als eigener Zweig
+        # darunter: sonst kappte der Waechter erst die Startdatei und
+        # schriebe seine Zeile ins Protokoll, bevor er merkt, dass er nichts
+        # tun darf - eine Zeile je Minute, solange die Installation laeuft.
+        if [ -f "$SOLL" ] && ! laeuft && ! upgrade_laeuft; then
             # Die Fehlerausgabe DIESES Skripts geht, sobald der Waechter
             # etwas tut, in die Startdatei - SEIT 0.9.15. Der Cron-Eintrag
             # ruft mit ">/dev/null 2>&1" auf (am Geraet gelesen, 11.09.2026),

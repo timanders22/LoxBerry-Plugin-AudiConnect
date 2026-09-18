@@ -51,6 +51,26 @@ PDATA="$BASE/data/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 VENV="$PBIN/venv"
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+
+# Die Marke faellt ueber einen trap, nicht erst am Dateiende.
+#
+# Dieses Skript steigt an sieben Stellen mit "exit 1" aus (Ordner, Python,
+# venv, pip, Bibliothek, Connector, Rechte). Ohne trap bliebe der
+# Dienststart nach einer gescheiterten Installation eine Stunde gesperrt,
+# ohne dass irgendwo stuende, warum. Eine Kommandoersetzung und eine
+# Unterschale loesen den EXIT-Trap nicht aus (Regeln/06, bash 5.2 gemessen)
+# - die Marke faellt also nicht zu frueh.
+#
+# Der Trap ist nur das Netz. Entfernt wird sie ausdruecklich VOR dem
+# Dienststart am Ende dieser Datei: bin/dienst.sh verweigert den Start,
+# solange sie liegt, und dieses Skript ist es, das den Dienst wieder
+# anwirft. Das letzte Hakenskript dieser Linie ist postupgrade.sh - es ruft
+# nur diese Datei auf. Wuerde die Marke erst nach dem Start fallen, bliebe
+# der Dienst nach jedem Upgrade aus: in WSL gemessen, indem genau diese
+# Zeile zurueckgebaut wurde (Pruefung-AudiConnect-0.9.19, Eichung
+# "postinstall_rm", Fall grundprobe: 0 Dienste statt 1).
+trap 'rm -f "$MARKE" 2>/dev/null' EXIT
 
 KERN="0.11.10"
 CONNECTOR="0.3.2"
@@ -330,6 +350,11 @@ chmod 600 "$PDATA/token.json" 2>/dev/null || true
 # Installation den Dienst einmal - der sich ohne Zugangsdaten selbst
 # abweist. Nachgesehen, nicht angenommen.
 MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
+# Die Marke VOR dem Start entfernen - sonst verweigert bin/dienst.sh ihn.
+# Erst hier und nicht frueher: bis zu dieser Zeile laeuft die Installation,
+# und bis hierher soll kein anderer Weg (Knopf der Oberflaeche, Minutentakt)
+# einen Dienst gegen eine halb eingerichtete Umgebung anwerfen.
+rm -f "$MARKE" 2>/dev/null
 if [ -f "$MERKER" ]; then
     rm -f "$MERKER"
     if [ ! -x "$PBIN/dienst.sh" ]; then

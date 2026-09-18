@@ -65,6 +65,32 @@ function au_pruefungen()
             $f['paho'] !== '' ? 'paho-mqtt ' . au_e($f['paho']) : au_t('TEST.A_PAHO_UNNOETIG'));
     }
 
+    /* Die Marke "Aktualisierung laeuft". Zu jeder Regel gehoert das
+     * Werkzeug, das sie findet (CLAUDE.md Punkt 6) - hier ist es diese
+     * Zeile. Drei Ausgaenge, nicht zwei:
+     *   keine Marke               grauer Punkt, Hinweis
+     *   Marke gilt                grauer Punkt: es laeuft gerade eine
+     *                             Installation, das ist kein Mangel
+     *   Marke liegt, gilt nicht   KREUZ: postinstall.sh haette sie
+     *                             entfernen muessen. Eine abgebrochene
+     *                             Installation hat sie liegen lassen.
+     * Der Dienst ist davon nicht mehr betroffen (aelter als 3600 s oder
+     * unlesbar heisst: sie gilt nicht), aber die Datei gehoert weg. */
+    $au_marke = au_marke();
+    if ($au_marke === null) {
+        $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_UPGRADE_MARKE'),
+            au_t('TEST.A_UPGRADE_KEINE'));
+    } elseif ($au_marke['gilt']) {
+        $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(au_t('TEST.A_UPGRADE_LAEUFT'), (int) $au_marke['alter']));
+    } elseif ($au_marke['alter'] === null) {
+        $zeilen[] = au_pruefzeile(0, au_t('TEST.F_UPGRADE_MARKE'),
+            au_t('TEST.A_UPGRADE_UNLESBAR'));
+    } else {
+        $zeilen[] = au_pruefzeile(0, au_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(au_t('TEST.A_UPGRADE_ALT'), (int) $au_marke['alter']));
+    }
+
     $pid = au_dienst_pid();
     $zeilen[] = au_pruefzeile($pid > 0 ? 1 : 0, au_t('TEST.F_DIENST'),
         $pid > 0 ? au_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid

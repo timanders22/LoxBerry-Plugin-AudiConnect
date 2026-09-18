@@ -768,6 +768,51 @@ function au_dienst_soll()
     return is_file(au_paths()['datadir'] . '/soll_laufen') ? 1 : 0;
 }
 
+/**
+ * Die Marke "Aktualisierung laeuft".
+ *
+ * preupgrade.sh legt data/plugins/<ordner>.upgrade_laeuft als Erstes an,
+ * postinstall.sh entfernt sie unmittelbar vor dem Dienststart. Sie liegt
+ * NEBEN dem Datenordner, weil purge_installation den Ordner selbst loescht
+ * (Regeln/06). bin/dienst.sh startet nicht, solange sie gilt.
+ *
+ * Diese Funktion ZEIGT sie nur an - der Reiter Test beantwortet damit die
+ * Frage, ob gerade eine Installation laeuft oder eine abgebrochene ihre
+ * Marke hat liegen lassen. Die Oberflaeche sperrt nicht: in der Luecke
+ * geht hier nichts verloren. Gemessen (Pruefung-AudiConnect-0.9.19,
+ * Faelle oberflaeche_get und oberflaeche_post): die drei Geheimnisse
+ * kommen aus der Zweitschrift zurueck, und postinstall.sh holt zugang.json
+ * hinterher. Eine Sperre ohne gemessenen Schaden naehme dem Anwender nur
+ * die Seite (Regeln/06, Entscheidung vom 17.09.2026).
+ *
+ * Rueckgabe: null, wenn keine Marke liegt; sonst array mit
+ *   'alter'  Sekunden seit ihrer Entstehung, oder null bei unlesbarem Inhalt
+ *   'gilt'   true, solange sie den Dienststart wirklich sperrt
+ * Dieselben Grenzen wie in bin/dienst.sh: aelter als 3600 s, aus der
+ * Zukunft oder unlesbar - sie gilt nicht.
+ */
+function au_marke()
+{
+    $d = au_paths()['datadir'];
+    $f = dirname($d) . '/' . basename($d) . '.upgrade_laeuft';
+    if (!is_file($f)) {
+        return null;
+    }
+    $roh = trim((string) @file_get_contents($f));
+    // preg_match statt ctype_digit: ctype_* kommt aus einer Erweiterung, die
+    // nicht auf jedem LoxBerry geladen ist (Regeln/02, Pflichtpruefung).
+    // Diese Zeile entscheidet, ob eine Marke gilt - ein Aufruf ins Leere
+    // waere ein toedlicher Fehler ausgerechnet im Reiter Test.
+    if ($roh === '' || !preg_match('/^[0-9]+$/', $roh)) {
+        return array('alter' => null, 'gilt' => false);
+    }
+    $alter = time() - (int) $roh;
+    if ($alter < 0) {
+        return array('alter' => $alter, 'gilt' => false);
+    }
+    return array('alter' => $alter, 'gilt' => $alter < 3600);
+}
+
 /** $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe) */
 function au_dienst($befehl)
 {
