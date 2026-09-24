@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.20 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,18 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.21
+
+Die Aufforderung am Ende der Installation, die Zugangsdaten des myAudi-Kontos
+einzutragen, erscheint nur noch, wenn `zugang.json` nach dem Zurückspielen keine
+trägt (dieselbe Prüfung `traegt()` wie für die Zweitschrift) – also bei der
+Erstinstallation oder wenn die Rückholung gescheitert ist; nach einem gelungenen
+Update steht stattdessen `<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen.`
+(gemessen in WSL, `Pruefung-AudiConnect-0.9.21/postinstall_hinweis.md`). Eine
+Zweitschrift ohne Einstellungen (etwa `{}`) wird nicht mehr kopiert und als
+„wiederhergestellt“ gemeldet, sondern mit „Sicherung ohne Einstellungen - nichts
+zurueckgespielt“.
 
 ## Neu in 0.9.20
 

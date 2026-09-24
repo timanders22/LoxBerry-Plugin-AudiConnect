@@ -161,7 +161,14 @@ for f in audi.json zugang.json; do
     if [ -f "$BK" ]; then
         INHALT=$(cat "$CF" 2>/dev/null)
         if ! traegt "$CF" $SCHL || [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-            if cp -p "$BK" "$CF"; then
+            # Nur eine Zweitschrift MIT Inhalt (dieselbe Pruefung traegt()).
+            # Bis 0.9.20 wurde auch "{}" kopiert und als "wiederhergestellt"
+            # gemeldet (gemessen 24.09.2026, Pruefung-AudiConnect-0.9.21,
+            # Fall c) - eine Erfolgsmeldung ueber nichts. Ohne perl laesst
+            # sich der Inhalt nicht pruefen; dann wird wie bisher kopiert.
+            if command -v perl >/dev/null 2>&1 && ! traegt "$BK" $SCHL; then
+                echo "<INFO> $f: Sicherung ohne Einstellungen - nichts zurueckgespielt."
+            elif cp -p "$BK" "$CF"; then
                 echo "<OK> $f aus Sicherung wiederhergestellt."
             else
                 echo "<FAIL> $f liess sich nicht wiederherstellen ($BK)."
@@ -401,7 +408,25 @@ if [ -f "$MERKER" ]; then
     fi
 fi
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Zugangsdaten des myAudi-Kontos"
-echo "<INFO> eintragen und den Dienst im Reiter Einstellungen starten."
+# ---------- Abschluss: Erstanleitung nur ohne Zugangsdaten ----------
+# Dieses Skript laeuft auch bei jedem Upgrade (postupgrade.sh ruft es auf).
+# Bis 0.9.20 stand die Aufforderung, die Zugangsdaten einzutragen, deshalb
+# auch nach jedem gelungenen Upgrade da, obwohl sie eben zurueckgespielt
+# waren (gemessen 24.09.2026 in WSL, Pruefung-AudiConnect-0.9.21, Fall b).
+# Entschieden wird nach dem INHALT, nicht nach der Upgrade-Marke: traegt()
+# auf zugang.json mit denselben Schluesseln, mit denen oben die Zweitschrift
+# beurteilt wird (email passwort spin). Fehlen sie nach einem Upgrade, ist
+# die Rueckholung gescheitert, und die Anleitung ist richtig. Ohne perl
+# meldet traegt() "leer" - dann lieber die Anleitung einmal zu viel.
+#
+# Kein Satz zum Dienst hier: postupgrade.sh ruft dieses Skript ein zweites
+# Mal, dann ist der Merker schon fort - ob der Dienst laeuft, meldet der
+# erste Lauf weiter oben.
+if traegt "$PCONFIG/zugang.json" email passwort spin; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Zugangsdaten des myAudi-Kontos"
+    echo "<INFO> eintragen und den Dienst im Reiter Einstellungen starten."
+fi
 exit 0
