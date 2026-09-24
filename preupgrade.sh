@@ -15,11 +15,32 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 # Pfaden /config/plugins/... und /data/plugins/..., jedes rm und cp laeuft ins
 # Leere, und die Schlusszeile meldete trotzdem <OK>. Der Installer uebergibt
 # $5 zwar immer; von Hand aufgerufen fehlt es.
+#
+# BERICHTIGT IN 0.9.20. Der Rueckfall "$SELF/../.." raet; lag der
+# Auspackordner zwei Ebenen unter einem fremden Baum, war dieser die Wurzel.
+# In WSL gemessen (Fall h_preupgrade, 24.09.2026): dort entstanden Marke und
+# Sicherung, rc=0. Jetzt wird aufwaerts gesucht, und verlangt werden drei
+# Nachweise - der dritte, config/system/general.json, unterscheidet eine
+# Anlage von einem Rest aus einem frueheren Pruefstand (Regeln/06).
+au_wurzel_suchen() {
+    au_v=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+    au_i=0
+    while [ -n "$au_v" ] && [ "$au_v" != "/" ] && [ "$au_i" -lt 8 ]; do
+        if [ -d "$au_v/config/plugins" ] && [ -d "$au_v/data/plugins" ] \
+           && [ -f "$au_v/config/system/general.json" ]; then
+            echo "$au_v"
+            return 0
+        fi
+        au_v=$(dirname "$au_v")
+        au_i=$((au_i + 1))
+    done
+    return 1
+}
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    BASE=$(au_wurzel_suchen) || BASE=""
 fi
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
     echo "<FAIL> Die LoxBerry-Wurzel liess sich nicht bestimmen (\$5='$ARGV5',"
     echo "<FAIL> LBHOMEDIR='$LBHOMEDIR'). Es wurde NICHTS gesichert und nichts"
     echo "<FAIL> angehalten - lieber ein sichtbarer Abbruch als eine stille"
@@ -132,9 +153,33 @@ fi
 # Argumente durch Nullbytes getrennt, ein grep darueber trifft auch einen
 # Editor mit geoeffneter audi.py - und bei wiederverwendeter Prozessnummer
 # haette es einen fremden Prozess hart abgeschossen.
+# ERWEITERT IN 0.9.20 auf die volle Probe: argv[0] ist ein Python, argv[1]
+# ist zeichengenau unser Skript, ein DRITTES Argument gibt es nicht (sonst
+# ist es ein Einmallauf wie --selbsttest), und der Prozess gehoert dem
+# Dienstbenutzer. Wortgleich mit bin/dienst.sh und uninstall/uninstall.
+DIENSTUID=$(id -u loxberry 2>/dev/null || id -u)
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    [ "$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n '2p')" = "$SKRIPT" ]
+    [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$DIENSTUID" ] || return 1
+    ROH=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+    [ -n "$ROH" ] || return 1
+    A0=$(printf '%s\n' "$ROH" | sed -n '1p')
+    A1=$(printf '%s\n' "$ROH" | sed -n '2p')
+    A2=$(printf '%s\n' "$ROH" | sed -n '3p')
+    [ -n "$A0" ] && [ -n "$A1" ] && [ -z "$A2" ] || return 1
+    case "${A0##*/}" in python|python[0-9.]*) ;; *) return 1 ;; esac
+    case "$A1" in
+        /*) ZIEL=$A1 ;;
+        *)  WD=$(readlink "/proc/$1/cwd" 2>/dev/null) || return 1
+            ZIEL="${WD% (deleted)}/$A1" ;;
+    esac
+    [ "$ZIEL" = "$SKRIPT" ]
+}
+au_dienste_suchen() {
+    for au_d in /proc/[0-9]*; do
+        ist_unser_dienst "${au_d#/proc/}" && echo "${au_d#/proc/}"
+    done
+    return 0
 }
 
 if [ -f "$PID" ]; then
@@ -164,6 +209,45 @@ if [ -f "$PID" ]; then
         fi
     fi
     rm -f "$PID"
+fi
+
+# ---------------------------------------------------------------------------
+# DIE WAISENSUCHE - NEU IN 0.9.20.
+#
+# Der Zweig darueber findet nur, was in der PID-Datei steht. Fehlt sie - weil
+# der Dienst von Hand gestartet wurde, weil ein frueheres Upgrade sie mit dem
+# Datenordner geloescht hat, weil jemand sie entfernt hat -, dann ueberlebt
+# der alte Dienst das Upgrade unsichtbar, und postinstall.sh startet einen
+# ZWEITEN daneben. In WSL gemessen (Pruefung-AudiConnect-0.9.19, Fall waise;
+# Pruefung-AudiConnect-0.9.20, Fall g_waise_upgrade): 2 Prozesse nach der
+# Installation. Beide melden sich bei myAudi an, beide fuehren ihre eigene
+# Drosselung, beide schreiben in dieselben Dateien.
+#
+# Gesucht wird argumentweise ueber /proc, NICHT mit "pgrep -f": pgrep sucht
+# ueber die ganze Befehlszeile, und ein "tail -f <pfad>/audi.py" desselben
+# Benutzers waere damit ein Treffer (Regeln/06, Sprachsteuerung 0.11.8,
+# 18.09.2026). Vor jedem Signal steht die Probe, und nach dem Signal wird
+# nachgesehen.
+WAISEN=$(au_dienste_suchen)
+if [ -n "$WAISEN" ]; then
+    kill $WAISEN 2>/dev/null || true
+    i=0
+    while [ $i -lt 15 ] && [ -n "$(au_dienste_suchen)" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    REST=$(au_dienste_suchen)
+    if [ -n "$REST" ]; then
+        kill -9 $REST 2>/dev/null || true
+        sleep 1
+    fi
+    UEBRIG=$(au_dienste_suchen)
+    if [ -n "$UEBRIG" ]; then
+        echo "<INFO> Ein Abrufdienst laeuft weiter (PID $(echo $UEBRIG)) - er gehoert"
+        echo "<INFO> moeglicherweise einem anderen Benutzer: ps -o user= -p $(echo $UEBRIG)"
+    else
+        echo "<OK> Abrufdienst ohne PID-Datei beendet (PID $(echo $WAISEN))."
+    fi
 fi
 
 # ---------------------------------------------------------------------------

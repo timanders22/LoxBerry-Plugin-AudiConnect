@@ -27,12 +27,33 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-audiconnect}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+# Dritter Rueckfall: die Aufwaertssuche vom eigenen Ablageort - LoxBerry::System
+# taugt hier nicht, weil es den Pluginordner aus dem Aufrufort ableitet und
+# aus postinstall.sh heraus ueberall Leerstring liefert.
+#
+# BERICHTIGT IN 0.9.20. Hier stand "$SELF/../.." ohne jeden Nachweis; lag der
+# Auspackordner zwei Ebenen unter einem fremden Baum, war dieser die Wurzel.
+# In WSL gemessen (Fall h_postinstall, 24.09.2026): Konfigurations- und
+# Datenordner entstanden dort, rc=0. Verlangt werden jetzt drei Nachweise,
+# und der dritte - config/system/general.json - ist der entscheidende: die
+# beiden Ordner entstehen auf jedem Rechner, auf dem einmal ein Pruefstand
+# ohne LBHOMEDIR lief (Regeln/06, Raumklima 0.11.3).
+au_wurzel_suchen() {
+    au_v=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+    au_i=0
+    while [ -n "$au_v" ] && [ "$au_v" != "/" ] && [ "$au_i" -lt 8 ]; do
+        if [ -d "$au_v/config/plugins" ] && [ -d "$au_v/data/plugins" ] \
+           && [ -f "$au_v/config/system/general.json" ]; then
+            echo "$au_v"
+            return 0
+        fi
+        au_v=$(dirname "$au_v")
+        au_i=$((au_i + 1))
+    done
+    return 1
+}
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    # Ableitung aus dem eigenen Ablageort - LoxBerry::System taugt hier nicht,
-    # weil es den Pluginordner aus dem Aufrufort ableitet und aus
-    # postinstall.sh heraus ueberall Leerstring liefert.
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    BASE=$(au_wurzel_suchen) || BASE=""
 fi
 
 # Fail-closed wie in uninstall/uninstall: sieht die Lage nicht wie ein
@@ -40,9 +61,11 @@ fi
 # fehlgeschlagenen cd leer, und der Installer legte als root /data/plugins,
 # /log/plugins und /config/plugins im Wurzelverzeichnis an - mit Erfolg,
 # weil root das darf, und mit einer Installation, die Erfolg meldet.
-if [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
-    echo "<FAIL> $BASE sieht nicht wie ein LoxBerry aus (config/plugins und"
-    echo "<FAIL> data/plugins fehlen). Es wurde nichts angelegt."
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
+    echo "<FAIL> '$BASE' sieht nicht wie ein LoxBerry aus (config/plugins,"
+    echo "<FAIL> data/plugins und config/system/general.json muessen dort"
+    echo "<FAIL> liegen). Es wurde nichts angelegt."
     exit 1
 fi
 

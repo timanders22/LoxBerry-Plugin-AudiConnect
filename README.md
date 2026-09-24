@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.19 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.20 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,54 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.20
+
+- **Das Plugin liest jetzt, wo sein LoxBerry liegt, statt es zu raten.** Bis
+  0.9.19 rechneten `bin/dienst.sh`, `bin/audi.py`, die Hakenskripte und die
+  Oberfläche die Wurzel aus dem eigenen Ablageort aus — drei Ebenen nach oben,
+  und ein gesetztes `$LBHOMEDIR` wurde dabei übergangen. Jetzt gilt zuerst die
+  Umgebung, danach eine Aufwärtssuche, die drei Nachweise verlangt:
+  `config/plugins`, `data/plugins` **und** `config/system/general.json`. Der
+  dritte ist der entscheidende — die beiden Ordner entstehen auf jedem
+  Rechner, auf dem einmal ein Prüfstand ohne `LBHOMEDIR` gelaufen ist, eine
+  `general.json` hat nur eine Anlage. Findet sich keine Wurzel, wird nichts
+  angelegt, nichts gestartet und nichts angehalten; `dienst.sh status`
+  antwortet dann mit 4 („Zustand unbekannt"), alles andere mit 1. Gemessen
+  (WSL, `Pruefung-AudiConnect-0.9.20`): vorher startete `dienst.sh` in einem
+  fremden Baum einen Dienst, legte dort Daten- und Protokollordner an und nahm
+  ihm sein `soll_laufen`; `uninstall` löschte dort die Zweitschrift der
+  Konfiguration, `preupgrade.sh` legte dort Marke und Sicherung ab. Der feste
+  Rückfall `/home/loxberry/loxberry` in der Oberfläche ist ersatzlos fort.
+- **Der Ordnername kommt aus `$LBPPLUGINDIR`**, nicht mehr aus dem
+  Verzeichnisnamen. Bei einer Zweitinstallation hängt LoxBerry einen Zähler an
+  (`audiconnect_01`); erschlossen statt gelesen zeigten die Pfade dann auf die
+  erste Installation.
+- **`dienst.sh status` legt nichts mehr an.** Das `mkdir` stand bisher auf
+  oberster Ebene und lief bei *jedem* Aufruf — auch bei einer bloßen Auskunft
+  und auch mitten in der Aktualisierung, wenn der Datenordner gerade
+  abgeräumt war.
+- **Ein Dienst ohne PID-Datei geht beim Update mit.** Löscht der Installer mit
+  dem Datenordner die PID-Datei — das tut er bei jedem Upgrade —, überlebte der
+  alte Dienst bisher unsichtbar, und `postinstall.sh` stellte einen **zweiten**
+  daneben. Gemessen am 18.09.2026: zwei Prozesse nach der Installation, beide
+  bei myAudi angemeldet, beide mit eigener Drosselung. `preupgrade.sh` sucht
+  jetzt argumentweise über `/proc` nach eigenen Diensten und beendet auch die
+  ohne PID-Datei; `dienst.sh stop` ebenso, `start` stellt keinen zweiten mehr
+  daneben, `status` und die Oberfläche zeigen einen solchen Dienst an.
+- **Die Diensterkennung prüft vier Dinge statt einem**: `argv[0]` ist ein
+  Python, `argv[1]` ist zeichengenau das eigene `audi.py` (bei relativem Start
+  über `/proc/<pid>/cwd` aufgelöst), ein **drittes** Argument gibt es nicht
+  (`audi.py --selbsttest` ist ein Einmallauf, kein Dienst), und der Prozess
+  gehört dem Dienstbenutzer. Gesucht wird nie mit `pgrep -f`: das durchsucht
+  die ganze Befehlszeile, und ein `sh <pfad>/audi.py` desselben Benutzers wäre
+  damit ein Treffer.
+- **Die Kachel „MQTT" zeigt jetzt, ob dieses Plugin veröffentlicht.** Bis 0.9.19
+  stand dort als großer Wert der Autostart des MQTT-Gateways von LoxBerry, und
+  „MQTT ein" las sich, als sende das Plugin — auch wenn es im Reiter MQTT
+  ausgeschaltet war. Der Autostart des Gateways steht jetzt klein darunter;
+  fehlt der MQTT-Abschnitt in der LoxBerry-Konfiguration, heißt er dort
+  „nicht feststellbar" statt „aus".
 
 ## Neu in 0.9.19
 

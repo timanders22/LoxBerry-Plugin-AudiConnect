@@ -733,9 +733,18 @@ if ($au_rahmen) {
     <b><?= count($au_fahrzeuge) ?></b>
     <span class="sm-hilfe"><?= $au_libv !== '' ? au_e($au_libv) : au_e(au_t('ALLG.LIB_FEHLT')) ?></span>
   </div>
+  <!-- Der grosse Wert ist die MQTT-Veroeffentlichung DIESES Plugins (mqtt_ein),
+       der Autostart des Gateways steht klein darunter. Bis 0.9.19 stand hier
+       der Autostart des Gateways; "MQTT ein" las sich, als sende das Plugin,
+       auch wenn es gar nicht veroeffentlichte.
+       Vorbild ZendureSolarFlow 0.9.21 und BatterieBMS 0.9.22. Ohne
+       MQTT-Abschnitt in general.json heisst der Autostart "nicht feststellbar"
+       statt "aus". -->
   <div class="sm-kachel">MQTT
-    <b class="<?= $au_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $au_mqtt['autostart'] ? au_e(au_t('ALLG.EIN')) : au_e(au_t('ALLG.AUS')) ?></b>
-    <span class="sm-hilfe"><?= au_e(au_t('ALLG.GATEWAY')) ?></span>
+    <b class="<?= !empty($au_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($au_cfg['mqtt_ein']) ? au_e(au_t('ALLG.EIN')) : au_e(au_t('ALLG.AUS')) ?></b>
+    <span class="sm-hilfe"><?= au_e(sprintf(au_t('ALLG.KACHEL_MQTT_HILFE'),
+        !$au_mqtt['gefunden'] ? au_t('ALLG.NICHT_FESTSTELLBAR')
+        : ($au_mqtt['autostart'] ? au_t('ALLG.EIN') : au_t('ALLG.AUS')))) ?></span>
   </div>
   <div class="sm-kachel"><?= au_e(au_t('ALLG.BEFEHLE_STUNDE')) ?>
     <b><?= (int) (isset($au_zustand['befehle_stunde']) ? $au_zustand['befehle_stunde'] : 0) ?></b>

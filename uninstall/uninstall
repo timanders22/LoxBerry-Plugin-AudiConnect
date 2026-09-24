@@ -46,14 +46,37 @@
 PDIR=$3                      # Installationsordner des Plugins
 [ -n "$PDIR" ] || PDIR="audiconnect"
 BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren.
-# Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
-# ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
+# Dritter Rueckfall: die Aufwaertssuche vom eigenen Ablageort. Bewusst kein
+# fest verdrahteter Systempfad - LoxBerry laesst sich anderswohin
+# installieren. Der Installer legt dieses Skript als
+# <home>/data/system/uninstall/<ordner> ab und uebergibt die LoxBerry-Wurzel
+# als fuenftes Argument (plugininstall.pl:1158 und :1577, am Geraet
+# nachgesehen 17.09.2026); dieser Zweig greift nur, wenn beides fehlt.
+#
+# BERICHTIGT IN 0.9.20. Hier stand "drei Ebenen ueber dem Ablageort", ohne
+# jeden Nachweis. In WSL gemessen (Fall h_uninstall, 24.09.2026): in einem
+# fremden Baum mit config/plugins und data/plugins loeschte dieses Skript
+# dort die Zweitschrift und meldete <OK>. Verlangt werden jetzt drei
+# Nachweise - config/plugins, data/plugins UND config/system/general.json.
+# Der dritte ist der entscheidende: die beiden Ordner entstehen auf jedem
+# Rechner, auf dem einmal ein Pruefstand ohne LBHOMEDIR lief, eine
+# general.json hat nur eine Anlage (Regeln/06, Raumklima 0.11.3).
+au_wurzel_suchen() {
+    au_v=$(dirname "$(readlink -f "$0")")
+    au_i=0
+    while [ -n "$au_v" ] && [ "$au_v" != "/" ] && [ "$au_i" -lt 8 ]; do
+        if [ -d "$au_v/config/plugins" ] && [ -d "$au_v/data/plugins" ] \
+           && [ -f "$au_v/config/system/general.json" ]; then
+            echo "$au_v"
+            return 0
+        fi
+        au_v=$(dirname "$au_v")
+        au_i=$((au_i + 1))
+    done
+    return 1
+}
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+    BASE=$(au_wurzel_suchen) || BASE=""
 fi
 
 PDATA="$BASE/data/plugins/$PDIR"
@@ -63,8 +86,11 @@ PCONFIG="$BASE/config/plugins"
 # Fail-closed: sieht die Lage nicht wie ein LoxBerry aus, wird NICHTS
 # geloescht. Ein Loeschskript, das sich im Pfad irrt, ist schlimmer als
 # eines, das nicht laeuft.
-if [ ! -d "$PCONFIG" ]; then
-    echo "<FAIL> $PCONFIG gibt es nicht - es wurde nichts geloescht."
+if [ -z "$BASE" ] || [ ! -d "$PCONFIG" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
+    echo "<FAIL> '$BASE' sieht nicht wie ein LoxBerry aus (config/plugins,"
+    echo "<FAIL> data/plugins und config/system/general.json muessen dort"
+    echo "<FAIL> liegen) - es wurde nichts geloescht und nichts angehalten."
     echo "<FAIL> Bitte von Hand nachsehen: config/plugins/$PDIR.backup.*"
     exit 1
 fi
@@ -82,9 +108,27 @@ fi
 # volle Pfad statt nur des Dateinamens, damit die Deinstallation des
 # einen Exemplars nicht den Dienst eines zweiten abschiesst (LoxBerry
 # haengt bei Namenskonflikt 01, 02 ... an den Ordnernamen an).
+# ERWEITERT IN 0.9.20 auf die volle Probe: argv[0] ist ein Python, argv[1]
+# ist zeichengenau unser Skript, ein DRITTES Argument gibt es nicht (sonst
+# ist es ein Einmallauf wie --selbsttest), und der Prozess gehoert dem
+# Dienstbenutzer. Wortgleich mit bin/dienst.sh und preupgrade.sh.
+DIENSTUID=$(id -u loxberry 2>/dev/null || id -u)
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    [ "$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n '2p')" = "$PBIN/audi.py" ]
+    [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$DIENSTUID" ] || return 1
+    ROH=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+    [ -n "$ROH" ] || return 1
+    A0=$(printf '%s\n' "$ROH" | sed -n '1p')
+    A1=$(printf '%s\n' "$ROH" | sed -n '2p')
+    A2=$(printf '%s\n' "$ROH" | sed -n '3p')
+    [ -n "$A0" ] && [ -n "$A1" ] && [ -z "$A2" ] || return 1
+    case "${A0##*/}" in python|python[0-9.]*) ;; *) return 1 ;; esac
+    case "$A1" in
+        /*) ZIEL=$A1 ;;
+        *)  WD=$(readlink "/proc/$1/cwd" 2>/dev/null) || return 1
+            ZIEL="${WD% (deleted)}/$A1" ;;
+    esac
+    [ "$ZIEL" = "$PBIN/audi.py" ]
 }
 
 beenden() {

@@ -26,7 +26,11 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt.
+ * config/plugins, data/plugins UND config/system/general.json traegt.
+ * BERICHTIGT IN 0.9.20: bis dahin genuegten config/plugins und webfrontend -
+ * damit galt jeder Rest eines frueheren Pruefstands als Wurzel, und dieses
+ * Skript laed dann die LoxBerry-Bibliothek aus einem FREMDEN Baum. In WSL
+ * gemessen (Fall h_notify, 24.09.2026): rc=0, und die Meldung landete dort.
  *
  * DIESER BLOCK STEHT VOR SEINEM AUFRUF. PHP zieht Funktionen, die in einem
  * if-Block stehen, nicht vor: sie entstehen erst, wenn die Zeile ausgefuehrt
@@ -40,7 +44,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -52,11 +57,16 @@ if (!function_exists('lb_wurzel_ermitteln')) {
 }
 
 $home = getenv('LBHOMEDIR');
-if (!$home) {
+if (!$home || !is_dir($home . '/config/plugins') || !is_dir($home . '/data/plugins')) {
     $home = lb_wurzel_ermitteln();
 }
+if (!$home) {
+    fwrite(STDERR, "Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - "
+        . "es wurde keine Meldung abgesetzt.\n");
+    exit(1);
+}
 $sdk = $home . '/libs/phplib/loxberry_log.php';
-if (!$home || !file_exists($sdk)) {
+if (!file_exists($sdk)) {
     fwrite(STDERR, "LoxBerry-Bibliothek nicht gefunden: " . $sdk . "\n");
     exit(1);
 }

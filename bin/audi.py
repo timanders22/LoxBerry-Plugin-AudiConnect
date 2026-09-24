@@ -87,13 +87,21 @@ def lb_wurzel_ermitteln():
     """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
 
     Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
-    config/plugins UND webfrontend enthaelt. Trifft die uebliche
-    Installation genauso wie eine an einem anderen Ort.
+    config/plugins, data/plugins UND config/system/general.json traegt.
+
+    BERICHTIGT IN 0.9.20. Bis dahin genuegten config/plugins und
+    webfrontend. Beides entsteht auf jedem Rechner, auf dem einmal ein
+    Pruefstand ohne LBHOMEDIR gelaufen ist - und dann gilt ein Rest als
+    Wurzel (Regeln/06, Raumklima 0.11.3: der Eichlauf loeschte in
+    C:\\data\\plugins). Eine Anlage hat immer eine general.json, ein solcher
+    Rest hat sie nie. In WSL gemessen (Fall h_py): ohne den dritten Nachweis
+    legte ein Lauf in einem fremden Baum dessen data/plugins/audiconnect an.
     """
     d = os.path.dirname(os.path.abspath(__file__))
     for _ in range(8):
         if os.path.isdir(os.path.join(d, "config", "plugins")) \
-                and os.path.isdir(os.path.join(d, "webfrontend")):
+                and os.path.isdir(os.path.join(d, "data", "plugins")) \
+                and os.path.isfile(os.path.join(d, "config", "system", "general.json")):
             return d
         eltern = os.path.dirname(d)
         if eltern == d:
@@ -140,10 +148,12 @@ def _pname_bestimmen():
     """
     umgebung = (os.environ.get("LBPPLUGINDIR") or "").strip()
     if umgebung:
-        return umgebung
-    if SELF.name == "bin" and SELF.parent.name:
-        # Archivbau: <plugin>/bin. Der Pluginname steckt eine Ebene hoeher.
-        return "audiconnect"
+        return os.path.basename(umgebung.rstrip("/"))
+    # BERICHTIGT IN 0.9.20: hier stand ein Rueckfall auf den festen Namen
+    # "audiconnect", sobald SELF "bin" hiess (Archivbau). Er ist fort - nicht
+    # weil er schadete, sondern weil er einen Namen RAET. Der Archivfall
+    # kommt seit 0.9.20 gar nicht mehr hierher: _lbhome_bestimmen() steigt
+    # vorher aus, wenn keine Wurzel zu finden ist.
     return SELF.name
 
 
@@ -169,22 +179,43 @@ def _lbhome_bestimmen():
     muessen dort liegen), bevor er gilt.
     """
     umgebung = os.environ.get("LBHOMEDIR")
-    if umgebung and Path(umgebung).is_dir():
-        return Path(umgebung)
-    if len(SELF.parents) >= 3:
-        kandidat = SELF.parents[2]
-        if (kandidat / "config" / "plugins").is_dir() \
-                and (kandidat / "data" / "plugins").is_dir():
-            return kandidat
+    if umgebung:
+        k = Path(umgebung)
+        if (k / "config" / "plugins").is_dir() and (k / "data" / "plugins").is_dir():
+            return k.resolve()
     wurzel = lb_wurzel_ermitteln()
     if wurzel:
         return Path(wurzel)
-    # Weder Umgebung noch eine Lage, die wie ein LoxBerry aussieht: dann
-    # wird NEBEN dem Plugin gearbeitet, nicht in einem fremden Baum.
-    return SELF.parent
+    # BERICHTIGT IN 0.9.20. Hier standen zwei weitere Stufen: erst
+    # SELF.parents[2] (drei Ebenen ueber dem Ablageort), dann SELF.parent
+    # ("neben dem Plugin arbeiten"). Beide RATEN. Die zweite legte in einem
+    # fremden Baum dessen data/plugins/<ordner> an - in WSL gemessen
+    # (Fall h_py, 24.09.2026). Ohne brauchbare Wurzel wird jetzt gar nichts
+    # getan (Regeln/06: warnen statt vollziehen).
+    return None
 
 
 LBHOME = _lbhome_bestimmen()
+if LBHOME is None:
+    sys.stderr.write(
+        "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.\n"
+        "        $LBHOMEDIR ist nicht gesetzt oder zeigt nicht auf eine Anlage,\n"
+        "        und oberhalb von %s traegt kein Verzeichnis config/plugins,\n"
+        "        data/plugins und config/system/general.json.\n"
+        "        Es wurde nichts angelegt und nichts geschrieben.\n" % SELF)
+    sys.exit(1)
+# Die Gegenprobe zum Ordnernamen, VOR dem ersten Schreiben: liegt dieses
+# Skript nicht im bin-Ordner der Anlage, und ist <ordner> dort auch kein
+# eingerichtetes Plugin, dann kommt der Aufruf aus einem ausgepackten Archiv
+# oder einem Pruefordner - dann wird nichts angelegt (NEU IN 0.9.20).
+if SELF != LBHOME / "bin" / "plugins" / PNAME \
+        and not (LBHOME / "config" / "plugins" / PNAME).is_dir():
+    sys.stderr.write(
+        "FEHLER: '%s' ist unter %s kein eingerichtetes Plugin, und %s ist\n"
+        "        nicht dessen bin-Ordner. Es wurde nichts angelegt.\n"
+        % (PNAME, LBHOME, SELF))
+    sys.exit(1)
+
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
 PCONFIG = LBHOME / "config" / "plugins" / PNAME

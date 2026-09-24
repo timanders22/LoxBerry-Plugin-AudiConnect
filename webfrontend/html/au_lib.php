@@ -44,11 +44,18 @@ if (!function_exists('au_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * BERICHTIGT IN 0.9.20: bis dahin genuegten config/plugins und webfrontend.
+ * Beide entstehen auf jedem Rechner, auf dem einmal ein Pruefstand ohne
+ * LBHOMEDIR gelaufen ist; ein solcher Rest galt dann als Anlage
+ * (Regeln/06, Raumklima 0.11.3). Eine Anlage hat immer eine general.json.
+ * In WSL gemessen (Fall h_lib, 24.09.2026): au_paths()['home'] zeigte in
+ * den fremden Baum.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -58,7 +65,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -69,33 +77,49 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die LoxBerry-Wurzel: gelesene Umgebung zuerst, dann die Suche.
+ *
+ * NEU IN 0.9.20 - vorher stand dieser Block zweimal im Klartext in der
+ * Datei (au_paths() und au_t()), und beide Male mit einem festen Rueckfall
+ * auf '/home/loxberry/loxberry'. Der ist fort: LoxBerry laesst sich
+ * anderswohin installieren, und ein fester Pfad trifft dann eine FREMDE
+ * Anlage. Findet sich keine Wurzel, ist die Antwort der Leerstring, und die
+ * Aufrufer arbeiten neben dem Plugin statt in einem fremden Baum.
+ * Vorbild: sp_lbhome() in Sprachsteuerung 0.11.9.
+ */
+function au_lbhome()
+{
+    $home = getenv('LBHOMEDIR');
+    if ($home && is_dir($home . '/config/plugins') && is_dir($home . '/data/plugins')) {
+        return $home;
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function au_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) {
-                $home = $k;
-                break;
-            }
-        }
-    }
-    // Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
-    // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
-    // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
-    // sich bei jedem Fork.
+    $home = au_lbhome();
+    // Der Pluginordner: $LBPPLUGINDIR ist die Auskunft von LoxBerry selbst
+    // und hat deshalb den Vorrang - GEAENDERT IN 0.9.20; bis dahin trug der
+    // Ablageort, und die Umgebung wurde nur befragt, wenn der so gefundene
+    // Ordner unter config/plugins fehlte. Der MD5-Schluessel aus der
+    // plugindatabase.json wird bewusst NICHT benutzt: er wird aus
+    // Autorenname, E-Mail und Plugin-Name gebildet und aendert sich bei
+    // jedem Fork.
+    //
+    // Der feste Name greift nur noch dort, wo der ermittelte nachweislich
+    // kein Plugin-Ordner sein KANN: aus dem ausgepackten Archiv heraus
+    // heisst er "html".
+    $lbp = getenv('LBPPLUGINDIR');
     $dir = basename(dirname(__FILE__));
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(getenv('LBPPLUGINDIR'), 'audiconnect') as $kand) {
-            if ($kand && is_dir($home . '/config/plugins/' . $kand)) {
-                $dir = $kand;
-                break;
-            }
-        }
+    if ($lbp) {
+        $dir = basename(rtrim($lbp, '/'));
+    } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html') {
+        $dir = 'audiconnect';
     }
     if ($home) {
         $p = array(
@@ -716,15 +740,110 @@ function au_alter()
 
 /* ---------------- Dienst ---------------- */
 
+/**
+ * Ist diese Prozessnummer ein laufender Dienst DIESES Plugins?
+ *
+ * Argumentweise, vier Bedingungen (NEU IN 0.9.20, wortgleich mit
+ * bin/dienst.sh, preupgrade.sh und uninstall/uninstall):
+ *   argv[0] ist ein Python, argv[1] ist zeichengenau unser Skript, es gibt
+ *   KEIN drittes Argument (sonst ist es ein Einmallauf wie --selbsttest),
+ *   und der Prozess gehoert dem Dienstbenutzer.
+ */
+function au_ist_dienst($pid, $skript)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
+        return false;
+    }
+    $uid = au_dienst_uid();
+    if ($uid >= 0) {
+        $o = @fileowner('/proc/' . $pid);
+        if ($o === false || (int) $o !== $uid) {
+            return false;
+        }
+    }
+    $roh = @file_get_contents('/proc/' . $pid . '/cmdline');
+    if (!is_string($roh) || $roh === '') {
+        return false;
+    }
+    $teile = explode("\0", rtrim($roh, "\0"));
+    if (count($teile) !== 2) {
+        return false;
+    }
+    if (!preg_match('#(^|/)python[0-9.]*$#', $teile[0])) {
+        return false;
+    }
+    return $teile[1] === $skript;
+}
+
+/**
+ * Unter welcher Benutzernummer laeuft der Dienst? -1 heisst "unbekannt".
+ *
+ * Gestartet wird er als loxberry (bin/dienst.sh steigt dazu herunter).
+ * Laesst sich die Nummer nicht ermitteln - ohne die POSIX-Erweiterung geht
+ * es nicht -, wird NICHT gefiltert: ein uebersehener Dienst bekaeme sonst
+ * beim naechsten Start einen zweiten danebengestellt, waehrend ein Beenden
+ * ueber die Benutzergrenze hinweg ohnehin scheitert.
+ */
+function au_dienst_uid()
+{
+    if (function_exists('posix_getpwnam')) {
+        $pw = @posix_getpwnam('loxberry');
+        if (is_array($pw) && isset($pw['uid'])) {
+            return (int) $pw['uid'];
+        }
+    }
+    return -1;
+}
+
+/**
+ * Alle laufenden Dienste dieses Plugins, aufsteigend nach Prozessnummer.
+ *
+ * Auch die OHNE PID-Datei. purge_installation loescht beim Upgrade den
+ * Datenordner und mit ihm die PID-Datei; der Dienst laeuft weiter und war
+ * bis 0.9.19 fuer die Oberflaeche unsichtbar (Fall g_waise_ui: sie meldete
+ * "gestoppt", waehrend ein Dienst lief).
+ */
+function au_dienste_suchen()
+{
+    clearstatcache();
+    $skript = au_paths()['bindir'] . '/audi.py';
+    $treffer = array();
+    // Erst nachsehen, ob es /proc ueberhaupt gibt - eine Warnung, die bei
+    // jedem Aufruf kommt, liest am Ende niemand mehr.
+    if (!@is_dir('/proc')) {
+        return $treffer;
+    }
+    $dh = @opendir('/proc');
+    if ($dh === false) {
+        return $treffer;
+    }
+    while (($e = readdir($dh)) !== false) {
+        if (!preg_match('/^[0-9]+$/', $e)) {
+            continue;
+        }
+        if (au_ist_dienst($e, $skript)) {
+            $treffer[] = (int) $e;
+        }
+    }
+    closedir($dh);
+    sort($treffer);
+    return $treffer;
+}
+
 function au_dienst_pid()
 {
+    clearstatcache();
     $f = au_paths()['datadir'] . '/dienst.pid';
     if (!is_file($f)) {
-        return 0;
+        // Keine PID-Datei heisst NICHT "kein Dienst" - NEU IN 0.9.20.
+        $alle = au_dienste_suchen();
+        return $alle ? $alle[0] : 0;
     }
     $pid = (int) trim((string) @file_get_contents($f));
     if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
-        return 0;
+        $alle = au_dienste_suchen();
+        return $alle ? $alle[0] : 0;
     }
     /* Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
      *
@@ -760,7 +879,10 @@ function au_dienst_pid()
         && preg_match('#(^|/)python[0-9.]*$#', $argv[0])) {
         return $pid;
     }
-    return 0;
+    // Die Nummer aus der Datei taugt nicht - trotzdem kann ein Dienst
+    // laufen (NEU IN 0.9.20).
+    $alle = au_dienste_suchen();
+    return $alle ? $alle[0] : 0;
 }
 
 function au_dienst_soll()
@@ -2108,15 +2230,9 @@ function au_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) {
-                    $home = $k;
-                    break;
-                }
-            }
-        }
+        // Wie in au_paths(): siehe au_lbhome(). Der feste Rueckfall
+        // '/home/loxberry/loxberry' stand bis 0.9.19 auch hier.
+        $home = au_lbhome();
         $ordner = basename(dirname(__FILE__));
         $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
         if (!is_dir($pfad)) {
