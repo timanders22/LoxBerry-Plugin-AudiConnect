@@ -65,10 +65,15 @@ Aufrufe:
     audi.py                 Dienst (Dauerbetrieb)
     audi.py --einmal        ein einzelner Abruf, dann Ende
     audi.py --selbsttest    Pruefungen ohne Netz, Ausgabe als Klartext
+    audi.py --themen        die MQTT-Themen des Sendecodes als JSON (Reiter Test)
+    audi.py --mqtt-leeren   zurueckbehaltene Themen des Plugins am Broker
+                            abraeumen (Deinstallation)
+Jeder andere Schalter wird abgewiesen (C11, Durchgang 29.09.2026).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -210,6 +215,15 @@ if LBHOME is None:
 # oder einem Pruefordner - dann wird nichts angelegt (NEU IN 0.9.20).
 if SELF != LBHOME / "bin" / "plugins" / PNAME \
         and not (LBHOME / "config" / "plugins" / PNAME).is_dir():
+    if "--selbsttest" in sys.argv:
+        # Der Selbsttest misst die EINRICHTUNG (Konfiguration, Zugang,
+        # Datenordner). Aus einem Archiv heraus gibt es nichts zu messen -
+        # das sagt eine [INFO]-Zeile statt eines Abbruchs, damit die
+        # Freigabepruefung "nicht feststellbar" melden kann statt "keine
+        # auswertbare Ausgabe" (30.09.2026; bis 0.9.21 Abbruch mit rc 1).
+        print("[INFO] Kein eingerichtetes Plugin '%s' unter %s - der Selbsttest "
+              "prueft eine eingerichtete Anlage, hier ist nichts zu messen." % (PNAME, LBHOME))
+        sys.exit(0)
     sys.stderr.write(
         "FEHLER: '%s' ist unter %s kein eingerichtetes Plugin, und %s ist\n"
         "        nicht dessen bin-Ordner. Es wurde nichts angelegt.\n"
@@ -228,6 +242,9 @@ DATEI_ZUSTAND = PDATA / "zustand.json"
 DATEI_TOKEN = PDATA / "token.json"          # Anmeldemarken der Bibliothek
 DATEI_ZWISCHEN = PDATA / "bibliothek_cache.json"
 DATEI_MERKER = PDATA / "merker.json"        # ueberlebt einen Neustart
+DATEI_PIN = PDATA / "pin_sperre.json"       # C1: Fehlschlaege der S-PIN (0600)
+DATEI_ANMELDESPERRE = PDATA / "anmeldesperre.json"   # C10 (0600)
+DATEI_LEBEN = PDATA / "lebenszeichen"       # C12: liest der Waechter in dienst.sh
 DATEI_SOLL = PDATA / "soll_laufen"          # legt dienst.sh an; der Waechter braucht ihn
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
@@ -235,6 +252,8 @@ ORDNER_VERLAUF = PDATA / "verlauf"
 DATEI_LADUNGEN = ORDNER_VERLAUF / "ladungen.csv"
 DATEI_LOG = PLOG / "audi.log"
 SKRIPT_MELDEN = SELF / "au_notify.php"
+DATEI_THEMEN = SELF / "au_themen.json"      # M1/M7: die eine Themen-Tabelle
+DATEI_ABO = PCONFIG / "mqtt_subscriptions.cfg"   # M10: liest das Gateway V1
 
 # Muessen zu au_vorgaben() in webfrontend/html/au_lib.php passen.
 #
@@ -496,19 +515,61 @@ def json_lesen(pfad: Path) -> dict:
 
 def json_schreiben(pfad: Path, daten, rechte=None) -> bool:
     """Erst in eine Nebendatei, dann umbenennen. So liest die Oberflaeche nie
-    eine halb geschriebene Datei."""
+    eine halb geschriebene Datei.
+
+    RECHTE VOR INHALT (C4, Durchgang 29.09.2026). Bis 0.9.21 hiess die
+    Nebendatei <datei>.tmp ohne PID, entstand mit der umask und bekam die
+    gewuenschten Rechte erst NACH dem Fuellen. Jetzt traegt sie die PID -
+    zwei Prozesse schieben sich keine halbe Datei unter -, und sind Rechte
+    verlangt, stehen sie fest, bevor ein Byte hineingeht (Regeln/03,
+    "Rechte vor Inhalt").
+    """
+    tmp = None
     try:
         pfad.parent.mkdir(parents=True, exist_ok=True)
-        tmp = pfad.with_suffix(pfad.suffix + ".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(daten, f, ensure_ascii=False, indent=1, default=str)
-        if rechte is not None:
-            os.chmod(tmp, rechte)
+        text = json.dumps(daten, ensure_ascii=False, indent=1, default=str)
+        tmp = pfad.with_name("%s.%d.tmp" % (pfad.name, os.getpid()))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                     0o600 if rechte is not None else 0o666)
+        try:
+            if rechte is not None:
+                os.fchmod(fd, rechte)
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            fd = -1
+            with f:
+                f.write(text)
+        finally:
+            if fd >= 0:
+                os.close(fd)
         os.replace(tmp, pfad)
         return True
     except (OSError, TypeError, ValueError) as err:
         _LOG.error("Datei %s konnte nicht geschrieben werden: %s", pfad, err)
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
         return False
+
+
+def lebenszeichen_schreiben(cfg: dict) -> None:
+    """C12 (Durchgang 29.09.2026): "<unixzeit> <takt>" nach DATEI_LEBEN.
+
+    Der Waechter in bin/dienst.sh sah bis 0.9.21 nur, OB der Prozess lebt.
+    Ein Dienst, der in einem Abruf haengt, lebt und schreibt nichts - er
+    wurde nie neu gestartet. Geschrieben wird beim Start, je Takt und in
+    der Wartezeit alle 30 Sekunden; liegt der Wert mehr als das Dreifache
+    des Takts zurueck, startet der Waechter neu.
+    """
+    try:
+        PDATA.mkdir(parents=True, exist_ok=True)
+        tmp = DATEI_LEBEN.with_name("%s.%d.tmp" % (DATEI_LEBEN.name, os.getpid()))
+        tmp.write_text("%d %d\n" % (int(time.time()), ganz(cfg.get("intervall"), 300)),
+                       encoding="utf-8")
+        os.replace(str(tmp), str(DATEI_LEBEN))
+    except OSError:
+        pass
 
 
 def ganz(wert, ersatz: int) -> int:
@@ -620,12 +681,26 @@ def mqtt_broker() -> dict:
     }
 
 
-def mqtt_senden(paare: dict, praefix: str) -> None:
+def mqtt_senden(paare: dict, praefix: str) -> int:
+    """Sendet ueber den UDP-Eingang des Gateways. Rueckgabe: Zahl der Datagramme.
+
+    SEIT 0.9.22 (Durchgang 29.09.2026) je Thema nach bin/au_themen.json:
+      M1  ein Zustand geht mit "retain", alles andere mit "publish"
+          (Regeln/07: der UDP-Eingang kennt beide Befehle);
+      M3  ERST saeubern, DANN auf leer pruefen - bis 0.9.21 umgekehrt, und
+          " \n " ging als leere Nutzlast hinaus (gemessen, F4);
+      M2  ein retained Zustand ohne Wert geht als "-" (Entscheidung 5), ein
+          Messwert ohne Wert gar nicht. Bis 0.9.21 blieb ein geleerter Text
+          wie tueren_namen im Eingang stehen (gemessen, F2);
+      M6  5 ms Pause je Datagramm - der UDP-Eingang verliert Stoesse ohne
+          Pause (Regeln/07). Bis 0.9.21: 54 Datagramme in 0,7 ms.
+    Ein Thema, das nicht in der Tabelle steht, geht nicht hinaus.
+    """
     z = mqtt_zustand()
     if not z["udpport"]:
         melde_gebremst("mqtt_kein_port",
                        "MQTT: kein UDP-Eingangsport in general.json gefunden - nichts gesendet.")
-        return
+        return 0
     if not z["autostart"]:
         melde_gebremst(
             "mqtt_aus",
@@ -636,22 +711,49 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError as err:
         melde_gebremst("mqtt_socket", f"MQTT: Socket nicht moeglich ({err}).")
-        return
+        return 0
+    gesendet = 0
     try:
         for k, v in paare.items():
-            if v is None:
+            behalten = thema_retained(k)
+            if behalten is None:
+                melde_gebremst("mqtt_unbekannt",
+                               "MQTT: das Thema %s steht nicht in %s - es wird nicht gesendet."
+                               % (k, DATEI_THEMEN), 86400)
                 continue
             # Zeilenumbrueche zerreissen die Syntax des UDP-Gateways: es liest
             # Zeile fuer Zeile, ein \n im Wert waere der Anfang eines neuen
-            # Befehls. Genau das trifft den Fall, in dem es zaehlt - der Wert
-            # ist dann oft ein Fehlertext von myAudi, und der ist mehrzeilig.
-            sauber = str(v).replace("\r", " ").replace("\n", " ").strip()
-            s.sendto(f"publish {praefix}/{k} {mqtt_wert_saeubern(sauber)}".encode("utf-8"),
+            # Befehls. mqtt_wert_saeubern() nimmt sie heraus - und ERST danach
+            # wird gefragt, ob etwas uebrig ist (M3).
+            wert_text = "" if v is None else mqtt_wert_saeubern(v)
+            if wert_text == "":
+                if not behalten:
+                    continue            # M2: Messwert ohne Wert
+                wert_text = "-"         # M2: Zustand ohne Aussage, nie leer retained
+            befehl = "retain" if behalten else "publish"
+            s.sendto(f"{befehl} {praefix}/{k} {wert_text}".encode("utf-8"),
                      ("127.0.0.1", z["udpport"]))
+            gesendet += 1
+            time.sleep(0.005)           # M6
     except OSError as err:
         melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
     finally:
         s.close()
+    return gesendet
+
+
+# M8: Klartext zu den Rueckgabecodes eines CONNACK. paho 1.x meldet die Codes
+# von MQTT 3.1.1 (1-5), paho 2.x die Ursachencodes von MQTT 5 (128-136) - am
+# Geraet steht paho 2.1.0 (README). Paare wie APC-UPS 1.2.14 (apc_common.py).
+CONNACK_TEXT = {1: "Protokollfassung abgelehnt", 2: "Client-Kennung abgelehnt",
+                3: "Server nicht verfuegbar", 4: "Benutzername oder Kennwort falsch",
+                5: "nicht berechtigt",
+                128: "unbestimmter Fehler", 129: "fehlerhaftes Paket",
+                130: "Protokollfehler", 131: "Fehler der Gegenstelle",
+                132: "Protokollfassung abgelehnt", 133: "Client-Kennung abgelehnt",
+                134: "Benutzername oder Kennwort falsch", 135: "nicht berechtigt",
+                136: "Server nicht verfuegbar"}
+CONNACK_ZUGANG = (4, 5, 134, 135)
 
 
 class Horcher:
@@ -764,11 +866,18 @@ class Horcher:
         except (TypeError, ValueError):
             code = 0 if code is None else 9
         if code != 0:
+            # M8 (Durchgang 29.09.2026): Klartext je Code, fuer paho 1.x (1-5)
+            # und 2.x (128-136). Bis 0.9.21 schickte JEDER Code - auch 3/136
+            # "Server nicht verfuegbar" - den Anwender zu den Zugangsdaten.
             self.verbunden = False
-            self.fehler = (
-                "Der Broker hat die Anmeldung abgelehnt (CONNACK-Code %d). "
-                "Benutzer und Kennwort stehen in config/system/general.json "
-                "unter Mqtt (Brokeruser, Brokerpass)." % code)
+            self.fehler = ("Der Broker hat die Verbindung abgewiesen (CONNACK %d: %s)."
+                           % (code, CONNACK_TEXT.get(code, "unbekannter Grund")))
+            if code in CONNACK_ZUGANG:
+                self.fehler += (" Benutzer und Kennwort stehen in config/system/general.json "
+                                "unter Mqtt (Brokeruser, Brokerpass).")
+            elif code in (3, 136):
+                self.fehler += (" Die Zugangsdaten sind nicht der Grund; paho verbindet sich "
+                                "von selbst neu, sobald der Broker wieder bereit ist.")
             melde_gebremst("horcher_rc", self.fehler, 900)
             return
         self.verbunden = True
@@ -785,6 +894,16 @@ class Horcher:
         self.verbunden = False
 
     def _nachricht(self, client, userdata, nachricht):
+        # M9 (Durchgang 29.09.2026): eine ZURUECKBEHALTENE Nachricht kommt beim
+        # Verbinden und nach jedem Reconnect, egal wie alt ihr Wert ist. Bis
+        # 0.9.21 bekam sie das Alter 0 und galt als frisch (gemessen, F8).
+        # Nur live Empfangenes zaehlt.
+        if getattr(nachricht, "retain", False):
+            melde_gebremst("horcher_retain_%s" % getattr(nachricht, "topic", ""),
+                           "Horcher: zurueckbehaltene Nachricht auf %s verworfen - sie gilt "
+                           "nicht als frisch; gewartet wird auf den naechsten live gesendeten Wert."
+                           % getattr(nachricht, "topic", ""), 86400)
+            return
         try:
             text = nachricht.payload.decode("utf-8", "replace").strip()
         except Exception:  # noqa: BLE001
@@ -1512,6 +1631,26 @@ def ladung_anhaengen(zeile: dict, tage: int) -> None:
 # verworfen. Wer nicht erfaehrt, dass sein Befehl nicht ausgefuehrt wurde,
 # drueckt noch einmal.
 # ---------------------------------------------------------------------------
+PIN_GRENZE = 3           # C1: Fehlschlaege der S-PIN bis zur Sperre
+PIN_SPERRE = 3600        # C1: so lange ruhen S-PIN-Pruefung und Entriegeln
+
+
+def pin_fehlschlag_melden(bremse) -> None:
+    """C1: den Fehlschlag vermerken und den Beginn der Sperre melden."""
+    if bremse.pin_fehlschlag():
+        text = ("S-PIN: %d Fehlschlaege in Folge - S-PIN-Pruefung und Entriegeln ruhen "
+                "eine Stunde, damit Audi das Konto nicht sperrt. Die S-PIN im Reiter "
+                "Einstellungen pruefen." % PIN_GRENZE)
+        _LOG.warning(text)
+        melden("pin_sperre", 3, "Audi Connect: " + text)
+
+
+def pin_gesperrt_text(rest: int) -> str:
+    return ("Abgewiesen: nach %d Fehlschlaegen mit der S-PIN ruhen S-PIN-Pruefung und "
+            "Entriegeln noch %d s. So sperrt Audi das Konto nicht wegen falscher S-PIN. "
+            "Die S-PIN im Reiter Einstellungen pruefen." % (PIN_GRENZE, rest))
+
+
 class Bremse:
     """Haelt fest, wann zuletzt was hinausging."""
 
@@ -1519,6 +1658,15 @@ class Bremse:
         self.letzter_abruf = 0.0
         self.letzter_strom: dict = {}      # vin -> (zeit, ampere)
         self.befehle: list = []            # Zeitstempel der letzten Stunde
+        # C2: Rueckstaffelung nach Fehlern - bis dahin gilt sie auch fuer
+        # Sofortabrufe aus Loxone (0 = keine).
+        self.sperre_bis = 0.0
+        self.fehlversuche = 0
+        # C10: Text der Anmeldesperre, solange sie gilt ("" = keine).
+        self.anmeldesperre = ""
+        self.pin_fehl: list = []
+        self.pin_bis = 0.0
+        self._pin_lesen()
 
     def abruf_erlaubt(self, cfg: dict):
         abstand = ganz(cfg.get("abruf_abstand"), 60)
@@ -1539,7 +1687,46 @@ class Bremse:
         return (len(self.befehle) < grenze, len(self.befehle))
 
     def befehl_vermerken(self) -> None:
+        """Seit C1 (Durchgang 29.09.2026) VOR dem Absetzen gerufen, nicht
+        nach dem Erfolg: bis 0.9.21 zaehlte ein gescheiterter Befehl nicht,
+        und 40 Auftraege mit falscher S-PIN ergaben 40 Anfragen an Audi."""
         self.befehle.append(time.time())
+
+    # ---- C1: eigene, strengere Bremse fuer die S-PIN ----------------------
+    # Nach PIN_GRENZE Fehlschlaegen (binnen 24 h, ohne Erfolg dazwischen)
+    # ruhen spin_pruefen und entriegeln PIN_SPERRE Sekunden. Der Stand liegt
+    # in einer 0600-Datei und ueberlebt einen Neustart des Dienstes.
+    def _pin_lesen(self) -> None:
+        d = json_lesen(DATEI_PIN)
+        f = d.get("fehl")
+        b = d.get("bis")
+        self.pin_fehl = [float(t) for t in f if isinstance(t, (int, float))] \
+            if isinstance(f, list) else []
+        self.pin_bis = float(b) if isinstance(b, (int, float)) else 0.0
+
+    def _pin_schreiben(self) -> None:
+        json_schreiben(DATEI_PIN, {"fehl": self.pin_fehl, "bis": self.pin_bis}, 0o600)
+
+    def pin_erlaubt(self):
+        rest = int(self.pin_bis - time.time())
+        return (rest <= 0, max(0, rest))
+
+    def pin_fehlschlag(self) -> bool:
+        """Einen Fehlschlag vermerken. True, wenn damit die Sperre beginnt."""
+        jetzt = time.time()
+        self.pin_fehl = [t for t in self.pin_fehl if jetzt - t < 86400] + [jetzt]
+        beginnt = len(self.pin_fehl) >= PIN_GRENZE
+        if beginnt:
+            self.pin_bis = jetzt + PIN_SPERRE
+            self.pin_fehl = []
+        self._pin_schreiben()
+        return beginnt
+
+    def pin_erfolg(self) -> None:
+        if self.pin_fehl or self.pin_bis:
+            self.pin_fehl = []
+            self.pin_bis = 0.0
+            self._pin_schreiben()
 
     def strom_erlaubt(self, cfg: dict, vin: str, ampere: int):
         """Der Ladestrom ist der Hebel fuer das Ueberschussladen - und genau
@@ -1588,8 +1775,14 @@ def antwort_schreiben(kennung: str, ok: int, meldung: str, zusatz=None) -> None:
             pass
 
 
+_NUMMERN: dict = {}     # M4: VIN -> Nummer, je Abruf aus fahrzeugnummern()
+
+
 def fahrzeug_waehlen(fahrzeuge: list, nummer_oder_vin):
-    """Nimmt entweder die laufende Nummer (1-basiert) oder die Fahrgestellnummer."""
+    """Nimmt entweder die Nummer oder die Fahrgestellnummer.
+
+    Die Nummer ist SEIT 0.9.22 die feste Nummer der VIN (M4), nicht mehr die
+    Stelle in der Sortierung."""
     s = str(nummer_oder_vin or "").strip()
     for f in fahrzeuge:
         v = str(wert(getattr(f, "vin", None)) or "")
@@ -1608,6 +1801,12 @@ def fahrzeug_waehlen(fahrzeuge: list, nummer_oder_vin):
         # vertippte VIN in einer Loxone-Ausgangsadresse entriegelte das
         # falsche Auto, und die Antwort lautete SET;OK=1. Ein Rueckfall
         # ist an dieser Stelle eine Vermutung, keine Wahl.
+        return None
+    if _NUMMERN:
+        for i, f in enumerate(fahrzeuge, start=1):
+            v = str(wert(getattr(f, "vin", None)) or str(i))
+            if _NUMMERN.get(v) == n:
+                return f
         return None
     return fahrzeuge[n - 1] if 1 <= n <= len(fahrzeuge) else None
 
@@ -1691,7 +1890,21 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
     probe = bool(b.get("probe")) or bool(cfg.get("probe_ein"))
     vorsatz = "PROBE - es wurde NICHTS an das Fahrzeug gesendet. " if probe else ""
 
+    # C10: solange die Anmeldesperre gilt, geht NICHTS an Audi - jeder
+    # Befehl waere ein weiterer Anmeldeversuch mit dem falschen Passwort.
+    if bremse.anmeldesperre:
+        return (0, bremse.anmeldesperre, {})
+
     if aktion == "abruf":
+        # C2: die Rueckstaffelung nach Fehlern gilt auch fuer Loxone. Bis
+        # 0.9.21 brach ein Sofortabruf sie ab - bei 429 und einem Abruf je
+        # Sekunde gingen 600 Abrufe in 600 s hinaus (gemessen).
+        if time.time() < bremse.sperre_bis:
+            rest = int(bremse.sperre_bis - time.time())
+            return (0, f"Sofortabruf abgewiesen: nach {bremse.fehlversuche} Fehlversuchen in "
+                       f"Folge gilt die Rueckstaffelung, der naechste Abruf ist in {rest} s. "
+                       f"Ein Abruf gegen ein gestoertes oder gedrosseltes Konto fuehrt zur "
+                       f"Sperre.", {"wartet": rest})
         erlaubt, rest = bremse.abruf_erlaubt(cfg)
         if not erlaubt:
             return (0, f"Sofortabruf abgewiesen: der letzte liegt weniger als "
@@ -1727,6 +1940,9 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
     if aktion == "spin_pruefen":
         if not zugang()["spin"]:
             return (0, "Es ist keine S-PIN hinterlegt - Reiter Einstellungen, Feld S-PIN.", {})
+        erlaubt, rest = bremse.pin_erlaubt()
+        if not erlaubt:
+            return (0, pin_gesperrt_text(rest), {"wartet": rest})
         if probe:
             return (1, vorsatz + "Die S-PIN wuerde bei Audi geprueft.", {})
         cmd = None
@@ -1738,8 +1954,13 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
                     break
         if cmd is None:
             return (0, "Der Connector bietet keine S-PIN-Pruefung an.", {})
-        cmd.value = "verify"
         bremse.befehl_vermerken()
+        try:
+            cmd.value = "verify"
+        except Exception:
+            pin_fehlschlag_melden(bremse)
+            raise
+        bremse.pin_erfolg()
         return (1, "Die S-PIN wurde von Audi angenommen.", {})
 
     if not fahrzeuge:
@@ -1763,7 +1984,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
             z.update(zusatz)
         if probe:
             return (1, vorsatz + text, z)
-        bremse.befehl_vermerken()
+        # Gezaehlt ist schon VOR dem Absetzen (C1) - hier nicht noch einmal.
         return (1, text + nachsatz, z)
 
     if aktion in ("klima_start", "klima_stop"):
@@ -1772,6 +1993,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
             return fehlt("Klimatisierung")
         if aktion == "klima_stop":
             if not probe:
+                bremse.befehl_vermerken()
                 cmd.value = "stop"
             return erledigt("Klimatisierung aus angefordert.")
         temp = wert_zahl(b.get("temp"))
@@ -1784,6 +2006,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
             return (0, f"Zieltemperatur {temp} Grad liegt ausserhalb der eingestellten Grenzen "
                        f"({lo} bis {hi} Grad). Grenzen im Reiter Einstellungen anpassen.", {})
         if not probe:
+            bremse.befehl_vermerken()
             cmd.value = f"start --target-temperature {temp} --target-temperature-unit °C"
         return erledigt(f"Klimatisierung mit {temp} Grad angefordert.", {"temp": temp})
 
@@ -1800,6 +2023,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         if not setzbar(attr):
             return fehlt("Zieltemperatur")
         if not probe:
+            bremse.befehl_vermerken()
             attr.value = float(temp)
         return erledigt(f"Zieltemperatur {temp} Grad gesetzt.", {"temp": temp})
 
@@ -1808,6 +2032,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         if cmd is None:
             return fehlt("Laden steuern")
         if not probe:
+            bremse.befehl_vermerken()
             cmd.value = "start" if aktion == "laden_start" else "stop"
         return erledigt("Laden starten angefordert." if aktion == "laden_start"
                         else "Laden anhalten angefordert.")
@@ -1834,6 +2059,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         gerundet = int(round(p / 10.0) * 10)
         gerundet = max(10, min(100, gerundet))
         if not probe:
+            bremse.befehl_vermerken()
             attr.value = float(gerundet)
         if gerundet != int(p):
             text = (f"Ladegrenze {gerundet} % gesetzt (von {int(p)} % auf die naechste "
@@ -1869,6 +2095,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
                        f"Konto binnen einer Stunde in die Sperre.", {"wartet": rest})
         if probe:
             return erledigt(f"Ladestrom {int(a)} A gesetzt.", {"ampere": int(a)})
+        bremse.befehl_vermerken()
         attr.value = float(int(a))
         # ZURUECKLESEN, nicht der Quittung glauben. Der Connector lehnt
         # einen Zwischenwert nicht ab, sondern setzt still auf die
@@ -1893,6 +2120,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         if cmd is None:
             return fehlt("Scheibenheizung")
         if not probe:
+            bremse.befehl_vermerken()
             cmd.value = "start" if aktion == "scheibe_ein" else "stop"
         return erledigt("Scheibenheizung ein angefordert." if aktion == "scheibe_ein"
                         else "Scheibenheizung aus angefordert.")
@@ -1902,6 +2130,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         if cmd is None:
             return fehlt("Wecken")
         if not probe:
+            bremse.befehl_vermerken()
             cmd.value = "wake"
         return erledigt("Weckruf gesendet.")
 
@@ -1923,6 +2152,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         if not setzbar(attr):
             return fehlt(name)
         if not probe:
+            bremse.befehl_vermerken()
             attr.value = (w == "1")
         return erledigt(f"Einstellung '{name}' auf {'ein' if w == '1' else 'aus'} gesetzt.",
                         {"name": name, "wert": int(w)})
@@ -1937,8 +2167,23 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
             # Lieber hier abweisen, mit dem Hinweis, wo die S-PIN hingehoert.
             return (0, "Ver- und Entriegeln verlangt die S-PIN des myAudi-Kontos. "
                        "Sie ist nicht hinterlegt - Reiter Einstellungen, Feld S-PIN.", {})
+        # C1: Entriegeln schickt die S-PIN mit - dieselbe Bremse wie die
+        # S-PIN-Pruefung. (Verriegeln steht nicht in der Bauliste.)
+        pin = (aktion == "entriegeln")
+        if pin:
+            erlaubt, rest = bremse.pin_erlaubt()
+            if not erlaubt:
+                return (0, pin_gesperrt_text(rest), {"wartet": rest})
         if not probe:
-            cmd.value = "lock" if aktion == "verriegeln" else "unlock"
+            bremse.befehl_vermerken()
+            try:
+                cmd.value = "lock" if aktion == "verriegeln" else "unlock"
+            except Exception:
+                if pin:
+                    pin_fehlschlag_melden(bremse)
+                raise
+            if pin:
+                bremse.pin_erfolg()
         return erledigt("Verriegeln angefordert." if aktion == "verriegeln"
                         else "Entriegeln angefordert.")
 
@@ -1952,6 +2197,7 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
         if probe:
             return erledigt(f"{was} fuer {dauer} s wuerde ausgeloest.", {"dauer": dauer})
         art = "honk-and-flash" if aktion == "hupe" else "flash"
+        bremse.befehl_vermerken()
         try:
             cmd.value = f"{art} --duration {dauer}"
         except Exception as err:  # noqa: BLE001
@@ -1970,13 +2216,11 @@ def befehl_ausfuehren(cc, fahrzeuge: list, cfg: dict, b: dict, bremse: Bremse):
             # wird unveraendert weitergereicht.
             if type(err).__name__ == "CommandError" \
                     and str(err).startswith("Unknown command"):
-                bremse.befehl_vermerken()
                 return (1, f"{was} fuer {dauer} s ausgeloest. (Der Audi-Connector 0.3.2 "
                            f"meldet danach faelschlich einen Fehler - das ist ein bekannter "
                            f"Programmfehler der Bibliothek und kein Fehlschlag.)",
                         {"vin": vin, "dauer": dauer})
             raise
-        bremse.befehl_vermerken()
         return (1, f"{was} fuer {dauer} s ausgeloest." + nachsatz,
                 {"vin": vin, "dauer": dauer})
 
@@ -2024,32 +2268,58 @@ def warteschlange(cc, fahrzeuge: list, cfg: dict, bremse: Bremse) -> bool:
 # ---------------------------------------------------------------------------
 # Abbild schreiben
 # ---------------------------------------------------------------------------
-MQTT_FELDER = (
-    "soc", "tank_prozent", "reichweite_km", "reichweite_elektro_km",
-    "reichweite_verbrenner_km", "kilometerstand", "verriegelt",
-    "tueren_offen", "tueren_anzahl", "fenster_offen", "fenster_anzahl",
-    "licht_an", "handbremse", "zustand", "erreichbar", "aktiv",
-    "klima_an", "klima_stufe", "zieltemperatur", "aussentemperatur",
-    "scheibenheizung", "sitzheizung_ein", "klima_bei_entriegeln",
-    "klima_fertig_um", "laedt", "lade_stufe", "ladeleistung_kw",
-    "ladetempo_kmh", "ladegrenze", "ladestrom_a", "kabel_verbunden",
-    "stecker_verriegelt", "stecker_entriegeln", "externe_kraft",
-    "ladeart_zahl", "laden_fertig_um", "batterie_temp", "adblue_km",
-    "breite", "laenge", "positionsart_zahl", "inspektion_tage",
-    "inspektion_km", "oelservice_tage", "oelservice_km",
-    # gerechnet
-    "zuhause", "entfernung_m", "standzeit_min", "verbrauch", "ladekwh",
-    "ladeempf", "fehlfolge", "ok",
-)
+# ---------------------------------------------------------------------------
+# DIE THEMEN-TABELLE - M1/M7, Durchgang 29.09.2026
+#
+# Bis 0.9.21 standen die Themen zweimal: hier als MQTT_FELDER/MQTT_TEXTE und
+# in der Oberflaeche aus au_felder() - zwei Listen, die nur stimmten, weil
+# jemand sie von Hand nachzog, und ohne Angabe, was retained ist. Jetzt gibt
+# es EINE Tabelle, bin/au_themen.json; dieser Dienst sendet danach, die
+# Oberflaeche zeigt sie samt Spalte "retained", und der Reiter Test haelt
+# "audi.py --themen" gegen die Liste der Oberflaeche. Die Dienstthemen stehen
+# zusaetzlich hier im Sendecode (DIENST_THEMEN) - fehlt eines davon in der
+# Tabelle, geht es nicht hinaus, und die Pruefzeile sagt es.
+# ---------------------------------------------------------------------------
+DIENST_THEMEN = ("ok", "grund", "fahrzeuge", "status/ts", "status/zaehler")
 
-# Klartexte gehen ebenfalls hinaus. In MQTT stoert eine Zeichenkette nicht,
-# und in der App will man lesen koennen, WELCHE Tuer offen steht.
-MQTT_TEXTE = ("zustand_text", "klima_text", "ladezustand_text", "tueren_namen",
-              "fenster_namen", "adresse", "saeule_name", "modell", "vin")
+
+def themen_laden() -> dict:
+    """bin/au_themen.json lesen: {"dienst": {thema: 0|1}, "fahrzeug": {...}, "art": {...}}."""
+    aus = {"dienst": {}, "fahrzeug": {}, "art": {}}
+    try:
+        with DATEI_THEMEN.open("r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return aus
+    if not isinstance(d, dict):
+        return aus
+    for ebene in ("dienst", "fahrzeug"):
+        eintraege = d.get(ebene)
+        for e in (eintraege if isinstance(eintraege, list) else []):
+            if not isinstance(e, dict) or not isinstance(e.get("thema"), str):
+                continue
+            aus[ebene][e["thema"]] = 1 if e.get("retain") else 0
+            if ebene == "fahrzeug":
+                aus["art"][e["thema"]] = "text" if e.get("art") == "text" else "zahl"
+    return aus
+
+
+THEMEN = themen_laden()
+MQTT_FELDER = tuple(t for t, a in THEMEN["art"].items() if a != "text")
+MQTT_TEXTE = tuple(t for t, a in THEMEN["art"].items() if a == "text")
+
+
+def thema_retained(k: str):
+    """1/0 fuer ein Thema relativ zum Praefix ("ok", "fahrzeug2/soc"),
+    None, wenn es nicht in der Tabelle steht."""
+    kopf, _, rest = k.partition("/")
+    if rest and kopf.startswith("fahrzeug") and kopf[8:].isdigit():
+        return THEMEN["fahrzeug"].get(rest)
+    return THEMEN["dienst"].get(k)
 
 
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
-                     code: int = CODE_OK, fehler_folge: int = 0) -> dict:
+                     code: int = CODE_OK, fehler_folge: int = 0, zyklus: int = 0) -> dict:
     """Schreibt den Zwischenspeicher.
 
     Bei einem fehlgeschlagenen Abruf bleiben die zuletzt gueltigen Werte
@@ -2080,12 +2350,19 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
     json_schreiben(DATEI_CACHE, {"ts": int(time.time()), "ok": ok,
                                  "fehler": fehler, "fahrzeuge": fahrzeuge})
 
-    praefix = str(cfg.get("mqtt_topic") or "audi").strip("/") or "audi"
+    praefix = mqtt_praefix(cfg)
+    # M5 (Durchgang 29.09.2026): das Lebenszeichen bei JEDEM Durchgang,
+    # fluechtig. Bis 0.9.21 gab es ueber MQTT keines - starb der Dienst,
+    # stand in Loxone fuer immer audi/ok=1 (Regeln/07: ueber MQTT gibt es
+    # kein Alter, nur einen Zeitstempel).
+    leben = {"status/ts": int(time.time()), "status/zaehler": int(zyklus)}
     if not ok:
         # Bei einer Stoerung nur das ok-Thema senden. Die alten Messwerte
         # erneut zu veroeffentlichen liesse sie frisch aussehen.
         if cfg.get("mqtt_ein"):
-            mqtt_senden({"ok": 0, "grund": int(code)}, praefix)
+            p = {"ok": 0, "grund": int(code)}
+            p.update(leben)
+            mqtt_senden(p, praefix)
         return lox
 
     for nummer, f in fahrzeuge.items():
@@ -2100,12 +2377,13 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
     if cfg.get("mqtt_ein"):
         paare = {"ok": ok, "grund": 0, "fahrzeuge": len(fahrzeuge)}
         for nummer, f in fahrzeuge.items():
-            for feld in MQTT_FELDER:
+            # Zahlen UND Texte, auch leere: ob ein leerer Wert als "-"
+            # hinausgeht oder gar nicht, entscheidet mqtt_senden() nach der
+            # Tabelle (M2). Bis 0.9.21 fiel ein leerer Text hier weg, und der
+            # Eingang behielt den Altwert.
+            for feld in MQTT_FELDER + MQTT_TEXTE:
                 paare[f"fahrzeug{nummer}/{feld}"] = f.get(feld)
-            for feld in MQTT_TEXTE:
-                w = f.get(feld)
-                if w not in (None, ""):
-                    paare[f"fahrzeug{nummer}/{feld}"] = w
+        paare.update(leben)
         mqtt_senden(paare, praefix)
 
     return lox
@@ -2315,12 +2593,400 @@ def vorklimatisierung(horcher: Horcher, cfg: dict, merker: dict):
 
 
 # ---------------------------------------------------------------------------
+# MQTT: Praefix, Abodatei, Abraeumen, Fahrzeugnummern - seit 0.9.22
+# ---------------------------------------------------------------------------
+def mqtt_praefix(cfg: dict) -> str:
+    return str(cfg.get("mqtt_topic") or "audi").strip("/") or "audi"
+
+
+def abo_datei_nachfuehren(praefix: str) -> None:
+    """M10: config/plugins/<ordner>/mqtt_subscriptions.cfg auf "<praefix>/#".
+
+    Das MQTT-Gateway V1 liest diese Datei und abonniert daraus (Regeln/07,
+    am laufenden Gateway gemessen 13.09.2026). Bis 0.9.21 gab es sie nicht,
+    und nach jedem Praefixwechsel musste das Abo von Hand nachgetragen
+    werden. Geschrieben wird nur, wenn sie abweicht, mit Protokollzeile, und
+    nur, wenn der Konfigurationsordner schon da ist (nichts anlegen)."""
+    if not PCONFIG.is_dir():
+        return
+    soll = praefix + "/#\n"
+    try:
+        ist = DATEI_ABO.read_text(encoding="utf-8")
+    except OSError:
+        ist = None
+    if ist == soll:
+        return
+    try:
+        tmp = DATEI_ABO.with_name("%s.%d.tmp" % (DATEI_ABO.name, os.getpid()))
+        tmp.write_text(soll, encoding="utf-8")
+        os.replace(str(tmp), str(DATEI_ABO))
+        _LOG.info("Gateway-Abo nachgefuehrt: %s enthaelt jetzt %s/#", DATEI_ABO, praefix)
+    except OSError as err:
+        melde_gebremst("abo_datei", "Gateway-Abo %s nicht schreibbar: %s" % (DATEI_ABO, err), 86400)
+
+
+def eigenes_retained(rel: str, nummer=None) -> bool:
+    """Ist <praefix>/<rel> ein zurueckbehaltenes Thema DIESES Plugins?
+    Mit nummer nur die Themen dieses Fahrzeugs."""
+    kopf, _, rest = rel.partition("/")
+    if rest and kopf.startswith("fahrzeug") and kopf[8:].isdigit():
+        if nummer is not None and kopf != "fahrzeug%s" % nummer:
+            return False
+        return bool(THEMEN["fahrzeug"].get(rest))
+    if nummer is not None:
+        return False
+    return bool(THEMEN["dienst"].get(rel))
+
+
+def broker_leeren(praefix: str, auswahl, warten: float = 1.5) -> dict:
+    """Zurueckbehaltene Themen unter <praefix>/ am Broker loeschen und NACHLESEN.
+
+    M12 (Durchgang 29.09.2026), Bauart broker_leeren() aus APC-UPS 1.2.14:
+    eigene kurze paho-Verbindung mit den Brokerdaten aus general.json;
+      1. geloescht wird nur, was WIRKLICH behalten im Broker liegt - gefunden
+         ueber ein Abonnement - und was auswahl(rel) freigibt;
+      2. danach ein zweites Abonnement: was dann noch behalten ankommt, ist
+         stehengeblieben.
+    Beide Abonnements gelten erst mit ihrem SUBACK; CONNACK ungleich 0 heisst
+    "nicht zu fragen", nie "nichts belegt".
+    Rueckgabe {"rc", "geleert", "rest", "grund"}: rc 0 = nichts (mehr)
+    behalten, 1 = danach stand noch etwas, 2 = nicht zu fragen."""
+    erg = {"rc": 2, "geleert": [], "rest": [], "grund": ""}
+    praefix = str(praefix or "").strip("/")
+    if not praefix or "#" in praefix or "+" in praefix:
+        erg["grund"] = "das Themenpraefix '%s' taugt nicht fuer ein Abonnement" % praefix
+        return erg
+    try:
+        import paho.mqtt.client as mqtt
+        klasse = mqtt.Client
+    except (ImportError, AttributeError):
+        erg["grund"] = "das Paket paho-mqtt fehlt"
+        return erg
+    import threading
+    b = mqtt_broker()
+    wo = "%s:%s" % (b["host"], b["port"])
+    gesehen = set()
+    angemeldet = threading.Event()
+    code = {"wert": None}
+    subacks = {}
+
+    def bei_verbindung(_k, _d, _f, *rest):
+        try:
+            code["wert"] = int(getattr(rest[0], "value", rest[0]) or 0) if rest else 0
+        except (TypeError, ValueError):
+            code["wert"] = 0
+        angemeldet.set()
+
+    def bei_nachricht(_k, _d, n):
+        # Nur BEHALTENES mit Inhalt: ein live gesendeter Wert ist keine
+        # Altlast, und ein leeres Thema ist schon geloescht.
+        if n.retain and n.payload and n.topic.startswith(praefix + "/") \
+                and auswahl(n.topic[len(praefix) + 1:]):
+            gesehen.add(n.topic)
+
+    def bei_abo(_k, _d, mid, codes, *_rest):
+        werte = []
+        try:
+            for c in (codes or ()):
+                werte.append(int(getattr(c, "value", c)))
+        except (TypeError, ValueError):
+            werte = [0x80]
+        subacks[mid] = werte or [0x80]
+
+    def abonnieren():
+        erg_sub = k.subscribe(praefix + "/#")
+        try:
+            rc_sub, mid = int(erg_sub[0]), erg_sub[1]
+        except (TypeError, ValueError, IndexError):
+            return "das Abonnement liess sich nicht absenden (%r)" % (erg_sub,)
+        if rc_sub != 0:
+            return "das Abonnement liess sich nicht absenden (rc %d)" % rc_sub
+        ende = time.time() + 10
+        while mid not in subacks and time.time() < ende:
+            time.sleep(0.05)
+        if mid not in subacks:
+            return "der Broker %s hat das Abonnement nicht bestaetigt (kein SUBACK)" % wo
+        schlecht = [w for w in subacks[mid] if w >= 0x80]
+        if schlecht:
+            return "der Broker %s verweigert das Lesen von '%s/#' (SUBACK 0x%02X)" % (
+                wo, praefix, schlecht[0])
+        return ""
+
+    name = "audiconnect-leeren-%s-%d" % (PNAME, os.getpid())
+    k = None
+    for art in ("VERSION2", "VERSION1"):
+        api = getattr(getattr(mqtt, "CallbackAPIVersion", None), art, None)
+        if api is None:
+            continue
+        try:
+            k = klasse(api, client_id=name)
+            break
+        except (AttributeError, TypeError, ValueError):
+            k = None
+    if k is None:
+        k = klasse(client_id=name)          # paho-mqtt 1.x
+    k.on_connect = bei_verbindung
+    k.on_message = bei_nachricht
+    k.on_subscribe = bei_abo
+    if b["benutzer"] != "":
+        k.username_pw_set(b["benutzer"], b["passwort"] or None)
+    try:
+        k.connect(b["host"], b["port"], 30)
+    except Exception as fehler:  # noqa: BLE001
+        erg["grund"] = "der Broker %s ist nicht erreichbar (%s: %s)" % (
+            wo, type(fehler).__name__, fehler)
+        return erg
+    k.loop_start()
+    try:
+        if not angemeldet.wait(10):
+            erg["grund"] = "der Broker %s hat auf die Verbindung nicht geantwortet" % wo
+            return erg
+        if code["wert"]:
+            erg["grund"] = "der Broker %s hat die Anmeldung abgewiesen (CONNACK %d: %s)" % (
+                wo, code["wert"], CONNACK_TEXT.get(code["wert"], "unbekannter Grund"))
+            return erg
+        grund = abonnieren()
+        if grund:
+            erg["grund"] = grund
+            return erg
+        time.sleep(warten)
+        k.unsubscribe(praefix + "/#")
+        zu_leeren = sorted(gesehen)
+        for thema in zu_leeren:
+            info = k.publish(thema, b"", qos=1, retain=True)
+            try:
+                info.wait_for_publish(5)
+            except TypeError:           # paho 1.x vor 1.6 kennt kein timeout
+                info.wait_for_publish()
+        erg["geleert"] = zu_leeren
+        gesehen.clear()
+        grund = abonnieren()
+        if grund:
+            erg["grund"] = "Nachlesen nicht moeglich - " + grund
+            return erg
+        time.sleep(warten)
+        erg["rest"] = sorted(gesehen)
+        erg["rc"] = 1 if erg["rest"] else 0
+    except Exception as fehler:  # noqa: BLE001
+        erg["rc"] = 2
+        erg["grund"] = "das Loeschen am Broker %s scheiterte (%s: %s)" % (
+            wo, type(fehler).__name__, fehler)
+    finally:
+        try:
+            k.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        k.loop_stop()
+    return erg
+
+
+def mqtt_abraeumen(praefix: str, nummer=None) -> dict:
+    """M12: die zurueckbehaltenen Themen DIESES Plugins unter <praefix>/
+    abraeumen (mit nummer: nur die dieses Fahrzeugs). Fremde Themen unter
+    demselben Praefix bleiben stehen."""
+    return broker_leeren(praefix, lambda rel: eigenes_retained(rel, nummer))
+
+
+def mqtt_nachfuehren(cfg: dict, merker: dict) -> None:
+    """M10/M12 (Durchgang 29.09.2026) - je Takt, vor dem Senden.
+
+    Die Abodatei folgt dem Praefix (M10). Wurde das Praefix gewechselt oder
+    MQTT ausgeschaltet, werden die zurueckbehaltenen Themen des Plugins unter
+    dem BISHERIGEN Praefix abgeraeumt, mit Nachfrage beim Broker (M12, Bauform
+    KODI-NG 1.2.12). Ist der Broker nicht zu fragen oder bleibt etwas
+    stehen, bleibt der Auftrag im Merker und wird hoechstens einmal je Stunde
+    wiederholt. Der Stand liegt in merker.json und ueberlebt Neustart und
+    Update."""
+    praefix = mqtt_praefix(cfg)
+    ein = 1 if cfg.get("mqtt_ein") else 0
+    abo_datei_nachfuehren(praefix)
+    m = merker.setdefault("mqtt", {})
+    offen = m.setdefault("offen", {})
+    alt_p = m.get("praefix")
+    if m.get("ein") and alt_p and (alt_p != praefix or not ein):
+        offen[alt_p] = {"anlass": "Praefixwechsel" if alt_p != praefix else "MQTT aus",
+                        "versuch": 0}
+    m["praefix"] = praefix
+    m["ein"] = ein
+    if ein:
+        offen.pop(praefix, None)
+    for p in sorted(list(offen)):
+        e = offen[p] if isinstance(offen[p], dict) else {}
+        if time.time() - float(e.get("versuch") or 0) < 3600:
+            continue
+        e["versuch"] = int(time.time())
+        offen[p] = e
+        erg = mqtt_abraeumen(p)
+        anlass = e.get("anlass") or "Abraeumen"
+        if erg["rc"] == 0:
+            _LOG.info("MQTT (%s): unter %s/ %d zurueckbehaltene Themen des Plugins geleert, "
+                      "der Broker bestaetigt es.", anlass, p, len(erg["geleert"]))
+            del offen[p]
+        elif erg["rc"] == 1:
+            _LOG.warning("MQTT (%s): unter %s/ stehen nach dem Loeschen noch %s - neuer Versuch "
+                         "in einer Stunde.", anlass, p, ", ".join(erg["rest"]))
+        else:
+            # Gebremst (einmal je Tag und Praefix): fehlt paho oder der Broker,
+            # waere es sonst eine Zeile je Stunde auf Dauer.
+            melde_gebremst("mqtt_raeumen_" + p,
+                           "MQTT (%s): der Broker war nicht zu fragen (%s) - unter %s/ kann noch "
+                           "etwas zurueckbehalten sein; neuer Versuch in einer Stunde."
+                           % (anlass, erg["grund"], p), 86400)
+
+
+def fahrzeugnummern(merker: dict, liste: list) -> dict:
+    """M4 (Durchgang 29.09.2026): feste Zuordnung VIN -> Nummer.
+
+    Bis 0.9.21 war die Nummer die Stelle in der nach VIN sortierten Liste.
+    Kam ein Fahrzeug mit kleinerer VIN hinzu oder fiel eines weg, wanderten
+    alle Nummern: Loxone bekam unter fahrzeug1 die Werte eines anderen Autos,
+    gemischt mit Altwerten (gemessen, F5). Jetzt steht die Zuordnung in
+    merker.json (Datenordner; preupgrade.sh rettet die Datei). Beim ersten
+    Lauf entsteht sie aus der bisherigen Sortierung - bestehende Anlagen
+    behalten ihre Nummern. Eine freie Nummer wird nicht nachgerueckt."""
+    k = merker.setdefault("fahrzeugnummern", {})
+    vins = k.setdefault("vins", {})
+    aktuell = [str(wert(getattr(f, "vin", None)) or str(i)) for i, f in enumerate(liste, 1)]
+    if not vins:
+        for i, v in enumerate(aktuell, 1):
+            vins[v] = i
+    belegt = set()
+    for n in vins.values():
+        try:
+            belegt.add(int(n))
+        except (TypeError, ValueError):
+            pass
+    for v in aktuell:
+        if v not in vins:
+            n = 1
+            while n in belegt:
+                n += 1
+            vins[v] = n
+            belegt.add(n)
+            _LOG.info("Fahrzeug %s bekommt die Nummer %d.", v[-6:], n)
+    aus = {v: int(vins[v]) for v in aktuell}
+    _NUMMERN.clear()
+    _NUMMERN.update(aus)
+    return aus
+
+
+def entfernte_fahrzeuge(merker: dict, aktuell: dict, cfg: dict) -> None:
+    """M4/M12: ein Fahrzeug, das das Konto nicht mehr fuehrt, meldet EINMAL
+    erreichbar 0 und raeumt seine zurueckbehaltenen Themen ab (mit Nachfrage
+    beim Broker; bis zur Bestaetigung hoechstens einmal je Stunde). Kommt es
+    zurueck, gilt wieder alles wie vorher. Seine Nummer bleibt reserviert."""
+    k = merker.setdefault("fahrzeugnummern", {})
+    vins = k.get("vins") or {}
+    gemeldet = k.setdefault("weg_gemeldet", [])
+    geraeumt = k.setdefault("weg_geraeumt", {})
+    praefix = mqtt_praefix(cfg)
+    for v, n in sorted(vins.items(), key=lambda x: str(x[1])):
+        n = str(n)
+        if v in aktuell:
+            if n in gemeldet:
+                gemeldet.remove(n)
+            geraeumt.pop(n, None)
+            continue
+        if not cfg.get("mqtt_ein"):
+            continue
+        if n not in gemeldet:
+            mqtt_senden({"fahrzeug%s/erreichbar" % n: 0}, praefix)
+            gemeldet.append(n)
+            _LOG.warning("Fahrzeug %s (Nummer %s) fuehrt das Konto nicht mehr: erreichbar 0 "
+                         "gemeldet, seine zurueckbehaltenen Themen werden abgeraeumt.", v[-6:], n)
+        e = geraeumt.get(n)
+        if e == "ja" or (isinstance(e, (int, float)) and time.time() - e < 3600):
+            continue
+        erg = mqtt_abraeumen(praefix, n)
+        if erg["rc"] == 0:
+            geraeumt[n] = "ja"
+            _LOG.info("Fahrzeug %s: %d zurueckbehaltene Themen unter %s/fahrzeug%s/ geleert, "
+                      "der Broker bestaetigt es.", n, len(erg["geleert"]), praefix, n)
+        else:
+            geraeumt[n] = int(time.time())
+            melde_gebremst("mqtt_weg_" + n,
+                           "Fahrzeug %s: Abraeumen unter %s/fahrzeug%s/ nicht bestaetigt (%s) - "
+                           "neuer Versuch in einer Stunde." % (n, praefix, n,
+                                                                erg["grund"] or ", ".join(erg["rest"])),
+                           86400)
+
+
+def themen_ausgeben() -> int:
+    """--themen (M7): was der Sendecode hinausschicken kann, mit Retain-Merker,
+    als JSON auf stdout. Der Reiter Test haelt es gegen die Themenliste der
+    Oberflaeche - in beide Richtungen. Legt nichts an."""
+    aus = {}
+    for t in DIENST_THEMEN:
+        aus[t] = thema_retained(t)
+    for t in MQTT_FELDER + MQTT_TEXTE:
+        aus["fahrzeugN/" + t] = thema_retained("fahrzeug1/" + t)
+    print(json.dumps(aus, sort_keys=True))
+    return 0 if aus and all(v is not None for v in aus.values()) else 1
+
+
+def mqtt_leeren_aufruf() -> int:
+    """--mqtt-leeren (M12, Deinstallation): die zurueckbehaltenen Themen des
+    Plugins unter dem eingestellten Praefix - und unter einem, dessen
+    Abraeumen noch aussteht - am Broker loeschen und nachlesen. Ausgabe in
+    der Form des Installers; Rueckgabe 0 = bestaetigt leer, 1 = nicht."""
+    praefix = mqtt_praefix(config())
+    offen = (merker_lesen().get("mqtt") or {}).get("offen") or {}
+    rc = 0
+    for p in [praefix] + sorted(x for x in offen if x != praefix):
+        erg = mqtt_abraeumen(p)
+        if erg["rc"] == 0:
+            print("<OK> MQTT: unter %s/ %s - der Broker bestaetigt es." % (
+                p, "%d zurueckbehaltene Themen des Plugins geleert" % len(erg["geleert"])
+                if erg["geleert"] else "war nichts zurueckbehalten"))
+        elif erg["rc"] == 1:
+            rc = 1
+            print("<WARNING> MQTT: unter %s/ stehen nach dem Loeschen noch: %s"
+                  % (p, ", ".join(erg["rest"])))
+        else:
+            rc = 1
+            print("<WARNING> MQTT: der Broker war nicht zu fragen (%s) - unter %s/ kann "
+                  "noch etwas zurueckbehalten sein." % (erg["grund"], p))
+    return rc
+
+
+# ---------------------------------------------------------------------------
 # Dienst
 # ---------------------------------------------------------------------------
 def signal_behandeln(*_):
     global _LAUF
     _LAUF = False
     _LOG.info("Beendigungssignal erhalten - Dienst haelt an.")
+
+
+ANMELDE_GRENZE = 5       # C10: abgewiesene Anmeldungen in Folge bis zur Sperre
+ANMELDESPERRE_TEXT = ("Anmeldung abgelehnt, Zugangsdaten pruefen: nach %d abgewiesenen "
+                      "Anmeldungen in Folge meldet sich der Dienst nicht mehr bei Audi an, "
+                      "bis E-Mail oder Passwort im Reiter Einstellungen geaendert sind. "
+                      "So sperrt Audi das Konto nicht." % ANMELDE_GRENZE)
+
+
+def zugang_kennung(z: dict) -> str:
+    """Pruefsumme von E-Mail und Passwort - woran die Anmeldesperre (C10)
+    erkennt, dass die Zugangsdaten geaendert wurden. Liegt in einer
+    0600-Datei neben zugang.json, das dieselben Werte im Klartext traegt."""
+    roh = "%s\0%s" % (z.get("email", ""), z.get("passwort", ""))
+    return hashlib.sha256(roh.encode("utf-8")).hexdigest()
+
+
+def anmeldesperre_lesen() -> str:
+    k = json_lesen(DATEI_ANMELDESPERRE).get("kennung")
+    return k if isinstance(k, str) else ""
+
+
+def anmeldesperre_setzen(kennung: str) -> None:
+    json_schreiben(DATEI_ANMELDESPERRE, {"kennung": kennung, "seit": int(time.time())}, 0o600)
+
+
+def anmeldesperre_aufheben() -> None:
+    try:
+        DATEI_ANMELDESPERRE.unlink()
+    except OSError:
+        pass
 
 
 def sollmerker_zuruecknehmen(grund: str) -> None:
@@ -2348,6 +3014,8 @@ def sollmerker_zuruecknehmen(grund: str) -> None:
 
 
 def dienst(einmal: bool = False) -> int:
+    # C12: das erste Lebenszeichen, noch vor dem Laden der Bibliothek.
+    lebenszeichen_schreiben(config())
     ntp_entschaerfen()
     try:
         from carconnectivity.carconnectivity import CarConnectivity
@@ -2415,46 +3083,87 @@ def dienst(einmal: bool = False) -> int:
     merker = merker_lesen()
     bremse = Bremse()
     horcher = Horcher()
+    anmelde_fehl = 0        # C10: abgewiesene Anmeldungen in Folge
 
     try:
         while _LAUF:
             cfg = config()  # Aenderungen aus der Oberflaeche ohne Neustart uebernehmen
+            lebenszeichen_schreiben(cfg)
+            try:
+                mqtt_nachfuehren(cfg, merker)       # M10/M12
+            except Exception as err:  # noqa: BLE001
+                melde_gebremst("mqtt_nachfuehren", "MQTT nachfuehren: %s" % fehlertext(err), 3600)
             horcher.sicherstellen(horcher_themen(cfg))
             ok = 0
             fehler = ""
             code = CODE_OK
             fahrzeuge: dict = {}
             liste: list = []
+            # C10: Anmeldesperre. Sind die Zugangsdaten seither geaendert,
+            # endet der Dienst - die Bibliothek traegt noch die alten, und
+            # der Waechter startet ihn binnen einer Minute mit den neuen.
+            sperre = anmeldesperre_lesen()
+            if sperre and sperre != zugang_kennung(zugang()):
+                anmeldesperre_aufheben()
+                _LOG.info("Die Zugangsdaten wurden geaendert - die Anmeldesperre ist aufgehoben. "
+                          "Der Dienst endet; der Waechter startet ihn mit den neuen Zugangsdaten.")
+                break
+            bremse.anmeldesperre = ANMELDESPERRE_TEXT if sperre else ""
             try:
-                cc.fetch_all()
-                # Auch der TAKTMAESSIGE Abruf zaehlt fuer die Bremse: sonst
-                # koennte gleich nach einem regulaeren Abruf ein Sofortabruf
-                # hinterhergehen, und die Wirkung waere ein doppelter Takt.
+                if sperre:
+                    raise AnmeldesperreGilt(ANMELDESPERRE_TEXT)
+                # C2: VOR dem Abruf vermerkt, nicht nach dem Erfolg. Bis
+                # 0.9.21 zaehlte ein gescheiterter Abruf nicht, und nach
+                # einem 429 galt jeder Sofortabruf als erlaubt. Auch der
+                # TAKTMAESSIGE Abruf zaehlt: sonst koennte gleich danach ein
+                # Sofortabruf hinterhergehen.
                 bremse.abruf_vermerken()
+                cc.fetch_all()
                 garage = cc.get_garage()
                 liste = list(garage.list_vehicles()) if garage is not None else []
                 liste.sort(key=lambda f: str(wert(getattr(f, "vin", None)) or ""))
+                # M4: die Nummer haengt an der VIN, nicht an der Sortierung.
+                nummern = fahrzeugnummern(merker, liste)
                 empfehlung = ladeempfehlung(horcher, cfg)
                 for i, f in enumerate(liste, start=1):
                     vin = str(wert(getattr(f, "vin", None)) or str(i))
+                    nr = str(nummern.get(vin, i))
                     stammdaten.setdefault(vin, {})
                     abbild = fahrzeug_abbilden(f, cfg, zyklus, stammdaten[vin])
                     for k, v in abbild.items():
                         if k.startswith(("inspektion", "oelservice")) and v is not None:
                             stammdaten[vin][k] = v
-                    abgeleitetes_ergaenzen(str(i), abbild, cfg, merker,
+                    abgeleitetes_ergaenzen(nr, abbild, cfg, merker,
                                            fehler_folge, empfehlung)
-                    fahrzeuge[str(i)] = abbild
+                    fahrzeuge[nr] = abbild
                 ok = 1 if fahrzeuge and any(x.get("ok") for x in fahrzeuge.values()) else 0
+                if liste:
+                    try:
+                        entfernte_fahrzeuge(merker, nummern, cfg)
+                    except Exception as err:  # noqa: BLE001
+                        melde_gebremst("entfernt", "Entfernte Fahrzeuge: %s" % fehlertext(err), 3600)
                 if not liste:
                     fehler = "Das Konto fuehrt kein Fahrzeug."
                     code = CODE_KEIN_FAHRZEUG
                 fehler_folge = 0 if ok else fehler_folge + 1
+                anmelde_fehl = 0
+            except AnmeldesperreGilt:
+                # Kein Abruf, keine Anfrage an Audi - nur der Zustand geht hinaus.
+                fehler = ANMELDESPERRE_TEXT
+                code = CODE_ANMELDUNG
+                melde_gebremst("anmeldesperre", ANMELDESPERRE_TEXT, 3600)
             except Exception as err:  # noqa: BLE001
                 fehler = fehlertext(err)
                 code = fehler_code(err)
                 fehler_folge += 1
                 melde_gebremst("abruf", f"Abruf fehlgeschlagen: {fehler}", 900)
+                if code == CODE_ANMELDUNG:
+                    anmelde_fehl += 1
+                    if anmelde_fehl >= ANMELDE_GRENZE:
+                        anmeldesperre_setzen(zugang_kennung(zugang()))
+                        fehler = ANMELDESPERRE_TEXT
+                        _LOG.error(ANMELDESPERRE_TEXT)
+                        melden("anmeldesperre", 3, "Audi Connect: " + ANMELDESPERRE_TEXT)
                 # Erst nach drei Fehlversuchen melden: eine einzelne Stoerung
                 # bei Audi ist kein Anlass, jemanden zu behelligen.
                 if fehler_folge == 3:
@@ -2464,7 +3173,7 @@ def dienst(einmal: bool = False) -> int:
 
             if ok and fahrzeuge:
                 stand = {"ts": int(time.time()), "fahrzeuge": fahrzeuge}
-            abbild_schreiben(stand, cfg, ok, fehler, code, fehler_folge)
+            abbild_schreiben(stand, cfg, ok, fehler, code, fehler_folge, zyklus)
             merker_schreiben(merker)
             zustand_schreiben(ok=ok, fehler=fehler, fehler_code=code, zyklus=zyklus,
                               fehler_folge=fehler_folge, pid=os.getpid(),
@@ -2481,12 +3190,18 @@ def dienst(einmal: bool = False) -> int:
                 return 0 if ok else 1
 
             rest = cfg["intervall"]
-            if fehler_folge >= 3:
+            bremse.sperre_bis = 0.0
+            if fehler_folge >= 3 and not bremse.anmeldesperre:
                 rest = min(3600, cfg["intervall"] * min(8, fehler_folge))
+                # C2: bis dahin weist auch ein Sofortabruf aus Loxone ab.
+                bremse.sperre_bis = time.time() + rest
+                bremse.fehlversuche = fehler_folge
                 melde_gebremst("bremse",
                                f"{fehler_folge} Fehlversuche - naechster Abruf erst in {rest} s.",
                                1800)
             while rest > 0 and _LAUF:
+                if rest % 30 == 0:
+                    lebenszeichen_schreiben(cfg)       # C12
                 try:
                     if warteschlange(cc, liste, cfg, bremse):
                         break  # Sofortabruf angefordert
@@ -2722,10 +3437,59 @@ def selbsttest() -> int:
     return 1 if fehler else 0
 
 
+class AnmeldesperreGilt(Exception):
+    """C10: die Anmeldesperre gilt - dieser Takt fragt Audi nicht."""
+
+
+# C11: bis 0.9.21 lief jeder andere Aufruf als Dienst - ein vertipptes
+# "--selftest" legte den laufenden Dienst still (Sollmerker entfernt) oder
+# stellte einen zweiten daneben (gemessen, lauf_dienst.sh).
+SCHALTER = ("--einmal", "--selbsttest", "--themen", "--mqtt-leeren")
+_SPERRE = None
+
+
+def dienst_sperre():
+    """C5: nicht blockierende Sperre auf dieser Datei - ein Dienst oder ein
+    --einmal zur Zeit. Zwei gleichzeitige Starts ergaben bis 0.9.21 zwei
+    Dienste (gemessen, 5 von 5 Runden). Die Sperre haengt an dieser Datei:
+    sie liegt immer da, und es muss nichts angelegt werden.
+    Rueckgabe: der Griff (haelt die Sperre), None = ein anderer haelt sie."""
+    import fcntl
+    try:
+        griff = open(os.path.abspath(__file__), "rb")
+    except OSError as err:
+        sys.stderr.write("WARNUNG: Sperrdatei nicht lesbar (%s) - ohne Sperre weiter.\n" % err)
+        return True
+    try:
+        fcntl.flock(griff.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        griff.close()
+        return None
+    return griff
+
+
 def main() -> int:
+    global _SPERRE
+    fremd = [a for a in sys.argv[1:] if a not in SCHALTER]
+    if fremd:
+        sys.stderr.write("FEHLER: unbekannter Schalter %s. Erlaubt: %s, oder ohne Schalter fuer "
+                         "den Dienst. Es wurde nichts gestartet und nichts veraendert.\n"
+                         % (" ".join(fremd), ", ".join(SCHALTER)))
+        return 2
+    if "--themen" in sys.argv:
+        return themen_ausgeben()
+    if "--mqtt-leeren" in sys.argv:
+        return mqtt_leeren_aufruf()
     log_einrichten()
     if "--selbsttest" in sys.argv:
         return selbsttest()
+    _SPERRE = dienst_sperre()
+    if _SPERRE is None:
+        text = ("Ein anderer Lauf dieses Plugins (Dienst oder --einmal) haelt die Sperre - "
+                "dieser Aufruf endet, ohne etwas zu tun.")
+        sys.stderr.write("FEHLER: " + text + "\n")
+        _LOG.warning(text)
+        return 3
     signal.signal(signal.SIGTERM, signal_behandeln)
     signal.signal(signal.SIGINT, signal_behandeln)
     try:

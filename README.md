@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,56 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.22
+
+Die Durchsicht vom 29./30.09.2026 hatte vier Prüfer (Code, Oberfläche, Installer, MQTT). Jeder Punkt ist gemessen. Zu
+jedem gibt es eine Gegenprobe, die an 0.9.21 rot und an 0.9.22 grün ist. Gemessen wurde ohne Netz und ohne Konto, mit
+Attrappen für die Audi-Bibliothek und den Broker.
+
+**Schutz des Kontos.**
+- Gescheiterte Befehle zählten nicht für die Stundenbremse, falsche S-PINs ließen sich also unbegrenzt ausprobieren.
+  Jetzt zählt jeder Befehl, der Audi erreicht. Nach drei Fehlversuchen bei S-PIN oder Entriegeln sperrt das Plugin
+  eine Stunde lang.
+- Drosselte Audi (429), umging jeder Abruf aus Loxone die Bremse; es waren bis zu 600 Abrufe in 10 Minuten. Jetzt
+  gilt der Takt.
+- Bei falschem Kennwort meldete sich der Dienst bisher ohne Ende immer wieder an. Jetzt hört er nach fünf
+  Fehlanmeldungen auf und sagt, dass die Zugangsdaten zu prüfen sind.
+- `audi.json` mit den Token steht jetzt auf 0600; bisher war die Datei für jeden am Gerät lesbar. Beim Schreiben werden
+  die Rechte gesetzt, bevor der Inhalt kommt.
+- Zwei gleichzeitige Starts ergeben nur noch einen Dienst.
+
+**Endpunkt und Loxone.**
+- `OK=0`, sobald die Werte älter sind als das Dreifache des Abruftakts. Ein einzelner misslungener Abruf setzt `OK`
+  nicht mehr auf 0.
+- Die Vorlage der Steuerbefehle trug die Adresse im falschen Feld; nach dem Import sendete vermutlich kein Ausgang. Das
+  ist behoben, und die Vorlagen tragen Einheit und Hinweistext.
+
+**MQTT.**
+- Fahrzeugzustände gehen jetzt zurückbehalten hinaus: Verriegelung, Türen, Fenster, Ladekabel, Ladegrenze, Modell,
+  Kilometerstand. Nach einem Neustart von Broker oder Gateway hat Loxone sie sofort.
+- Messwerte bleiben flüchtig: Ladestand, Reichweite, Position, Temperaturen.
+- Ein Zustand ohne Wert geht als `-` hinaus, statt mit dem alten Wert stehen zu bleiben.
+- Die Fahrzeugnummern hängen fest an der Fahrgestellnummer. Wird ein Fahrzeug entfernt, rutschen die anderen nicht
+  mehr nach.
+- Neu ist ein Lebenszeichen (`status/ts`, `status/zaehler`).
+- Zwischen den Nachrichten liegen 5 ms.
+- `mqtt_subscriptions.cfg` kommt mit.
+- Eine abgewiesene Broker-Anmeldung wird im Klartext gemeldet.
+- Präfixwechsel, „MQTT aus“ und Deinstallation räumen die zurückbehaltenen Themen ab.
+
+**Oberfläche.**
+- Die Ladeempfehlung ließ sich nie einschalten: Das Prüfmuster für das Thema war kaputt. Das ist behoben.
+- Nach jedem Absenden wird umgeleitet. F5 wiederholt keinen Befehl und würfelt kein neues Token.
+- Eine Sicherung ohne Token behält das geltende Token und sagt es.
+- Eingaben werden beanstandet, statt still zurechtgebogen zu werden.
+- „Zugangsdaten löschen“ braucht einen Haken und löscht auch die Anmeldemarken.
+- Der Reiter Test hat die Pflichtzeilen: Konfiguration heil, eigener Endpunkt, Formularmerkmal, Themenliste, Vorlage.
+
+**Installation.**
+- Neu ist `preinstall.sh`. Es legt bei einer Neuinstallation Zugangsdaten und Token einer früheren Installation als
+  `.alt` beiseite, noch bevor die Oberfläche sie einspielen kann.
+- Nach einem gescheiterten und wiederholten Update läuft der Dienst wieder, wenn er vorher lief.
 
 ## Neu in 0.9.21
 
@@ -488,7 +538,11 @@ Der Dienst hört auf Wunsch fremde MQTT-Themen mit:
 * **Ladeempfehlung** aus einem beliebigen Thema — Börsenstrompreis aus einem
   der Spotpreis-Plugins, PV-Überschuss in Watt — mit Schwellwert und Richtung.
   Ergebnis ist `LADEEMPF` als 1 oder 0. **Das Plugin entscheidet nicht, ob
-  geladen wird**; das gehört nach Loxone.
+  geladen wird**; das gehört nach Loxone. Das Thema besteht aus Buchstaben,
+  Ziffern, Punkt, Bindestrich und Unterstrich, Ebenen getrennt durch einen
+  Schrägstrich; Platzhalter wie `+` oder `#` gehen nicht, gebraucht wird genau
+  ein Wert. Bis 0.9.21 wies das Formular wegen eines Fehlers im Suchmuster
+  jedes Thema ab.
 
 Beides ist ab Werk aus und braucht `paho-mqtt`, das `postinstall.sh` zusätzlich
 holt. Schlägt das fehl, ist es kein Grund abzubrechen — das Plugin ist ohne
@@ -704,6 +758,13 @@ die Datei von der Bibliothek, und `rechte_sichern()` läuft an drei Stellen —
 einmal nach dem Einrichten, einmal je Zyklus, einmal beim Beenden. Nach einem Passwortwechsel sind sie wertlos —
 dafür gibt es den Knopf *Anmeldung neu erzwingen*.
 
+**Anmeldesperre (seit 0.9.22).** Lehnt Audi die Anmeldung fünfmal
+hintereinander ab, meldet sich der Dienst nicht mehr an und meldet
+„Anmeldung abgelehnt, Zugangsdaten prüfen“ (`GRUND=2`), bis E-Mail oder
+Passwort im Reiter *Einstellungen* geändert sind. Dann beendet er sich, und
+der Wächter startet ihn binnen einer Minute mit den neuen Zugangsdaten. So
+sperrt Audi das Konto nicht wegen wiederholter Fehlanmeldungen.
+
 Die **S-PIN** wird ausschließlich für Ver- und Entriegeln gebraucht. Ohne sie
 weist der Connector diese beiden Befehle ab; das Plugin sagt das vorher, statt
 den Anwender in die Fehlermeldung des Anbieters laufen zu lassen.
@@ -741,7 +802,15 @@ Statt der laufenden Nummer darf überall auch die Fahrgestellnummer stehen
 `GRUND` nennt die Fehlerklasse: `0` in Ordnung, `1` nie gelaufen, `2` Anmeldung
 abgelehnt, `3` Konto gedrosselt, `4` Audi nicht erreichbar, `5` Störung bei
 Audi, `6` kein Fahrzeug im Konto, `7` Zugangsdaten fehlen, `8` Einrichtung
-fehlerhaft, `9` unbekannt.
+fehlerhaft, `9` unbekannt, `10` Abbild älter als das Dreifache des Takts (der
+Dienst steht oder hängt).
+
+**`OK` (seit 0.9.22):** `OK=1` heißt, das Abbild ist gültig — höchstens
+dreimal so alt wie der Takt. Ist es älter, kommt `OK=0`; `ALTER` steht
+unverändert daneben, und `GRUND` nennt die Ursache. Ein einzelner
+misslungener Abruf setzt `OK` nicht auf 0: das Abbild ist dann noch brauchbar,
+und `GRUND` nennt die Störung. Bis 0.9.21 hing `OK` allein am letzten Abruf —
+ein toter Dienst meldete auf Dauer `OK=1`.
 
 **Ein Strich als Wert** heißt: dieser Wert liegt nicht vor. Es wird bewusst
 keine 0 gesendet — eine 0 wäre eine stille Falschaussage. Loxone behält dann
@@ -755,6 +824,30 @@ Ergebnis unbekannt.
 **Was `OK=1` nicht heißt.** Der Audi-Server hat den Auftrag mit HTTP 200
 entgegengenommen. Ob das Fahrzeug ihn ausgeführt hat, zeigt erst der nächste
 Abruf.
+
+## MQTT: retained, Lebenszeichen und Abo
+
+Seit 0.9.22 steht jedes Thema in einer Tabelle, `bin/au_themen.json`; der
+Dienst sendet danach, und der Reiter *MQTT* zeigt sie mit einer Spalte
+*retained*.
+
+* **Retained** gehen die Zustände des Fahrzeugs hinaus — Verriegelung,
+  Türen, Fenster, Ladekabel, Ladegrenze, Modell, Kilometerstand und die
+  übrigen, die die Tabelle so führt —, damit Loxone sie nach einem Neustart
+  von Miniserver, Gateway oder Broker sofort hat. **Nie retained** sind
+  `ok`, `grund`, `fehlfolge`, `fahrzeugN/ok`, `erreichbar`, Messwerte mit
+  Zeitbezug (Ladezustand, Reichweite, Leistung, Temperaturen, Tage bis …),
+  die Position und die Fertigzeitpunkte.
+* Ein Zustand ohne Aussage geht als `-` hinaus, nie leer; ein Messwert ohne
+  Wert wird gar nicht gesendet.
+* **Lebenszeichen:** `status/ts` (Unix-Zeit) und `status/zaehler` bei jedem
+  Durchgang, nie retained.
+* Beim Wechsel des Präfixes, beim Ausschalten von MQTT, für ein Fahrzeug, das
+  das Konto nicht mehr führt, und bei der Deinstallation räumt das Plugin
+  seine zurückbehaltenen Themen am Broker ab und liest nach.
+* **Abo:** Das Plugin bringt `mqtt_subscriptions.cfg` mit `<präfix>/#` im
+  eigenen Konfigurationsordner mit; das MQTT-Gateway V1 liest diese Datei.
+  Sie folgt dem Präfix beim Speichern und bei jedem Takt des Dienstes.
 
 ## Einheiten
 

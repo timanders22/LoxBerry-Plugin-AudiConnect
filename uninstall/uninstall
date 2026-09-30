@@ -40,8 +40,10 @@
 #      Datei laeuft er nach der Deinstallation weiter - bis zum
 #      naechsten Neustart, und meldet sich dabei weiter bei Audi an.
 #
-# Was NICHT aufgeraeumt werden muss: MQTT. Der Dienst sendet mit
-# "publish", nicht mit "retain". Im Broker bleibt nichts stehen.
+# MQTT (BERICHTIGT IN 0.9.22, M12): seit 0.9.22 gehen die Zustaende eines
+# Fahrzeugs mit "retain" hinaus (Entscheidung 3). Sie werden in Block 1b am
+# Broker abgeraeumt - nur die Themen dieses Plugins, mit Nachlesen. Bis 0.9.21
+# stand hier, es bleibe nichts stehen; das galt, solange nichts retained war.
 
 PDIR=$3                      # Installationsordner des Plugins
 [ -n "$PDIR" ] || PDIR="audiconnect"
@@ -168,6 +170,29 @@ done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
 rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
 
+# ---------------------------------------------------------------
+# 1b. Zurueckbehaltene MQTT-Themen abraeumen - M12, seit 0.9.22
+# ---------------------------------------------------------------
+# Erst jetzt, nach dem Anhalten: sonst sendete der Dienst sie gleich wieder.
+# Gefragt wird der Broker selbst (audi.py --mqtt-leeren, paho aus der
+# virtuellen Umgebung): geloescht wird nur, was dort wirklich unter dem
+# Praefix des Plugins liegt, danach wird nachgelesen. Begrenzt auf 60 s.
+PYV="$PBIN/venv/bin/python3"
+if [ -x "$PYV" ] && [ -f "$PBIN/audi.py" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+        LBHOMEDIR="$BASE" LBPPLUGINDIR="$PDIR" timeout 60 "$PYV" "$PBIN/audi.py" --mqtt-leeren 2>&1
+        MQ_RC=$?
+    else
+        LBHOMEDIR="$BASE" LBPPLUGINDIR="$PDIR" "$PYV" "$PBIN/audi.py" --mqtt-leeren 2>&1
+        MQ_RC=$?
+    fi
+    if [ "$MQ_RC" = 124 ]; then
+        echo "<WARNING> MQTT: das Abraeumen wurde nach 60 s abgebrochen - zurueckbehaltene Themen des Plugins koennen im Broker stehen bleiben."
+    fi
+else
+    echo "<WARNING> MQTT: ohne virtuelle Umgebung ($PYV) lassen sich zurueckbehaltene Themen des Plugins nicht abraeumen."
+fi
+
 # NEU IN 0.9.12: der Rettungsordner neben dem Datenordner.
 # preupgrade.sh legt dort Verlauf, Merker und token.json ab, damit sie ein
 # Upgrade ueberstehen (der Installer raeumt data/plugins/<ordner>/ ab).
@@ -185,6 +210,22 @@ if [ -d "$RETTUNG" ]; then
     rm -rf "$RETTUNG"
     echo "<OK> Rettungsordner entfernt (er enthielt die Anmeldemarken)."
 fi
+# I4 (Durchgang 29.09.2026): auch die Rettung, die eine Neuinstallation
+# beiseitegelegt hat (preinstall.sh, Entscheidung 1).
+RETTUNG_ALT="$BASE/data/plugins/$PDIR.rettung.alt"
+if [ -d "$RETTUNG_ALT" ]; then
+    if [ -f "$RETTUNG_ALT/token.json" ]; then
+        dd if=/dev/zero of="$RETTUNG_ALT/token.json" bs=1 \
+           count=$(stat -c%s "$RETTUNG_ALT/token.json" 2>/dev/null || echo 0) \
+           conv=notrunc 2>/dev/null || true
+    fi
+    rm -rf "${RETTUNG_ALT:?}"
+    if [ -e "$RETTUNG_ALT" ]; then
+        echo "<FAIL> Beiseitegelegte Rettung liess sich NICHT entfernen: $RETTUNG_ALT"
+    else
+        echo "<OK> Beiseitegelegte Rettung entfernt: $PDIR.rettung.alt"
+    fi
+fi
 
 # ---------------------------------------------------------------
 # 2. Sicherungsdateien ausserhalb der Plugin-Ordner
@@ -194,7 +235,10 @@ fi
 # Unterschied zwischen "steht noch da" und "muss man suchen". Behauptet
 # wird hier nicht mehr, als getan wird.
 FEHL=0
-for f in audi.json zugang.json; do
+# I4: die beiden .alt einer Neuinstallation (preinstall.sh) gehen mit - sie
+# tragen die Zugangsdaten einer frueheren Installation. Bis 0.9.21 raeumte
+# dieses Skript sie nicht ab (gemessen, Faelle E2/V-E).
+for f in audi.json zugang.json audi.json.alt zugang.json.alt; do
     BK="$PCONFIG/$PDIR.backup.$f"
     [ -f "$BK" ] || continue
     GROESSE=$(wc -c < "$BK" 2>/dev/null || echo 0)
@@ -229,18 +273,26 @@ rm -f "$BASE/data/plugins/$PDIR.upgrade_laeuft" 2>/dev/null
 # ---------------------------------------------------------------
 # Gesagt wird, was WIRKLICH gilt. Ein "alles entfernt" nach einem
 # fehlgeschlagenen rm waere die schlechteste Zeile dieser Datei.
-UEBRIG=$(ls "$PCONFIG/$PDIR.backup."* 2>/dev/null | wc -l)
+# I4: gezaehlt werden auch die .alt, beide Rettungen und die Marke.
+UEBRIG=$(ls -d "$PCONFIG/$PDIR.backup."* "$BASE/data/plugins/$PDIR.rettung" \
+               "$BASE/data/plugins/$PDIR.rettung.alt" "$BASE/data/plugins/$PDIR.upgrade_laeuft" \
+               2>/dev/null | wc -l)
 if [ "$FEHL" -eq 0 ] && [ "$UEBRIG" -eq 0 ]; then
     echo "<INFO> Die Zugangsdaten des Audi-Kontos sind damit vom LoxBerry entfernt."
 else
-    echo "<FAIL> Es liegen noch $UEBRIG Sicherungsdatei(en) unter $PCONFIG."
-    echo "<FAIL> Sie enthalten Zugangsdaten - bitte von Hand entfernen."
+    echo "<FAIL> Es liegen noch $UEBRIG Sicherung(en), Rettung(en) oder Marke(n) neben den Plugin-Ordnern."
+    echo "<FAIL> Sie enthalten Zugangsdaten - bitte von Hand entfernen:"
+    ls -d "$PCONFIG/$PDIR.backup."* "$BASE/data/plugins/$PDIR.rettung" \
+          "$BASE/data/plugins/$PDIR.rettung.alt" "$BASE/data/plugins/$PDIR.upgrade_laeuft" \
+          2>/dev/null | sed 's/^/<FAIL>   /'
 fi
 
 echo "<INFO> Die virtuelle Python-Umgebung ($PBIN/venv) wird mit dem bin-Ordner"
 echo "<INFO> des Plugins entfernt - dafuer ist nichts zu tun."
 
 # Rueckgabewert 1 nur als WARNUNG: die Deinstallation soll weiterlaufen,
-# aber der Fehlschlag darf nicht im Log verschwinden.
-[ "$FEHL" -eq 0 ] || exit 1
+# aber der Fehlschlag darf nicht im Log verschwinden. I4: auch ein <FAIL>
+# ueber liegengebliebene Dateien endet mit 1 - bis 0.9.21 hing es nur an FEHL
+# und endete trotz <FAIL> mit 0 (gemessen, E2).
+[ "$FEHL" -eq 0 ] && [ "$UEBRIG" -eq 0 ] || exit 1
 exit 0

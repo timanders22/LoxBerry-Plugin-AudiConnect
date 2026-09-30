@@ -1,0 +1,404 @@
+{
+ "_hinweis": "Die EINE Themen- und Retain-Tabelle von Audi Connect (M1/M7, Durchgang 29.09.2026). bin/audi.py sendet danach, die Oberflaeche zeigt sie im Reiter MQTT samt Spalte retained, und der Reiter Test haelt beide gegeneinander. retain 1 = Zustand des Fahrzeugs; 0 = Dienstaussage, Messwert mit Zeitbezug, Position, Fertigzeitpunkt oder Lebenszeichen (ENTSCHEIDUNGEN_2026-09-29 Nr. 3). Ein retained Zustand ohne Wert geht als - hinaus, ein Messwert ohne Wert gar nicht.",
+ "dienst": [
+  {
+   "thema": "ok",
+   "retain": 0,
+   "bez": "AU_MQTT.OK"
+  },
+  {
+   "thema": "grund",
+   "retain": 0,
+   "bez": "AU_MQTT.GRUND"
+  },
+  {
+   "thema": "fahrzeuge",
+   "retain": 1,
+   "bez": "AU_MQTT.FAHRZEUGE"
+  },
+  {
+   "thema": "status/ts",
+   "retain": 0,
+   "bez": "AU_MQTT.STATUS_TS"
+  },
+  {
+   "thema": "status/zaehler",
+   "retain": 0,
+   "bez": "AU_MQTT.STATUS_ZAEHLER"
+  }
+ ],
+ "fahrzeug": [
+  {
+   "thema": "soc",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.SOC"
+  },
+  {
+   "thema": "tank_prozent",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.TANK"
+  },
+  {
+   "thema": "reichweite_km",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.REICHW"
+  },
+  {
+   "thema": "reichweite_verbrenner_km",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.REICHWVERBR"
+  },
+  {
+   "thema": "kilometerstand",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.KM"
+  },
+  {
+   "thema": "verriegelt",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.VERR"
+  },
+  {
+   "thema": "tueren_offen",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.TUEREN"
+  },
+  {
+   "thema": "fenster_offen",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.FENSTER"
+  },
+  {
+   "thema": "licht_an",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.LICHT"
+  },
+  {
+   "thema": "handbremse",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.HANDBR"
+  },
+  {
+   "thema": "klima_an",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.KLIMA"
+  },
+  {
+   "thema": "zieltemperatur",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.ZIELTEMP"
+  },
+  {
+   "thema": "aussentemperatur",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.AUSSEN"
+  },
+  {
+   "thema": "scheibenheizung",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.SCHEIBE"
+  },
+  {
+   "thema": "zustand",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.ZUSTAND"
+  },
+  {
+   "thema": "erreichbar",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.ERREICH"
+  },
+  {
+   "thema": "tueren_anzahl",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.TUERANZ"
+  },
+  {
+   "thema": "fenster_anzahl",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.FENSTERANZ"
+  },
+  {
+   "thema": "klima_stufe",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.KLIMAART"
+  },
+  {
+   "thema": "sitzheizung_ein",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.SITZHEIZ"
+  },
+  {
+   "thema": "klima_bei_entriegeln",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.KLIMAUNLOCK"
+  },
+  {
+   "thema": "aktiv",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_FELD.AKTIV"
+  },
+  {
+   "thema": "standzeit_min",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.STANDZEIT"
+  },
+  {
+   "thema": "ok",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.FZOK"
+  },
+  {
+   "thema": "fehlfolge",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_FELD.FEHLFOLGE"
+  },
+  {
+   "thema": "laedt",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.LAEDT"
+  },
+  {
+   "thema": "ladeleistung_kw",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_LFELD.LADEKW"
+  },
+  {
+   "thema": "ladetempo_kmh",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_LFELD.TEMPO"
+  },
+  {
+   "thema": "ladegrenze",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.LADEGR"
+  },
+  {
+   "thema": "ladestrom_a",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.LADESTROM"
+  },
+  {
+   "thema": "kabel_verbunden",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.KABEL"
+  },
+  {
+   "thema": "stecker_verriegelt",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.STECKER"
+  },
+  {
+   "thema": "reichweite_elektro_km",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_LFELD.REICHWBAT"
+  },
+  {
+   "thema": "lade_stufe",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.LADESTUFE"
+  },
+  {
+   "thema": "ladeart_zahl",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.LADEART"
+  },
+  {
+   "thema": "externe_kraft",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.EXTSTROM"
+  },
+  {
+   "thema": "stecker_entriegeln",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_LFELD.STECKERAUTO"
+  },
+  {
+   "thema": "batterie_temp",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_LFELD.BATTTEMP"
+  },
+  {
+   "thema": "verbrauch",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_LFELD.VERBRAUCH"
+  },
+  {
+   "thema": "ladekwh",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_LFELD.LADEKWH"
+  },
+  {
+   "thema": "ladeempf",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_LFELD.LADEEMPF"
+  },
+  {
+   "thema": "inspektion_tage",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_WFELD.INSPTAGE"
+  },
+  {
+   "thema": "inspektion_km",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_WFELD.INSPKM"
+  },
+  {
+   "thema": "oelservice_tage",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_WFELD.OELTAGE"
+  },
+  {
+   "thema": "oelservice_km",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_WFELD.OELKM"
+  },
+  {
+   "thema": "adblue_km",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_WFELD.ADBLUE"
+  },
+  {
+   "thema": "breite",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_PFELD.BREITE"
+  },
+  {
+   "thema": "laenge",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_PFELD.LAENGE"
+  },
+  {
+   "thema": "positionsart_zahl",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_PFELD.POSART"
+  },
+  {
+   "thema": "zuhause",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_PFELD.ZUHAUSE"
+  },
+  {
+   "thema": "entfernung_m",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_PFELD.ENTF"
+  },
+  {
+   "thema": "laden_fertig_um",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_MQTT.FERTIG"
+  },
+  {
+   "thema": "klima_fertig_um",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_MQTT.KLIMAFERTIG"
+  },
+  {
+   "thema": "zustand_text",
+   "retain": 1,
+   "art": "text",
+   "bez": "AU_MQTT.ZUSTAND_TEXT"
+  },
+  {
+   "thema": "klima_text",
+   "retain": 1,
+   "art": "text",
+   "bez": "AU_MQTT.KLIMA_TEXT"
+  },
+  {
+   "thema": "ladezustand_text",
+   "retain": 1,
+   "art": "text",
+   "bez": "AU_MQTT.LADE_TEXT"
+  },
+  {
+   "thema": "tueren_namen",
+   "retain": 1,
+   "art": "text",
+   "bez": "AU_MQTT.TUEREN_NAMEN"
+  },
+  {
+   "thema": "fenster_namen",
+   "retain": 1,
+   "art": "text",
+   "bez": "AU_MQTT.FENSTER_NAMEN"
+  },
+  {
+   "thema": "adresse",
+   "retain": 0,
+   "art": "text",
+   "bez": "AU_MQTT.ADRESSE"
+  },
+  {
+   "thema": "saeule_name",
+   "retain": 0,
+   "art": "text",
+   "bez": "AU_MQTT.SAEULE"
+  },
+  {
+   "thema": "modell",
+   "retain": 1,
+   "art": "text",
+   "bez": "AU_MQTT.MODELL"
+  },
+  {
+   "thema": "vin",
+   "retain": 1,
+   "art": "text",
+   "bez": "AU_MQTT.VIN"
+  }
+ ]
+}

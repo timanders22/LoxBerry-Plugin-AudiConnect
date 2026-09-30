@@ -270,7 +270,9 @@ function au_geheimnisse()
  */
 function au_geheimnis_da($c, $k)
 {
-    return is_array($c) && trim((string) (isset($c[$k]) ? $c[$k] : '')) !== '';
+    // is_string SEIT 0.9.22 (U16): ein Token als Liste galt bis 0.9.21 als
+    // "vorhanden" ((string) ergab "Array"), der Endpunkt nahm token=Array an.
+    return is_array($c) && isset($c[$k]) && is_string($c[$k]) && trim($c[$k]) !== '';
 }
 
 /**
@@ -365,11 +367,42 @@ function au_geheimnis_luecke($jetzt, $sicherung)
  * vorher in der Datei stand, wird nicht weggeworfen, sondern liegt als
  * <datei>.kaputt daneben (0600 - es koennen Geheimnisse darin stehen).
  */
+/**
+ * U12 (Durchgang 29.09.2026): der Zustand der Konfiguration VOR der ersten
+ * Selbstheilung dieses Aufrufs - array('zustand' => fehlt | leer | kaputt |
+ * unvollstaendig | heil, 'geheilt' => bool, 'kaputt' => Pfad der .kaputt-Datei).
+ * Festgehalten wird der ERSTE heilende Aufruf je Prozess; der Reiter Test
+ * nennt ihn, sonst beseitigt die Heilung den Schaden unsichtbar (Regeln/05).
+ * Bis 0.9.21 meldete keine Zeile eine abgeschnittene audi.json.
+ */
+function au_config_erstbefund($neu = null)
+{
+    static $b = null;
+    if ($neu !== null && $b === null) {
+        $b = $neu;
+    }
+    return $b;
+}
+
 function au_config($heilen = true)
 {
     static $gemeldet = false;
     $p = au_paths();
     $jetzt = au_inhalt_oder_null($p['config']);
+    $befund = null;
+    if ($heilen) {
+        $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : null;
+        if ($roh === null) {
+            $zustand = 'fehlt';
+        } elseif ($roh === '' || $roh === '{}' || $roh === '[]') {
+            $zustand = 'leer';
+        } elseif ($jetzt === null) {
+            $zustand = 'kaputt';
+        } else {
+            $zustand = au_config_hat_inhalt($jetzt) ? 'heil' : 'unvollstaendig';
+        }
+        $befund = array('zustand' => $zustand, 'geheilt' => false, 'kaputt' => '');
+    }
     if ($heilen && !au_config_hat_inhalt($jetzt)) {
         $luecke = au_geheimnis_luecke($jetzt, au_inhalt_oder_null($p['sicherung']));
         if ($luecke) {
@@ -382,12 +415,17 @@ function au_config($heilen = true)
             $alt = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
             $rest = preg_replace('/\s+/', '', $alt);
             $verdraengt = ($rest !== '' && $rest !== '{}' && $rest !== '[]');
+            /* C3/C4 (Durchgang 29.09.2026): 0600 und Rechte vor Inhalt. Bis
+             * 0.9.21 kopierte die Selbstheilung mit der umask und setzte
+             * danach 0644 - eine vorher 0600 gesetzte audi.json war danach
+             * wieder fuer jeden lesbar, samt Schalttoken und
+             * Formulargeheimnis. */
             if ($verdraengt) {
-                @copy($p['config'], $p['config'] . '.kaputt');
-                @chmod($p['config'] . '.kaputt', 0600);
+                au_datei_schreiben($p['config'] . '.kaputt', $alt, 0600);
             }
-            if (@copy($p['sicherung'], $p['config'])) {
-                @chmod($p['config'], 0644);
+            if (au_datei_schreiben($p['config'], @file_get_contents($p['sicherung']), 0600)) {
+                $befund['geheilt'] = true;
+                $befund['kaputt'] = $verdraengt ? $p['config'] . '.kaputt' : '';
                 if (!$gemeldet) {
                     $gemeldet = true;
                     au_log('Die Konfiguration trug nicht mehr ' . implode(', ', $luecke)
@@ -398,6 +436,9 @@ function au_config($heilen = true)
                 }
             }
         }
+    }
+    if ($befund !== null) {
+        au_config_erstbefund($befund);
     }
     $cfg = au_json_lesen($p['config']);
     return array_merge(au_vorgaben(), $cfg);
@@ -421,13 +462,28 @@ function au_datei_schreiben($pfad, $inhalt, $rechte = 0644)
     if ($inhalt === false || $inhalt === null) {
         return false;
     }
+    $inhalt = (string) $inhalt;
     $neben = $pfad . '.' . getmypid() . '.neu';
-    if (@file_put_contents($neben, $inhalt) !== strlen($inhalt)) {
+    /* RECHTE VOR INHALT - BERICHTIGT C4 (Durchgang 29.09.2026). Bis 0.9.21
+     * legte file_put_contents die Nebendatei mit der umask an und fuellte
+     * sie, erst danach folgte chmod - entgegen dem Kommentar oben. In WSL
+     * gemessen (umask 022, 3000 Schreibvorgaenge): 362-mal stand
+     * zugang.json.<pid>.neu MIT Inhalt fuer andere lesbar da. Jetzt: leer
+     * anlegen, Rechte setzen, dann fuellen, mit Laengenvergleich, fflush und
+     * fclose (Regeln/03, "atomar schreiben"). */
+    $fh = @fopen($neben, 'c');
+    if ($fh === false) {
+        return false;
+    }
+    if (!@chmod($neben, $rechte) || !@ftruncate($fh, 0)) {
+        @fclose($fh);
         @unlink($neben);
         return false;
     }
-    @chmod($neben, $rechte);
-    if (!@rename($neben, $pfad)) {
+    $n = @fwrite($fh, $inhalt);
+    $gut = ($n === strlen($inhalt)) && @fflush($fh);
+    $gut = @fclose($fh) && $gut;
+    if (!$gut || !@rename($neben, $pfad)) {
         @unlink($neben);
         return false;
     }
@@ -443,7 +499,10 @@ function au_config_speichern($cfg)
     $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
     // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    if (!au_datei_schreiben($p['config'], $json, 0644)) {
+    // 0600 seit C3 (Durchgang 29.09.2026): die Datei traegt Lese- und
+    // Schalttoken und das Formulargeheimnis; bis 0.9.21 stand hier 0644.
+    // Apache laeuft am Geraet als loxberry (gemessen 30.09.2026).
+    if (!au_datei_schreiben($p['config'], $json, 0600)) {
         return false;
     }
     // Die Zweitschrift wird NICHT erneuert, wenn der neue Stand ein
@@ -494,13 +553,10 @@ function au_zweitschrift_ziehen($quelle, $ziel, array $neu)
         }
         return false;
     }
-    if (!@copy($quelle, $ziel)) {
-        return false;
-    }
-    // Gleiche Rechte wie das Original (Hausstandard, CLAUDE.md Punkt 9).
-    // Ohne diese Zeile haengen sie an der umask des aufrufenden Prozesses.
-    @chmod($ziel, 0644);
-    return true;
+    // Gleiche Rechte wie das Original (Hausstandard, CLAUDE.md Punkt 9): seit
+    // C3 0600, und seit C4 stehen sie fest, bevor der Inhalt hineingeht.
+    // Bis 0.9.21: copy() mit der umask, danach chmod 0644.
+    return au_datei_schreiben($ziel, @file_get_contents($quelle), 0600);
 }
 
 /**
@@ -712,6 +768,90 @@ function au_formtoken_pruefen($cfg = null)
     return hash_equals($soll, $ist);
 }
 
+/**
+ * U16 (Durchgang 29.09.2026): taugt dieser GESPEICHERTE Wert als Token?
+ *
+ * Eine Zeichenkette aus 16 bis 64 Zeichen, die ohne Kodierung in eine Adresse
+ * passt - der Erzeuger liefert 24 aus [a-z2-9]. Der Endpunkt nimmt nur ein
+ * Token an, das hier besteht (fail closed), und das Zurueckspielen prueft
+ * mit derselben Funktion, damit ein zurueckgespieltes Token nicht am
+ * Endpunkt scheitert. Bis 0.9.21 nahm der Endpunkt ein Token als Liste an
+ * (token=Array, gemessen p3c Fall 4).
+ */
+function au_token_taugt($t)
+{
+    return is_string($t) && preg_match('/^[A-Za-z0-9_.\-]{16,64}\z/', $t) === 1;
+}
+
+/**
+ * U3/U9/M11 (Durchgang 29.09.2026): ist $s ein gueltiges MQTT-Thema bzw.
+ * Praefix? EINE Funktion fuer Formular und Sicherung.
+ *
+ * Bis 0.9.21 stand im Formular '#^[A-Za-z0-9_/\-\.\+#]{1,128}$#' - der
+ * Begrenzer # IN der Zeichenklasse. preg_match lieferte false samt Warnung,
+ * und jedes Thema wurde abgewiesen, auch der Platzhalter der Seite selbst
+ * (gemessen p3b/p3c). Die Sicherung pruefte mit einer anderen Menge. Und
+ * mqtt_topic wie abfahrt_praefix wurden still zurechtgebogen (Anfuehrungs-
+ * zeichen entfernt, Rand-Schraegstriche abgeschnitten), statt abgewiesen.
+ *
+ * Erlaubt: Ebenen aus Buchstaben, Ziffern, _ und - (mit $punkt auch .),
+ * getrennt durch genau einen /; kein / am Rand, keine leere Ebene, keine
+ * Platzhalter + und #, hoechstens $max Zeichen.
+ */
+function au_thema_gueltig($s, $max = 128, $punkt = true)
+{
+    if (!is_string($s) || $s === '' || strlen($s) > (int) $max) {
+        return false;
+    }
+    $muster = $punkt ? '~^[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)*\z~'
+                     : '~^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*\z~';
+    return preg_match($muster, $s) === 1;
+}
+
+/**
+ * U1 (Durchgang 29.09.2026): die Einmalmeldung. Jeder POST der Oberflaeche
+ * endet mit 303; was er zu sagen hat, reist in dieser Datei (0600) und wird
+ * beim naechsten GET einmal gezeigt und geloescht - aelter als 120 s gilt
+ * sie nicht. Sie traegt nur die fertigen Meldungstexte, kein Kennwort und
+ * kein Token (Regeln/04). Bauform eb_einmal_*() aus Einspeisebremse 0.9.28.
+ */
+function au_einmal_schreiben($daten)
+{
+    $p = au_paths();
+    if (!is_dir($p['datadir'])) {
+        return false;
+    }
+    $daten['zeit'] = time();
+    $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return $js !== false && au_datei_schreiben($p['datadir'] . '/einmalmeldung.json', $js, 0600);
+}
+
+function au_einmal_lesen()
+{
+    $f = au_paths()['datadir'] . '/einmalmeldung.json';
+    if (!is_file($f)) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) {
+        return null;
+    }
+    $aus = array();
+    foreach (array('meldungen', 'fehler', 'stoerungen', 'hinweise') as $k) {
+        $aus[$k] = array();
+        if (isset($d[$k]) && is_array($d[$k])) {
+            foreach ($d[$k] as $m) {
+                if (is_string($m)) {
+                    $aus[$k][] = $m;
+                }
+            }
+        }
+    }
+    $aus['test'] = isset($d['test']) && is_string($d['test']) ? $d['test'] : '';
+    return $aus;
+}
+
 /* ---------------- Zwischenspeicher lesen ---------------- */
 
 function au_loxone()
@@ -729,6 +869,51 @@ function au_fahrzeuge()
 {
     $l = au_loxone();
     return isset($l['fahrzeuge']) && is_array($l['fahrzeuge']) ? $l['fahrzeuge'] : array();
+}
+
+/**
+ * C13 (Durchgang 29.09.2026): eine Abweisung des Endpunkts ins Protokoll.
+ *
+ * Bis 0.9.21 schrieb webfrontend/html/index.php keine einzige Zeile - ob
+ * Loxone gar nicht anrief oder abgewiesen wurde, war nicht zu
+ * unterscheiden (Regeln/03). Hoechstens eine Zeile je Minute und Grund:
+ * gebremst wird am Protokoll selbst (die juengste Zeile desselben Grundes),
+ * ohne eigene Merkdatei. Nie mit dem Token. Ohne Logordner bleibt es still -
+ * angelegt wird nichts ausser der Protokollzeile.
+ */
+function au_endpunkt_abweisung($grund, $aktion)
+{
+    $p = au_paths();
+    if (!is_dir($p['logdir'])) {
+        return;
+    }
+    $grund = preg_replace('/[^A-Z_]/', '', (string) $grund);
+    clearstatcache();
+    $groesse = is_file($p['log']) ? (int) @filesize($p['log']) : 0;
+    if ($groesse > 0) {
+        $fh = @fopen($p['log'], 'rb');
+        $ende = '';
+        if ($fh !== false) {
+            @fseek($fh, max(0, $groesse - 16384));
+            $ende = (string) @fread($fh, 16384);
+            @fclose($fh);
+        }
+        foreach (array_reverse(explode("\n", $ende)) as $z) {
+            if (preg_match('/^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] Endpunkt: Aufruf abgewiesen \(GRUND='
+                           . $grund . ',/', $z, $m)) {
+                $t = strtotime($m[1]);
+                if ($t !== false && time() - $t < 60) {
+                    return;
+                }
+                break;
+            }
+        }
+    }
+    $woher = isset($_SERVER['REMOTE_ADDR'])
+        ? preg_replace('/[^0-9A-Fa-f:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
+    $ak = is_string($aktion) ? preg_replace('/[^a-z_]/', '', substr($aktion, 0, 32)) : '';
+    au_log('Endpunkt: Aufruf abgewiesen (GRUND=' . $grund . ', Aktion ' . ($ak !== '' ? $ak : '-')
+        . ', von ' . ($woher !== '' ? $woher : '?') . '). Hoechstens eine Zeile je Minute und Grund.');
 }
 
 /** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
@@ -1209,7 +1394,10 @@ function au_befehl_absetzen($befehl, $wartezeit = null)
     $kennung = bin2hex(random_bytes(8));
     $datei = $ordner . '/' . $kennung . '.json';
     $tmp = $datei . '.tmp';
-    if (@file_put_contents($tmp, json_encode($befehl)) === false || !@rename($tmp, $datei)) {
+    /* C14 (Durchgang 29.09.2026): "=== false" hielt eine gekuerzte Datei fuer
+     * geschrieben, und ein json_encode()-Fehler ergab eine leere. */
+    $js = json_encode($befehl);
+    if ($js === false || @file_put_contents($tmp, $js) !== strlen($js) || !@rename($tmp, $datei)) {
         @unlink($tmp);
         return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
     }
@@ -1443,42 +1631,79 @@ function au_horcher_zustand()
     );
 }
 
-/** Alle Themen, die der Dienst veroeffentlicht, mit ihrer Bedeutung.
- *  Entsteht aus der Feldliste - so kann die Tabelle nicht von dem abweichen,
- *  was MQTT_FELDER in bin/audi.py wirklich sendet. */
-function au_mqtt_themen()
+/**
+ * Die Themen-Tabelle bin/au_themen.json - M1/M7, Durchgang 29.09.2026.
+ *
+ * BERICHTIGT: hier stand, die Liste entstehe aus der Feldliste und koenne
+ * deshalb nicht von MQTT_FELDER in bin/audi.py abweichen. Das stimmte nicht:
+ * die Python-Liste war eine zweite, eigene Liste (MQTT-Pruefer, M7), und
+ * welches Thema retained ist, stand nirgends. Jetzt lesen Dienst und
+ * Oberflaeche DIESELBE Datei; die Pruefzeile im Reiter Test haelt
+ * "audi.py --themen" dagegen. au_felder()['mqtt'] wird nicht mehr gelesen.
+ */
+function au_themen_datei()
 {
-    $t = array(
-        'ok'        => 'AU_MQTT.OK',
-        'grund'     => 'AU_MQTT.GRUND',
-        'fahrzeuge' => 'AU_MQTT.FAHRZEUGE',
-    );
-    foreach (au_felder() as $feld => $info) {
-        if ($info['mqtt'] === '' || $info['mqtt'] === null) {
+    foreach (array(au_paths()['bindir'] . '/au_themen.json',
+                   dirname(dirname(__DIR__)) . '/bin/au_themen.json') as $f) {
+        if (is_file($f)) {
+            return $f;
+        }
+    }
+    return '';
+}
+
+/** array('ok' => array('bez' => ..., 'retain' => 0|1), 'fahrzeugN/soc' => ...) */
+function au_mqtt_tabelle()
+{
+    static $t = null;
+    if ($t !== null) {
+        return $t;
+    }
+    $t = array();
+    $f = au_themen_datei();
+    $d = $f !== '' ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($d)) {
+        return $t;
+    }
+    foreach (array('dienst' => '', 'fahrzeug' => 'fahrzeugN/') as $ebene => $vor) {
+        if (!isset($d[$ebene]) || !is_array($d[$ebene])) {
             continue;
         }
-        $t['fahrzeugN/' . $info['mqtt']] = $info['bez'];
-    }
-    /* Zwei Werte gehen NUR ueber MQTT hinaus, und zwar als Unix-Zeit: an den
-     * Endpunkten stehen sie als Restminuten (FERTIGMIN, KLIMAFERTIG), weil
-     * Loxone mit einer Restzeit mehr anfangen kann als mit einem Zeitstempel.
-     * Ueber MQTT ist der Zeitstempel dagegen brauchbar. Sie stehen deshalb
-     * hier eigens - ein Thema, das der Dienst sendet und keine Tabelle nennt,
-     * ist ein Wert, den niemand findet. */
-    $t['fahrzeugN/laden_fertig_um'] = 'AU_MQTT.FERTIG';
-    $t['fahrzeugN/klima_fertig_um'] = 'AU_MQTT.KLIMAFERTIG';
-    foreach (array('zustand_text' => 'AU_MQTT.ZUSTAND_TEXT',
-                   'klima_text' => 'AU_MQTT.KLIMA_TEXT',
-                   'ladezustand_text' => 'AU_MQTT.LADE_TEXT',
-                   'tueren_namen' => 'AU_MQTT.TUEREN_NAMEN',
-                   'fenster_namen' => 'AU_MQTT.FENSTER_NAMEN',
-                   'adresse' => 'AU_MQTT.ADRESSE',
-                   'saeule_name' => 'AU_MQTT.SAEULE',
-                   'modell' => 'AU_MQTT.MODELL',
-                   'vin' => 'AU_MQTT.VIN') as $k => $b) {
-        $t['fahrzeugN/' . $k] = $b;
+        foreach ($d[$ebene] as $e) {
+            if (!is_array($e) || !isset($e['thema']) || !is_string($e['thema'])) {
+                continue;
+            }
+            $t[$vor . $e['thema']] = array(
+                'bez'    => isset($e['bez']) && is_string($e['bez']) ? $e['bez'] : '',
+                'retain' => !empty($e['retain']) ? 1 : 0,
+            );
+        }
     }
     return $t;
+}
+
+/**
+ * M10 (Durchgang 29.09.2026): config/plugins/<ordner>/mqtt_subscriptions.cfg
+ * auf "<praefix>/#" nachfuehren. Das MQTT-Gateway V1 liest diese Datei und
+ * abonniert daraus (Regeln/07). Geschrieben wird nur, wenn sie abweicht, mit
+ * Protokollzeile; der Dienst tut dasselbe je Takt.
+ */
+function au_abo_datei_nachfuehren($praefix)
+{
+    $p = au_paths();
+    if (!is_dir($p['configdir'])) {
+        return false;
+    }
+    $f = $p['configdir'] . '/mqtt_subscriptions.cfg';
+    $soll = $praefix . "/#\n";
+    if (is_file($f) && (string) @file_get_contents($f) === $soll) {
+        return true;
+    }
+    if (!au_datei_schreiben($f, $soll, 0644)) {
+        return false;
+    }
+    au_log('Gateway-Abo nachgefuehrt: ' . $f . ' enthaelt jetzt ' . $praefix . '/#');
+    return true;
 }
 
 /* ==================================================================
@@ -1500,12 +1725,17 @@ function au_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp ';
+    /* U7 (Durchgang 29.09.2026): HintText vorn, Info als erstes Kind, je
+     * Befehl Unit und HintText - wie die Ausfuhr, die Regeln/07 festhaelt
+     * (Bauform Einspeisebremse 0.9.28). Bis 0.9.21 fehlten alle vier; ohne
+     * Unit steht in Loxone eine nackte Zahl am Eingang. */
+    $o .= '<VirtualInHttp HintText="' . au_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '" ';
     $o .= 'Title="' . au_x($kopf['title']) . '" ';
     $o .= 'Comment="' . au_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . au_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . au_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . au_x($c['title']) . '" ';
@@ -1519,7 +1749,9 @@ function au_xml_virtual_in_http($kopf, $cmds)
         $o .= 'DestValHigh="100" ';
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="-2147483647" ';
-        $o .= 'MaxVal="2147483647"';
+        $o .= 'MaxVal="2147483647" ';
+        $o .= 'Unit="' . au_x('<v>' . ((isset($c['unit']) && $c['unit'] !== '') ? ' ' . $c['unit'] : '')) . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -1541,24 +1773,35 @@ function au_xml_virtual_out($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualOut ';
+    $o .= '<VirtualOut HintText="' . au_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '" ';
     $o .= 'Title="' . au_x($kopf['title']) . '" ';
     $o .= 'Comment="' . au_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . au_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'CmdInit="" ';
     $o .= 'CloseAfterSend="false" ';
-    $o .= 'CmdSep="" ';
-    $o .= 'HintText="' . au_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '"';
+    $o .= 'CmdSep=""';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualOutCmd ';
         $o .= 'Title="' . au_x($c['title']) . '" ';
         $o .= 'Comment="' . au_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
-        $o .= 'CmdOnMethod="' . au_x(isset($c['on']) ? $c['on'] : '') . '" ';
-        $o .= 'CmdOffMethod="' . au_x(isset($c['off']) ? $c['off'] : '') . '" ';
+        /* U6 (Durchgang 29.09.2026): die Methode ist GET, die ADRESSE steht in
+         * CmdOn/CmdOff - wie in der Referenz VQ_weissware_geraet1_befehle.xml
+         * (Regeln/07:350-352). Bis 0.9.21 stand die Adresse in CmdOnMethod und
+         * CmdOn fehlte ganz: nach dem Import haette kein Ausgang gesendet. */
+        $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOn="' . au_x(isset($c['on']) ? $c['on'] : '') . '" ';
+        $o .= 'CmdOffMethod="GET" ';
+        $o .= 'CmdOff="' . au_x(isset($c['off']) ? $c['off'] : '') . '" ';
         $o .= 'Analog="' . (empty($c['analog']) ? 'false' : 'true') . '" ';
         $o .= 'Repeat="0" ';
-        $o .= 'RepeatRate="0"';
+        $o .= 'RepeatRate="0" ';
+        if (!empty($c['analog'])) {
+            // Wie die Ausfuhr: zwischen RepeatRate und HintText (Regeln/07).
+            $o .= 'SourceValLow="0" DestValLow="0" SourceValHigh="10" DestValHigh="10" ';
+        }
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
@@ -2090,6 +2333,7 @@ function au_vorlage($nummer = 1, $art = 'status')
             'title'   => 'AUDI_' . (int) $nummer . '_' . $feld,
             'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check'   => au_check($feld),
+            'unit'    => $einheit,        // U7
         );
     }
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
@@ -2387,19 +2631,24 @@ function au_wert_pruefen($k, $v)
         // der Schaden ist derselbe wie bei einem verlorenen. Zugelassen ist,
         // was ohne Kodierung in eine Adresse passt. Leer heisst "kein Token
         // gesichert" und ist kein unzulaessiger Wert.
-        if (preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', (string) $v) !== 1) {
+        // SEIT 0.9.22 dieselbe Pruefung wie am Endpunkt (U16), damit ein
+        // zurueckgespieltes Token dort nicht scheitert. Ein leeres Token faengt
+        // au_sicherung_lesen() vorher ab: es heisst "nicht gesichert" (U4).
+        if ((string) $v !== '' && !au_token_taugt((string) $v)) {
             return sprintf(au_t('EINST.SICH_WERT_TOKEN'), au_e((string) $k));
         }
         return '';
     }
     if ($k === 'mqtt_topic' || $k === 'abfahrt_praefix') {
-        if (preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', (string) $v) !== 1) {
+        // U3/M11: dieselbe Funktion wie das Formular.
+        if (!au_thema_gueltig((string) $v, 64, false)) {
             return sprintf(au_t('EINST.SICH_WERT_THEMA'), au_e((string) $k));
         }
         return '';
     }
     if ($k === 'ladeempf_thema') {
-        if (preg_match('#^[A-Za-z0-9_/\-]{0,128}$#', (string) $v) !== 1) {
+        // U3: dieselbe Funktion wie das Formular (index.php, save_automatik).
+        if ((string) $v !== '' && !au_thema_gueltig((string) $v, 128, true)) {
             return sprintf(au_t('EINST.SICH_WERT_THEMA'), au_e((string) $k));
         }
         return '';
@@ -2468,15 +2717,16 @@ function au_sicherung_bauen()
  *
  * Grundlage ist der uebergebene Bestand, nicht die Werkseinstellung.
  * Rueckgabe: array(Konfiguration|null, Zugang|null, Beanstandungen[],
- *                  uebernommen, nicht enthalten).
+ *                  uebernommen, nicht enthalten, behaltene Token[]).
  */
 function au_sicherung_lesen($roh, $bestand = null)
 {
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, null, array(au_t('EINST.SICH_KEIN_JSON')), 0, 0);
+        return array(null, null, array(au_t('EINST.SICH_KEIN_JSON')), 0, 0, array());
     }
+    $behalten = array();    // U4: leere Token - das geltende bleibt
     if ($bestand === null) {
         $bestand = au_config();
     }
@@ -2490,18 +2740,27 @@ function au_sicherung_lesen($roh, $bestand = null)
             continue;
         }
         if ((string) $k === 'zugang') {
-            if (!is_array($w)) {
+            /* U5 (Durchgang 29.09.2026): eine Liste oder {} wird abgewiesen,
+             * und ein fehlender Unterschluessel ist eine Beanstandung. Bis
+             * 0.9.21 liess is_array() beides durch, fehlende Schluessel wurden
+             * zu '', und die E-Mail des Kontos war still geloescht, bei
+             * gruener Meldung (gemessen, p3c Fall 3). */
+            if (!is_array($w) || $w === array() || array_keys($w) === range(0, count($w) - 1)) {
                 $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang');
                 continue;
             }
             $z = array();
             foreach (array('email', 'passwort', 'spin') as $zk) {
-                $zw = isset($w[$zk]) ? $w[$zk] : '';
-                if (!au_wert_taugt($zw)) {
+                if (!array_key_exists($zk, $w)) {
+                    $mangel[] = sprintf(au_t('EINST.SICH_ZUGANG_FEHLT'), 'zugang.' . $zk);
+                    continue 2;
+                }
+                $zw = $w[$zk];
+                if (!is_string($zw) || !au_wert_taugt($zw)) {
                     $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang.' . $zk);
                     continue 2;
                 }
-                $z[$zk] = (string) $zw;
+                $z[$zk] = $zw;
             }
             if ($z['email'] !== '' && !filter_var($z['email'], FILTER_VALIDATE_EMAIL)) {
                 $mangel[] = au_t('EINST.FEHLER_EMAIL');
@@ -2523,6 +2782,16 @@ function au_sicherung_lesen($roh, $bestand = null)
         }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(au_t('EINST.SICH_FREMD'), au_e((string) $k));
+            continue;
+        }
+        if (($k === 'aktionstoken' || $k === 'schalttoken') && $w === '') {
+            /* U4 (Durchgang 29.09.2026): ein leeres Token heisst "nicht
+             * gesichert" (Regeln/05) - das geltende bleibt, und die Meldung
+             * sagt es. Bis 0.9.21 wurde '' geschrieben; die Zweitschrift blieb
+             * deshalb stehen, und der naechste au_config() im selben
+             * Seitenaufbau heilte den GANZEN zurueckgespielten Stand wieder
+             * weg - bei gruener Meldung (gemessen, p3c Fall 2). */
+            $behalten[] = $k;
             continue;
         }
         $grund = au_wert_pruefen($k, $w);
@@ -2566,7 +2835,7 @@ function au_sicherung_lesen($roh, $bestand = null)
             au_e(implode(', ', $fehlend)));
     }
     if ($mangel) {
-        return array(null, null, $mangel, $anzahl, $fehlend);
+        return array(null, null, $mangel, $anzahl, $fehlend, $behalten);
     }
-    return array($neu, $zugang, $mangel, $anzahl, $fehlend);
+    return array($neu, $zugang, $mangel, $anzahl, $fehlend, $behalten);
 }

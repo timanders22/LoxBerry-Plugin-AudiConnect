@@ -13,7 +13,7 @@ function au_pruefzeile($stand, $frage, $antwort)
     return array('stand' => $stand, 'frage' => $frage, 'antwort' => $antwort);
 }
 
-function au_pruefungen()
+function au_pruefungen($oberflaeche = array())
 {
     $p = au_paths();
     $cfg = au_config();
@@ -41,7 +41,8 @@ function au_pruefungen()
         $neben = isset($teile[1]) ? (int) $teile[1] : 0;
         $pyok = ($haupt > 3 || ($haupt === 3 && $neben >= 9)) ? 1 : 0;
     }
-    $zeilen[] = au_pruefzeile($pyv === '' ? 0 : $pyok, au_t('TEST.F_PYTHON'),
+    // U13: "nicht feststellbar" ist kein Kreuz (Klasse 8).
+    $zeilen[] = au_pruefzeile($pyv === '' ? -1 : $pyok, au_t('TEST.F_PYTHON'),
         $pyv !== '' ? au_e($pyv) . ($pyok ? '' : ' &mdash; ' . au_t('TEST.A_PYTHON_ZU_ALT'))
                     : au_t('TEST.A_PYTHON_UNBEKANNT'));
 
@@ -92,7 +93,11 @@ function au_pruefungen()
     }
 
     $pid = au_dienst_pid();
-    $zeilen[] = au_pruefzeile($pid > 0 ? 1 : 0, au_t('TEST.F_DIENST'),
+    /* U13 (Durchgang 29.09.2026): ein bewusst angehaltener Dienst ist kein
+     * Mangel - grauer Punkt statt Kreuz. Ein Kreuz nur, wenn er laufen SOLL
+     * und nicht laeuft. */
+    $soll = au_dienst_soll();
+    $zeilen[] = au_pruefzeile($pid > 0 ? 1 : ($soll ? 0 : -1), au_t('TEST.F_DIENST'),
         $pid > 0 ? au_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
                  : (au_dienst_soll() ? au_t('TEST.A_DIENST_SOLL_TOT') : au_t('TEST.A_DIENST_GESTOPPT')));
 
@@ -116,7 +121,8 @@ function au_pruefungen()
     }
 
     $rechte = is_file($p['zugang']) ? (fileperms($p['zugang']) & 0777) : -1;
-    $zeilen[] = au_pruefzeile(($rechte >= 0 && ($rechte & 0077) === 0) ? 1 : 0,
+    // U13: ueber eine fehlende Datei wird nicht geurteilt - grau.
+    $zeilen[] = au_pruefzeile($rechte < 0 ? -1 : (($rechte & 0077) === 0 ? 1 : 0),
         au_t('TEST.F_RECHTE'),
         $rechte >= 0 ? '0' . decoct($rechte) : au_t('TEST.A_ZUGANGSDATEI_FEHLT'));
 
@@ -166,13 +172,17 @@ function au_pruefungen()
         $zeilen[] = au_pruefzeile(1, au_t('TEST.F_AUSFAELLE'), au_t('TEST.A_KEINE_AUSFAELLE'));
     }
 
+    /* U13: ueber einen Dienst, der nicht laeuft, wird kein Herzschlag
+     * beurteilt (Regeln/04, Klasse 8). Bis 0.9.21 stand bei angehaltenem
+     * Dienst ein zweites Kreuz fuer dieselbe Ursache (gemessen, p6 A2). */
     $alter = au_alter();
     if ($alter < 0) {
-        $zeilen[] = au_pruefzeile(0, au_t('TEST.F_ABRUF'), au_t('TEST.A_NIE_ABGERUFEN'));
+        $zeilen[] = au_pruefzeile($pid > 0 ? 0 : -1, au_t('TEST.F_ABRUF'), au_t('TEST.A_NIE_ABGERUFEN'));
     } else {
         $frisch = $alter <= max(600, 3 * (int) $cfg['intervall']);
-        $zeilen[] = au_pruefzeile($frisch ? 1 : 0, au_t('TEST.F_ABRUF'),
-            sprintf(au_t('TEST.A_ABRUF_ALTER'), $alter));
+        $zeilen[] = au_pruefzeile($frisch ? 1 : ($pid > 0 ? 0 : -1), au_t('TEST.F_ABRUF'),
+            sprintf(au_t('TEST.A_ABRUF_ALTER'), $alter)
+            . (($frisch || $pid > 0) ? '' : ' &mdash; ' . au_t('TEST.A_ABRUF_DIENST_AUS')));
     }
 
     $zu = au_zustand();
@@ -264,7 +274,244 @@ function au_pruefungen()
         $ladungen ? sprintf(au_t('TEST.A_LADUNGEN'), count($ladungen))
                   : au_t('TEST.A_KEINE_LADUNGEN'));
 
+    /* U12 (Durchgang 29.09.2026): die Pflichtzeilen aus Regeln/04. Bis
+     * 0.9.21 fehlten alle sechs (gemessen, p6 L0). */
+    list($s, $t) = au_pruef_konfiguration();
+    $zeilen[] = au_pruefzeile($s, au_t('TEST.F_KONFIG'), $t);
+    list($s, $t) = au_pruef_endpunkt();
+    $zeilen[] = au_pruefzeile($s, au_t('TEST.F_ENDPUNKT'), $t);
+    if (isset($oberflaeche['quelle'])) {
+        list($s, $t) = au_pruef_reiter($oberflaeche['quelle'],
+            isset($oberflaeche['liste']) ? $oberflaeche['liste'] : array());
+        $zeilen[] = au_pruefzeile($s, au_t('TEST.F_REITER'), $t);
+        list($s, $t) = au_pruef_formulare($oberflaeche['quelle']);
+        $zeilen[] = au_pruefzeile($s, au_t('TEST.F_FORMULARE'), $t);
+    }
+    list($s, $t) = au_pruef_themen();
+    $zeilen[] = au_pruefzeile($s, au_t('TEST.F_THEMEN'), $t);
+    list($s, $t) = au_pruef_vorlagen();
+    $zeilen[] = au_pruefzeile($s, au_t('TEST.F_VORLAGE'), $t);
+
     return $zeilen;
+}
+
+/**
+ * U12: War die Konfiguration heil, bevor die Selbstheilung sie anfasste?
+ * Liest den Befund, den au_config() beim ersten heilenden Aufruf dieses
+ * Seitenaufbaus festgehalten hat. Rueckgabe array(Stand, Antwort).
+ */
+function au_pruef_konfiguration()
+{
+    $b = au_config_erstbefund();
+    if (!is_array($b)) {
+        return array(-1, au_t('TEST.A_KONFIG_UNKLAR'));
+    }
+    if (!empty($b['geheilt'])) {
+        return array(0, sprintf(au_t('TEST.A_KONFIG_GEHEILT'), au_e($b['zustand']))
+            . ($b['kaputt'] !== '' ? ' ' . sprintf(au_t('TEST.A_KONFIG_KAPUTT_DATEI'), au_e($b['kaputt'])) : ''));
+    }
+    if ($b['zustand'] === 'heil') {
+        return array(1, au_t('TEST.A_KONFIG_HEIL'));
+    }
+    if ($b['zustand'] === 'fehlt' || $b['zustand'] === 'leer') {
+        return array(-1, au_t('TEST.A_KONFIG_NEU'));
+    }
+    return array(0, sprintf(au_t('TEST.A_KONFIG_KAPUTT'), au_e($b['zustand'])));
+}
+
+/**
+ * U12: Antwortet der EIGENE Endpunkt? Aufgerufen wird er ueber 127.0.0.1 mit
+ * dem Lesetoken und aktion=fahrzeuge. Drei Ausgaenge: er antwortet mit seiner
+ * Zeile (Haken), er antwortet anders (Kreuz, samt erster Zeile), er ist nicht
+ * zu erreichen (grau: nicht feststellbar, kein Urteil). Ohne
+ * $http_response_header (PHP 8.5): die Kopfzeilen kommen aus
+ * stream_get_meta_data().
+ */
+function au_pruef_endpunkt()
+{
+    $p = au_paths();
+    $cfg = au_config();
+    $token = is_string($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '';
+    $port = (isset($_SERVER['SERVER_PORT']) && preg_match('/^[0-9]{1,5}$/', (string) $_SERVER['SERVER_PORT']))
+        ? (int) $_SERVER['SERVER_PORT'] : 80;
+    $url = 'http://127.0.0.1:' . $port . '/plugins/' . rawurlencode($p['plugin'])
+         . '/index.php?token=' . rawurlencode($token) . '&aktion=fahrzeuge';
+    $ctx = stream_context_create(array('http' => array('timeout' => 3, 'ignore_errors' => true,
+                                                       'follow_location' => 0)));
+    $fh = @fopen($url, 'r', false, $ctx);
+    if ($fh === false) {
+        return array(-1, sprintf(au_t('TEST.A_ENDPUNKT_UNKLAR'), au_e('127.0.0.1:' . $port)));
+    }
+    $meta = @stream_get_meta_data($fh);
+    $rumpf = (string) @stream_get_contents($fh, 4096);
+    @fclose($fh);
+    $status = '?';
+    if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) {
+        foreach ($meta['wrapper_data'] as $z) {
+            if (preg_match('#^HTTP/\S+\s+([0-9]{3})#', (string) $z, $m)) {
+                $status = $m[1];
+            }
+        }
+    }
+    $erste = trim((string) strtok($rumpf, "\n"));
+    if (strpos($rumpf, 'FAHRZEUGE;') === 0) {
+        return array(1, sprintf(au_t('TEST.A_ENDPUNKT_OK'), au_e($status), au_e($erste)));
+    }
+    return array(0, sprintf(au_t('TEST.A_ENDPUNKT_FALSCH'), au_e($status), au_e(substr($erste, 0, 80))));
+}
+
+/**
+ * U12/U11: Passen Reiterleiste, Bereiche und Positivliste zusammen? Gezaehlt
+ * im Quelltext der Oberflaeche (Bauform abfahrt_pruef_reiter(),
+ * Abfahrts-Assistent 1.6.16): jeder Reiter muss in allen dreien stehen, und
+ * sm-active setzt der Server an Leiste und Bereich.
+ */
+function au_pruef_reiter($quelle, $liste)
+{
+    preg_match_all('/<a class="sm-tab(.*?)"\s+data-ziel="(tab-[a-z]+)"/', (string) $quelle, $ml);
+    preg_match_all('/<div class="sm-seite(.*?)"\s+id="(tab-[a-z]+)"/', (string) $quelle, $mb);
+    $leiste = $ml[2];
+    $bereiche = $mb[2];
+    $soll = array();
+    foreach ((array) $liste as $r) {
+        $soll[] = 'tab-' . $r;
+    }
+    $fehl = array();
+    if (!$leiste || !$bereiche || !$soll) {
+        $fehl[] = au_t('TEST.P_LEER');
+    }
+    foreach (array_unique(array_merge($leiste, $bereiche, $soll)) as $r) {
+        if (!in_array($r, $leiste, true)) {
+            $fehl[] = sprintf(au_t('TEST.P_NICHT_LEISTE'), $r);
+        }
+        if (!in_array($r, $bereiche, true)) {
+            $fehl[] = sprintf(au_t('TEST.P_NICHT_BEREICH'), $r);
+        }
+        if (!in_array($r, $soll, true)) {
+            $fehl[] = sprintf(au_t('TEST.P_NICHT_LISTE'), $r);
+        }
+    }
+    foreach (array($ml, $mb) as $x) {
+        foreach ($x[2] as $i => $r) {
+            if (strpos($x[1][$i], "'" . $r . "'") === false || strpos($x[1][$i], 'sm-active') === false) {
+                $fehl[] = sprintf(au_t('TEST.P_KEIN_ACTIVE'), $r);
+            }
+        }
+    }
+    if ($fehl) {
+        return array(0, sprintf(au_t('TEST.A_REITER_FEHL'), count($leiste), count($bereiche),
+            count($soll), au_e(implode('; ', array_unique($fehl)))));
+    }
+    return array(1, sprintf(au_t('TEST.A_REITER_OK'), count($soll)));
+}
+
+/**
+ * U12: Tragen alle POST-Formulare das Formularmerkmal? Gezaehlt im Quelltext
+ * (Bauform abfahrt_pruef_formulare()); ein Formular traegt es, wenn es
+ * au_formfelder() ruft oder das Feld selbst schreibt - und au_formfelder()
+ * muss es wirklich ausgeben. Eine leere Menge ist kein Haken.
+ */
+function au_pruef_formulare($quelle)
+{
+    $q = (string) $quelle;
+    $mit_fn = preg_match('/function au_formfelder\b[^{]*\{[^}]*name="formtoken"/s', $q) === 1;
+    $n = 0;
+    $ohne = 0;
+    foreach (preg_split('/<form\b/i', $q) as $i => $teil) {
+        if ($i === 0) {
+            continue;
+        }
+        $ende = stripos($teil, '</form>');
+        $block = ($ende === false) ? $teil : substr($teil, 0, $ende);
+        if (!preg_match('/^[^>]*method="post"/i', $block)) {
+            continue;
+        }
+        $n++;
+        $traegt = strpos($block, 'name="formtoken"') !== false
+               || ($mit_fn && strpos($block, 'au_formfelder(') !== false);
+        if (!$traegt) {
+            $ohne++;
+        }
+    }
+    if ($n === 0) {
+        return array(0, au_t('TEST.A_FORM_LEER'));
+    }
+    if ($ohne > 0) {
+        return array(0, sprintf(au_t('TEST.A_FORM_FEHL'), $ohne, $n));
+    }
+    return array(1, sprintf(au_t('TEST.A_FORM_OK'), $n));
+}
+
+/**
+ * U12/M7: Stimmt die Themenliste der Oberflaeche mit dem Sendecode ueberein -
+ * in beide Richtungen, samt Retain-Merker? Der Sendecode antwortet ueber
+ * "audi.py --themen" (legt nichts an). Ohne virtuelle Umgebung: grau.
+ */
+function au_pruef_themen()
+{
+    $p = au_paths();
+    $py = $p['bindir'] . '/venv/bin/python3';
+    $skript = $p['bindir'] . '/audi.py';
+    if (!is_file($py) || !is_file($skript)) {
+        return array(-1, au_t('TEST.A_THEMEN_UNKLAR'));
+    }
+    $aus = array();
+    $rc = 0;
+    @exec(escapeshellarg($py) . ' ' . escapeshellarg($skript) . ' --themen 2>/dev/null', $aus, $rc);
+    $code = json_decode(implode("\n", $aus), true);
+    $liste = au_mqtt_tabelle();
+    if (!is_array($code) || !$code || !$liste) {
+        return array(0, sprintf(au_t('TEST.A_THEMEN_LEER'), count($liste), is_array($code) ? count($code) : 0));
+    }
+    $fehl = array();
+    foreach ($code as $t => $r) {
+        if (!isset($liste[$t])) {
+            $fehl[] = sprintf(au_t('TEST.P_NUR_CODE'), $t);
+        } elseif ($r === null || (int) $r !== $liste[$t]['retain']) {
+            $fehl[] = sprintf(au_t('TEST.P_RETAIN_ANDERS'), $t);
+        }
+    }
+    foreach ($liste as $t => $e) {
+        if (!array_key_exists($t, $code)) {
+            $fehl[] = sprintf(au_t('TEST.P_NUR_LISTE'), $t);
+        }
+    }
+    if ($fehl) {
+        return array(0, au_e(implode('; ', $fehl)));
+    }
+    $n = 0;
+    foreach ($liste as $e) {
+        $n += $e['retain'];
+    }
+    return array(1, sprintf(au_t('TEST.A_THEMEN_OK'), count($liste), $n));
+}
+
+/** U12: Sind die erzeugbaren Vorlagen (vier VI, eine VO) wohlgeformt? */
+function au_pruef_vorlagen()
+{
+    if (!function_exists('simplexml_load_string') || !function_exists('libxml_use_internal_errors')) {
+        return array(-1, au_t('TEST.A_VORLAGE_UNKLAR'));
+    }
+    $dateien = array();
+    foreach (array('status', 'laden', 'wartung', 'position') as $art) {
+        $v = au_vorlage(1, $art);
+        $dateien[$v[0]] = $v[1];
+    }
+    $v = au_vorlage_vo(1);
+    $dateien[$v[0]] = $v[1];
+    $alt = libxml_use_internal_errors(true);
+    $kaputt = array();
+    foreach ($dateien as $name => $xml) {
+        if (simplexml_load_string($xml) === false) {
+            $kaputt[] = $name;
+        }
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($alt);
+    if ($kaputt) {
+        return array(0, sprintf(au_t('TEST.A_VORLAGE_KAPUTT'), au_e(implode(', ', $kaputt))));
+    }
+    return array(1, sprintf(au_t('TEST.A_VORLAGE_OK'), count($dateien)));
 }
 
 /**

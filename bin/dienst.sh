@@ -299,6 +299,26 @@ laeuft() {
     dienst_pid >/dev/null 2>&1
 }
 
+# C12 (Durchgang 29.09.2026): Ist das Lebenszeichen des Dienstes aelter als
+# das Dreifache seines Takts? bin/audi.py schreibt "<unixzeit> <takt>" beim
+# Start, je Takt und in der Wartezeit alle 30 s. Bis 0.9.21 sah der Waechter
+# nur, OB der Prozess lebt - ein Dienst, der in einem Abruf haengt, wurde nie
+# neu gestartet. Fehlt die Datei oder ist sie unlesbar, gilt es NICHT als
+# veraltet (ein Dienst einer frueheren Fassung schreibt keine).
+lebenszeichen_veraltet() {
+    LZ="$PDATA/lebenszeichen"
+    [ -f "$LZ" ] || return 1
+    read -r LZ_TS LZ_TAKT < "$LZ" 2>/dev/null || return 1
+    case "$LZ_TS" in ''|*[!0-9]*) return 1 ;; esac
+    case "$LZ_TAKT" in ''|*[!0-9]*) LZ_TAKT=300 ;; esac
+    [ "$LZ_TAKT" -ge 180 ] || LZ_TAKT=180
+    LZ_JETZT=$(date +%s 2>/dev/null)
+    case "$LZ_JETZT" in ''|*[!0-9]*) return 1 ;; esac
+    LZ_GRENZE=$((3 * LZ_TAKT))
+    LZ_ALTER=$((LZ_JETZT - LZ_TS))
+    [ "$LZ_ALTER" -gt "$LZ_GRENZE" ]
+}
+
 # Stehen E-Mail UND Passwort in der Zugangsdatei? NEU IN 0.9.15.
 #
 # Bis 0.9.14 fragte starten() nur, ob die Datei EXISTIERT. postinstall.sh
@@ -326,6 +346,17 @@ sys.exit(0 if ok else 1)' "$PCONFIG/zugang.json" 2>/dev/null
 }
 
 starten() {
+    # C5 (Durchgang 29.09.2026): zwei gleichzeitige Starts - Knopf und
+    # Waechter in derselben Sekunde - ergaben bis 0.9.21 zwei Dienste
+    # (gemessen, 5 von 5 Runden). Gesperrt wird auf diesem Skript selbst,
+    # es muss nichts angelegt werden. Der Dienst bekommt den Griff NICHT
+    # vererbt (8<&- an der nohup-Zeile), sonst hielte er die Sperre, solange
+    # er laeuft (Bauform Einspeisebremse 0.9.28). audi.py sperrt zusaetzlich
+    # selbst. Ohne flock bleibt es beim bisherigen Weg.
+    if command -v flock >/dev/null 2>&1; then
+        exec 8<"$0"
+        flock -w 15 8 || { echo "FEHLER: Ein anderer Start laeuft noch - abgebrochen."; return 1; }
+    fi
     if P=$(dienst_pid); then
         # Die Nummer kommt aus der PID-Datei ODER aus der Suche. Der zweite
         # Weg ist der Punkt: ohne ihn stellte dieser Aufruf einem Dienst ohne
@@ -367,7 +398,9 @@ starten() {
     # und setzt STARTLOG_KAPPEN=0 - sonst ginge hier verloren, was er
     # vorher schon hineingeschrieben hat.
     [ "${STARTLOG_KAPPEN:-1}" = 0 ] || : > "$STARTLOG"
-    nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 &
+    # Ein Lebenszeichen aus einem frueheren Lauf gilt nicht fuer diesen (C12).
+    rm -f "$PDATA/lebenszeichen"
+    nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 8<&- &
     echo $! > "$PID"
     # Drei Sekunden hinsehen, nicht eine - BERICHTIGT IN 0.9.15.
     #
@@ -404,6 +437,10 @@ starten() {
 
 anhalten() {
     rm -f "$SOLL"
+    # I2 (Durchgang 29.09.2026): wer den Dienst anhaelt, will ihn auch nach
+    # dem naechsten Upgrade nicht laufen sehen. Der Startmerker bleibt seit
+    # 0.9.22 liegen, bis ein Upgrade ganz gelungen ist (preupgrade.sh).
+    rm -f "$LBHOMEDIR/config/plugins/$PNAME.lief_vorher"
     # ALLE eigenen Dienste, nicht nur den aus der PID-Datei - NEU IN 0.9.20.
     # Sonst bleibt eine Waise stehen, und der naechste Start teilt sich mit
     # ihr das myAudi-Konto (Fall g_waise_stop: 1 Prozess blieb uebrig).
@@ -504,6 +541,18 @@ case "$1" in
             else
                 printf '%s\n' "$ausgabe" >> "$STARTLOG"
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Neustart gescheitert - Sollmerker entfernt, Einzelheiten in $STARTLOG." >> "$LOGDATEI"
+            fi
+        elif [ -f "$SOLL" ] && ! upgrade_laeuft && lebenszeichen_veraltet; then
+            # C12: der Prozess lebt, schreibt aber nichts mehr.
+            ordner_anlegen
+            : > "$STARTLOG"
+            exec 2>>"$STARTLOG"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst laeuft (PID $(dienst_pid)), aber sein Lebenszeichen ist $LZ_ALTER s alt (Grenze $LZ_GRENZE s = 3 x Takt) - er wird neu gestartet." >> "$LOGDATEI"
+            if ausgabe=$(anhalten 2>&1 && STARTLOG_KAPPEN=0 starten 2>&1); then
+                printf '%s\n' "$ausgabe" >> "$STARTLOG"
+            else
+                printf '%s\n' "$ausgabe" >> "$STARTLOG"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Neustart nach haengendem Dienst gescheitert, Einzelheiten in $STARTLOG." >> "$LOGDATEI"
             fi
         fi
         ;;

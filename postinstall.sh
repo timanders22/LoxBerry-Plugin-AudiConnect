@@ -75,6 +75,14 @@ PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 VENV="$PBIN/venv"
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# I1 (Durchgang 29.09.2026, Entscheidung 1): eingespielt wird aus
+# Zweitschriften, Rettung und Startmerker NUR bei einer Aktualisierung - und
+# die erkennt dieses Skript allein an der Marke, die preupgrade.sh als Erstes
+# anlegt (kein Altersvergleich). Festgehalten wird es hier, bevor der trap oder
+# die Zeile vor dem Dienststart die Marke entfernt. Den zweiten Lauf ueber
+# postupgrade.sh sieht es ohne Marke: dann ist schon eingespielt.
+UPGRADE=0
+[ -f "$MARKE" ] && UPGRADE=1
 
 # Die Marke faellt ueber einen trap, nicht erst am Dateiende.
 #
@@ -114,6 +122,10 @@ chown -R loxberry:loxberry "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null || true
 
 # ---------- Konfiguration ----------
 [ -f "$PCONFIG/audi.json" ] || echo '{}' > "$PCONFIG/audi.json"
+# C3 (Durchgang 29.09.2026): audi.json traegt Lese- und Schalttoken und das
+# Formulargeheimnis - 0600 wie zugang.json. Apache und Dienst laufen als
+# loxberry (am Geraet gemessen 30.09.2026) und lesen sie weiterhin.
+chmod 600 "$PCONFIG/audi.json"
 if [ ! -f "$PCONFIG/zugang.json" ]; then
     echo '{}' > "$PCONFIG/zugang.json"
 fi
@@ -151,32 +163,38 @@ traegt() {
 command -v perl >/dev/null 2>&1 || \
     echo "<INFO> perl fehlt - es wird nur eine leere Konfiguration zurueckgespielt."
 
-for f in audi.json zugang.json; do
-    case $f in
-        audi.json)   SCHL="aktionstoken schalttoken formgeheimnis" ;;
-        zugang.json) SCHL="email passwort spin" ;;
-    esac
-    BK="$BASE/config/plugins/$PFOLDER.backup.$f"
-    CF="$PCONFIG/$f"
-    if [ -f "$BK" ]; then
-        INHALT=$(cat "$CF" 2>/dev/null)
-        if ! traegt "$CF" $SCHL || [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-            # Nur eine Zweitschrift MIT Inhalt (dieselbe Pruefung traegt()).
-            # Bis 0.9.20 wurde auch "{}" kopiert und als "wiederhergestellt"
-            # gemeldet (gemessen 24.09.2026, Pruefung-AudiConnect-0.9.21,
-            # Fall c) - eine Erfolgsmeldung ueber nichts. Ohne perl laesst
-            # sich der Inhalt nicht pruefen; dann wird wie bisher kopiert.
-            if command -v perl >/dev/null 2>&1 && ! traegt "$BK" $SCHL; then
-                echo "<INFO> $f: Sicherung ohne Einstellungen - nichts zurueckgespielt."
-            elif cp -p "$BK" "$CF"; then
-                echo "<OK> $f aus Sicherung wiederhergestellt."
-            else
-                echo "<FAIL> $f liess sich nicht wiederherstellen ($BK)."
+# I1: nur bei einer Aktualisierung (Marke). Bei einer Neuinstallation hat
+# preinstall.sh liegengebliebene Zweitschriften nach .alt gelegt; liegt
+# trotzdem eine da, wird sie NICHT eingespielt.
+if [ "$UPGRADE" = 1 ]; then
+    for f in audi.json zugang.json; do
+        case $f in
+            audi.json)   SCHL="aktionstoken schalttoken formgeheimnis" ;;
+            zugang.json) SCHL="email passwort spin" ;;
+        esac
+        BK="$BASE/config/plugins/$PFOLDER.backup.$f"
+        CF="$PCONFIG/$f"
+        if [ -f "$BK" ]; then
+            INHALT=$(cat "$CF" 2>/dev/null)
+            if ! traegt "$CF" $SCHL || [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
+                # Nur eine Zweitschrift MIT Inhalt (dieselbe Pruefung traegt()).
+                # Bis 0.9.20 wurde auch "{}" kopiert und als "wiederhergestellt"
+                # gemeldet (gemessen 24.09.2026, Pruefung-AudiConnect-0.9.21,
+                # Fall c) - eine Erfolgsmeldung ueber nichts. Ohne perl laesst
+                # sich der Inhalt nicht pruefen; dann wird wie bisher kopiert.
+                if command -v perl >/dev/null 2>&1 && ! traegt "$BK" $SCHL; then
+                    echo "<INFO> $f: Sicherung ohne Einstellungen - nichts zurueckgespielt."
+                elif cp -p "$BK" "$CF"; then
+                    echo "<OK> $f aus Sicherung wiederhergestellt."
+                else
+                    echo "<FAIL> $f liess sich nicht wiederherstellen ($BK)."
+                fi
             fi
         fi
-    fi
-done
+    done
+fi
 chmod 600 "$PCONFIG/zugang.json"
+chmod 600 "$PCONFIG/audi.json"
 
 # ---------- Den Datenordner zurueckholen ----------
 #
@@ -189,27 +207,43 @@ chmod 600 "$PCONFIG/zugang.json"
 # Zurueckgespielt wird nur, was fehlt: eine Neuinstallation neben einer
 # alten Rettung soll den frischen Stand nicht ueberschreiben.
 RETTUNG="$BASE/data/plugins/$PFOLDER.rettung"
-if [ -d "$RETTUNG" ]; then
+# I1: nur bei einer Aktualisierung (Marke) - bei einer Neuinstallation liegt
+# eine fruehere Rettung als .alt daneben (preinstall.sh).
+if [ "$UPGRADE" = 1 ] && [ -d "$RETTUNG" ]; then
+    # I3 (Durchgang 29.09.2026): "es kam nichts an" nur, wenn etwas ERWARTET
+    # war, und entschieden wird an dem, was aus der Rettung angekommen ist -
+    # nicht mehr am Datenordner allein.
+    ERWARTET=0
+    ANGEKOMMEN=0
     for f in merker.json token.json; do
-        if [ -f "$RETTUNG/$f" ] && [ ! -s "$PDATA/$f" ]; then
-            if cp -p "$RETTUNG/$f" "$PDATA/$f"; then
+        if [ -f "$RETTUNG/$f" ]; then
+            ERWARTET=1
+            if [ -s "$PDATA/$f" ]; then
+                ANGEKOMMEN=1
+            elif cp -p "$RETTUNG/$f" "$PDATA/$f"; then
                 echo "<OK> $f zurueckgespielt."
+                ANGEKOMMEN=1
             else
                 echo "<FAIL> $f liess sich nicht zurueckspielen."
             fi
         fi
     done
-    if [ -d "$RETTUNG/verlauf" ] && [ ! -d "$PDATA/verlauf" ]; then
-        if cp -rp "$RETTUNG/verlauf" "$PDATA/verlauf"; then
+    if [ -d "$RETTUNG/verlauf" ]; then
+        ERWARTET=1
+        if [ -d "$PDATA/verlauf" ]; then
+            ANGEKOMMEN=1
+        elif cp -rp "$RETTUNG/verlauf" "$PDATA/verlauf"; then
             echo "<OK> Verlauf und Ladeprotokoll zurueckgespielt."
+            ANGEKOMMEN=1
         else
             echo "<FAIL> Der Verlauf liess sich nicht zurueckspielen."
         fi
     fi
     # Erst wegraeumen, wenn wirklich etwas angekommen ist - sonst waere ein
-    # fehlgeschlagenes Zurueckspielen ein endgueltiger Verlust.
-    if [ -s "$PDATA/merker.json" ] || [ -d "$PDATA/verlauf" ] || [ -s "$PDATA/token.json" ]; then
-        rm -rf "$RETTUNG"
+    # fehlgeschlagenes Zurueckspielen ein endgueltiger Verlust. Eine leere
+    # Rettung geht still weg.
+    if [ "$ERWARTET" = 0 ] || [ "$ANGEKOMMEN" = 1 ]; then
+        rm -rf "${RETTUNG:?}"
     else
         echo "<INFO> $RETTUNG bleibt liegen - es kam nichts an."
     fi
@@ -348,6 +382,7 @@ if ! chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null;
     exit 1
 fi
 chmod 600 "$PCONFIG/zugang.json" || echo "<INFO> chmod 600 auf zugang.json nicht moeglich."
+chmod 600 "$PCONFIG/audi.json" || echo "<INFO> chmod 600 auf audi.json nicht moeglich."
 chmod 600 "$PDATA/token.json" 2>/dev/null || true
 
 # ---------- Dienst wieder starten, wenn er vor dem Upgrade lief ----------
@@ -385,7 +420,12 @@ MERKER="$BASE/config/plugins/$PFOLDER.lief_vorher"
 # und bis hierher soll kein anderer Weg (Knopf der Oberflaeche, Minutentakt)
 # einen Dienst gegen eine halb eingerichtete Umgebung anwerfen.
 rm -f "$MARKE" 2>/dev/null
-if [ -f "$MERKER" ]; then
+# I1: der Startmerker gilt nur bei einer Aktualisierung (Marke). Eine
+# Neuinstallation hat ihn in preinstall.sh entfernt. Ohne Marke bleibt er
+# liegen - das ist der zweite Lauf ueber postupgrade.sh, oder ein erster
+# Lauf, der vorher scheiterte (I2: der Merker bleibt, bis ein Upgrade ganz
+# gelungen ist).
+if [ "$UPGRADE" = 1 ] && [ -f "$MERKER" ]; then
     rm -f "$MERKER"
     if [ ! -x "$PBIN/dienst.sh" ]; then
         echo "<INFO> $PBIN/dienst.sh fehlt - der Dienst wurde nicht gestartet."

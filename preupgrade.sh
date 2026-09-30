@@ -83,8 +83,14 @@ date +%s > "$MARKE" 2>/dev/null
 if [ -s "$MARKE" ]; then
     echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
 else
-    echo "<INFO> Die Marke $MARKE liess sich nicht anlegen - der Dienst kann"
-    echo "<INFO> waehrend der Installation anlaufen. Das ist kein Abbruchgrund."
+    # I1 (Durchgang 29.09.2026): SEIT 0.9.22 ein Abbruchgrund. Die Marke ist
+    # das einzige Zeichen, an dem preinstall.sh und postinstall.sh ein Update
+    # von einer Neuinstallation unterscheiden (Entscheidung 1). Ohne sie
+    # legte preinstall.sh die eben gesicherten Einstellungen beiseite.
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen."
+    echo "<FAIL> Ohne sie hielte die Installation das Update fuer eine Neuinstallation und"
+    echo "<FAIL> legte Einstellungen und Zugangsdaten beiseite. Das Upgrade wird abgebrochen."
+    exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -128,7 +134,14 @@ fi
 # sondern das Einzige, was den Dienst wieder anwirft.
 # ---------------------------------------------------------------------------
 
-rm -f "$MERKER"
+# I2 (Durchgang 29.09.2026): ein LIEGENDER Merker bleibt. Er stammt aus einem
+# Upgrade, das nicht zu Ende kam - postinstall.sh entfernt ihn erst, wenn es
+# den Dienst wieder anwirft. Bis 0.9.21 stand hier "rm -f $MERKER": scheiterte
+# ein Upgrade am pip-Lauf, war soll_laufen mit dem Datenordner fort, und das
+# wiederholte Upgrade loeschte auch den Merker - danach blieb der Dienst
+# dauerhaft aus, ohne Meldung (in WSL gemessen, Installer-Pruefer Fall H).
+# Abgeraeumt wird er sonst von preinstall.sh (Neuinstallation), von
+# uninstall/uninstall und von "dienst.sh stop" (bewusst angehalten).
 
 # Der Merker haengt am SOLL, nicht am Ist.
 #
@@ -321,6 +334,9 @@ for f in audi.json zugang.json; do
     fi
 done
 chmod 600 "$BASE/config/plugins/$PFOLDER.backup.zugang.json" 2>/dev/null || true
+# C3 (Durchgang 29.09.2026): audi.json traegt Lese- und Schalttoken und das
+# Formulargeheimnis - die Zweitschrift bekommt dieselben Rechte 0600.
+chmod 600 "$BASE/config/plugins/$PFOLDER.backup.audi.json" 2>/dev/null || true
 
 # Der Datenordner. Was hier nicht gerettet wird, ist nach dem Upgrade fort:
 #   verlauf/        Tagesdateien und ladungen.csv - das Einzige, was sich
@@ -331,8 +347,16 @@ chmod 600 "$BASE/config/plugins/$PFOLDER.backup.zugang.json" 2>/dev/null || true
 #                   Zwei-Faktor-Bestaetigung nicht von selbst gelingen
 # Nicht gerettet werden loxone.json, zustand.json, cache.json und
 # bibliothek_cache.json: die entstehen beim naechsten Abruf ohnehin neu.
+# I3 (Durchgang 29.09.2026): angelegt wird die Rettung nur, wenn es etwas zu
+# retten gibt. Bis 0.9.21 entstand sie bei jeder nie eingerichteten Anlage
+# leer, und postinstall.sh meldete "es kam nichts an" (gemessen, Fall C3;
+# am Geraet lag data/plugins/audiconnect.rettung vom 25.09.2026).
+# Ein alter Bestand geht vorher weg (Entscheidung 1).
 if [ -d "$PDATA" ]; then
-    rm -rf "$RETTUNG"
+    rm -rf "${RETTUNG:?}"
+fi
+if [ -d "$PDATA" ] && { [ -f "$PDATA/merker.json" ] || [ -f "$PDATA/token.json" ] \
+                        || [ -d "$PDATA/verlauf" ]; }; then
     if mkdir -p "$RETTUNG"; then
         for f in merker.json token.json; do
             if [ -f "$PDATA/$f" ]; then

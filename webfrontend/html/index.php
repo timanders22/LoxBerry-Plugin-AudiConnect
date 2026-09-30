@@ -77,8 +77,12 @@ $au_cfg = au_config(false);
 $au_lesend = array('status', 'laden', 'wartung', 'position', 'text', 'ladungen',
                    'fahrzeuge', 'roh');
 $au_schaltend = array_keys(au_befehle());
-$au_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
-if (!in_array($au_aktion, array_merge($au_lesend, $au_schaltend), true)) {
+/* C7 (Durchgang 29.09.2026): erst is_string, dann umwandeln. Bis 0.9.21 gab
+ * ?aktion[]=x unter PHP 8.x "Array to string conversion" aus, und weil die
+ * Warnung den Kopf schon geschickt hatte, kam die Abweisung als HTTP 200. */
+$au_aktion = isset($_GET['aktion']) ? $_GET['aktion'] : 'status';
+if (!is_string($au_aktion) || !in_array($au_aktion, array_merge($au_lesend, $au_schaltend), true)) {
+    au_endpunkt_abweisung('UNBEKANNTE_AKTION', $au_aktion);
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
     echo 'Erlaubt sind: ' . implode(', ', array_merge($au_lesend, $au_schaltend)) . "\n";
@@ -96,6 +100,7 @@ if (!empty($au_cfg['nur_miniserver'])) {
     $au_woher = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
     if ($au_erlaubt && !in_array($au_woher, $au_erlaubt, true)
         && $au_woher !== '127.0.0.1' && $au_woher !== '::1') {
+        au_endpunkt_abweisung('FREMDE_ADRESSE', $au_aktion);
         http_response_code(403);
         echo "FEHLER;OK=0;GRUND=FREMDE_ADRESSE\n";
         echo 'Der Aufruf kam von ' . $au_woher . '. Zugelassen sind nur die Miniserver '
@@ -106,10 +111,16 @@ if (!empty($au_cfg['nur_miniserver'])) {
 
 /* ---------------- Token ----------------
  * Lesende Aufrufe nehmen beide Token an, schaltende nur das Schalttoken. */
-$au_lesetoken = (string) $au_cfg['aktionstoken'];
-$au_schalttoken = (string) $au_cfg['schalttoken'];
-$au_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+/* U16 (Durchgang 29.09.2026): fail closed. Ein gespeichertes Token, das
+ * keine Zeichenkette nach dem Muster des Erzeugers ist, gilt als nicht
+ * gesetzt. Bis 0.9.21 nahm der Endpunkt bei "aktionstoken": ["x","y"] den
+ * Aufruf token=Array an (gemessen, p3c Fall 4). */
+$au_lesetoken = au_token_taugt($au_cfg['aktionstoken']) ? $au_cfg['aktionstoken'] : '';
+$au_schalttoken = au_token_taugt($au_cfg['schalttoken']) ? $au_cfg['schalttoken'] : '';
+// C7: ein Token als Liste ist kein Token.
+$au_ist = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token'] : '';
 if ($au_lesetoken === '' && $au_schalttoken === '') {
+    au_endpunkt_abweisung('KEIN_TOKEN_GESETZT', $au_aktion);
     http_response_code(403);
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
@@ -122,6 +133,8 @@ if ($au_schalttoken !== '' && hash_equals($au_schalttoken, $au_ist)) {
     $au_passt = true;
 }
 if (!$au_passt) {
+    au_endpunkt_abweisung(($au_schaltet && $au_lesetoken !== '' && hash_equals($au_lesetoken, $au_ist))
+        ? 'LESETOKEN_SCHALTET_NICHT' : 'TOKEN', $au_aktion);
     http_response_code(403);
     // Wenn das LESEtoken stimmt, aber geschaltet werden soll, wird der Grund
     // benannt. Sonst sucht man an der falschen Stelle: das Token "stimmt" ja.
@@ -142,11 +155,16 @@ if (!$au_passt) {
  */
 function au_param($name, $muster, $vorgabe = '')
 {
-    if (!isset($_GET[$name]) || $_GET[$name] === '') {
+    if (!isset($_GET[$name])) {
         return $vorgabe;
     }
-    $w = (string) $_GET[$name];
-    if (!preg_match($muster, $w)) {
+    // C7: erst is_string, dann umwandeln (Regeln/03 Z. 282).
+    $w = $_GET[$name];
+    if (is_string($w) && $w === '') {
+        return $vorgabe;
+    }
+    if (!is_string($w) || !preg_match($muster, $w)) {
+        au_endpunkt_abweisung('PARAMETER', isset($GLOBALS['au_aktion']) ? $GLOBALS['au_aktion'] : '');
         http_response_code(400);
         echo "FEHLER;OK=0;GRUND=PARAMETER\n";
         echo 'Der Wert von ' . $name . " passt nicht ins erlaubte Muster.\n";
@@ -172,8 +190,24 @@ $au_probe    = au_param('probe', '/^[01]$/', '0');
 
 $au_lox = au_loxone();
 $au_alter = au_alter();
-$au_ok = (!empty($au_lox['ok']) && $au_alter >= 0) ? 1 : 0;
-list($au_grund, $au_fehlertext) = au_fehlergrund($au_lox, $au_ok, $au_alter);
+/* C6/U14 (Durchgang 29.09.2026, Entscheidung 4): OK=0, sobald ALTER groesser
+ * ist als das Dreifache des Takts; ALTER bleibt unveraendert daneben. Ein
+ * einzelner misslungener Abruf setzt OK NICHT auf 0 - das Abbild ist dann
+ * noch gueltig, GRUND nennt die Stoerung. Bis 0.9.21 hing OK allein am
+ * letzten Abruf: ein toter Dienst meldete auf Dauer OK=1 (gemessen: ALTER
+ * 86400, OK=1), ein einzelner Fehlversuch sofort OK=0.
+ * Liegt das Abbild zu lange zurueck, obwohl der letzte Abruf gelang (der
+ * Dienst steht oder haengt), heisst der Grund 10. */
+$au_takt = max(180, (int) $au_cfg['intervall']);
+$au_frisch = ($au_alter >= 0 && $au_alter <= 3 * $au_takt);
+$au_ok = $au_frisch ? 1 : 0;
+list($au_grund, $au_fehlertext) = au_fehlergrund($au_lox,
+    (!empty($au_lox['ok']) && $au_frisch) ? 1 : 0, $au_alter);
+if (!$au_frisch && $au_alter >= 0 && !empty($au_lox['ok'])) {
+    $au_grund = 10;
+    $au_fehlertext = sprintf('Das Abbild ist %d s alt, mehr als das Dreifache des Takts (%d s). '
+        . 'Laeuft der Dienst?', $au_alter, 3 * $au_takt);
+}
 $au_alle = au_fahrzeuge();
 
 /** Findet das Fahrzeug zur laufenden Nummer oder zur VIN. */
@@ -400,6 +434,7 @@ $au_eig = au_befehle();
 $au_eig = $au_eig[$au_aktion];
 
 if ($au_aktion !== 'abruf' && empty($au_cfg['steuerung_ein'])) {
+    au_endpunkt_abweisung('STEUERUNG_AUS', $au_aktion);
     http_response_code(403);
     echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
     echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
@@ -410,6 +445,7 @@ if ($au_eig['gefahr'] && empty($au_cfg['gefahr_ein'])) {
      * Fahrzeug, das im oeffentlichen Raum steht - ein versehentliches
      * Entriegeln laesst es offen stehen, ohne dass es jemand merkt. Sie
      * haengen deshalb nicht am allgemeinen Steuerungshaken. */
+    au_endpunkt_abweisung('EINGRIFF_GESPERRT', $au_aktion);
     http_response_code(403);
     echo "SET;OK=0;GRUND=EINGRIFF_GESPERRT\n";
     echo "Dieser Befehl greift in ein Fahrzeug ein, das im oeffentlichen Raum steht. "
@@ -419,6 +455,7 @@ if ($au_eig['gefahr'] && empty($au_cfg['gefahr_ein'])) {
 if (au_dienst_pid() === 0) {
     // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts,
     // und der Befehl laege bis zum naechsten Start in der Warteschlange.
+    au_endpunkt_abweisung('DIENST_LAEUFT_NICHT', $au_aktion);
     http_response_code(503);
     echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
     echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
