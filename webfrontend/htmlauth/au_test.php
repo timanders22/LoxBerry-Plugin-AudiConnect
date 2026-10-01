@@ -600,7 +600,17 @@ function au_test_aktion($aktion)
     }
 
     // Der Abruf ist in Sekunden durch - da lohnt kein langes Warten.
-    return au_befehl_absetzen($befehl, $aktion === 'abruf' ? 10 : null);
+    $erg = au_befehl_absetzen($befehl, $aktion === 'abruf' ? 10 : null);
+    /* X-7 (B-Nachzug 01.10.2026): dieser Befehl ging an der Befehlsbremse des
+     * Endpunkts vorbei. Hat er etwas gesendet, verwirft er den Eintrag seiner
+     * Gruppe - sonst hielte die Bremse den naechsten Sollwert aus Loxone fuer
+     * "unveraendert", obwohl das Fahrzeug gerade etwas anderes bekam. */
+    $gr = au_bremse_gruppe($aktion, $befehl);
+    if ($gr !== null && (int) $erg[0] !== 0 && empty($befehl['probe']) && empty($cfg['probe_ein'])) {
+        $alle = au_fahrzeuge();
+        au_bremse_vergessen(au_bremse_fz(isset($alle[$nr]) ? $alle[$nr] : null, $nr) . '|' . $gr[0]);
+    }
+    return $erg;
 }
 
 /**

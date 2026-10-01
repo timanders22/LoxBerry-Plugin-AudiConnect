@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,27 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.23
+
+Verbesserungen aus dem Durchgang (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 16 und 19).
+Gemessen an einer Audi-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Fahrzeug.
+
+* **Behoben: `aktion=einstellung` wirkte seit 0.9.22 nie.** Im Dienst überschrieb
+  die Liste der Aufrufschalter die Tabelle der Fahrzeugeinstellungen; jede
+  Einstellung endete mit „Unbekannte Einstellung“. Jetzt geht sie hinaus.
+* **Befehlsbremse:** Derselbe Sollwert (Klima an/aus samt Temperatur, Laden
+  an/aus, Verriegeln, Scheibenheizung, Zieltemperatur, Ladegrenze, Einstellungen
+  je Name) innerhalb von 60 s wird nicht erneut gesendet; die Antwort ist
+  `UNVERAENDERT=1`. Abruf, Wecken, Hupe und Lichthupe bleiben ungebremst.
+* **Nach einer Beanstandung wird nichts gespeichert;** die eingetippten Werte
+  stehen markiert wieder im Formular, Passwort und S-PIN nie. Eine leer
+  abgeschickte E-Mail bei gespeichertem Konto wird beanstandet.
+* „Einstellungen sichern“ warnt gelb, wenn das Zurückspielen die Datei abweisen
+  würde (`_warnung`, nur Namen).
+* Die Kachelnamen der Loxone-Vorlagen haben höchstens 40 Zeichen; wer sie
+  nutzt, importiert die Vorlagen neu.
 
 ## Neu in 0.9.22
 
@@ -698,6 +719,11 @@ auf jeder Anlage neu und darf nicht wandern.
   stillschweigend alles auf Werk zurück.
 * Danach wird der **Dienst nachgezogen**, und die Meldung sagt, was mit ihm
   geschah — neu gestartet, oder er lief nicht und bleibt gestoppt.
+* Trägt diese Anlage einen Wert, den das Zurückspielen abweisen würde — etwa
+  von Hand in `audi.json` eingetragen, oder einen unbekannten Schlüssel —,
+  steht über den beiden Knöpfen eine **gelbe Warnung** mit den Namen dieser
+  Einstellungen. Die Sicherung wird trotzdem vollständig geliefert; ihr Kopf
+  `_warnung` nennt dieselben Namen, nie Werte.
 
 > **Was sich gegenüber 0.9.11 geändert hat.** Dort prüfte das Zurückspielen
 > nur die Schlüsselnamen: eine Datei, in der das Abrufintervall gar keine
@@ -769,6 +795,14 @@ Die **S-PIN** wird ausschließlich für Ver- und Entriegeln gebraucht. Ohne sie
 weist der Connector diese beiden Befehle ab; das Plugin sagt das vorher, statt
 den Anwender in die Fehlermeldung des Anbieters laufen zu lassen.
 
+**Beanstandungen.** Wird beim Speichern ein Feld beanstandet, wird **nichts**
+gespeichert, auch nicht die übrigen Felder. Die eingetippten Werte stehen nach
+dem Neuladen wieder im Formular, das beanstandete Feld ist rot umrandet;
+Passwort und S-PIN reisen dabei nie mit. Ein **leer abgeschicktes E-Mail-Feld**
+wird beanstandet, solange ein Konto gespeichert ist — zum Entfernen gibt es den
+Knopf *Zugangsdaten löschen*. Für Passwort und S-PIN heißt ein leeres Feld
+weiterhin „unverändert“.
+
 ## Endpunkte für Loxone
 
 Lesende Aufrufe nehmen **beide** Token an, schaltende nur das Schalttoken.
@@ -820,6 +854,20 @@ ausgewertet.
 Schaltende Aufrufe antworten mit `SET;OK=…`: `1` angenommen, `0` abgelehnt (mit
 Grund), `2` eingereiht, aber innerhalb der Wartezeit ohne Antwort — also
 Ergebnis unbekannt.
+
+**Derselbe Sollwert geht nur einmal je Minute hinaus.** Derselbe Sollwert für
+dasselbe Fahrzeug — `klima_start` mit derselben Temperatur, `klima_stop`,
+`laden_start`/`laden_stop`, `verriegeln`/`entriegeln`,
+`scheibe_ein`/`scheibe_aus`, `zieltemperatur`, `ladegrenze` und `einstellung`
+je Name — geht innerhalb von 60 Sekunden nur einmal an Audi. Der zweite Aufruf
+bekommt `SET;OK=1;AKTION=…;UNVERAENDERT=1`, wird nicht eingereiht und zählt
+nicht zur Obergrenze je Stunde. Ein anderer Wert geht sofort hinaus (kein
+429). Nicht gebremst sind Ereignisse: `abruf`, `wecken`, `hupe`, `lichthupe`
+und `spin_pruefen`; den Ladestrom entprellt wie bisher der Dienst. Lehnt der
+Dienst einen Befehl ab (`OK=0`), gilt er nicht als gesendet. Ein Befehl aus dem
+Reiter *Test* geht an dieser Bremse vorbei und hebt sie für seine Gruppe auf.
+Lässt sich die Merkdatei der Bremse nicht führen, antwortet der Endpunkt mit
+HTTP 503 und `GRUND=BREMSE_MERKER`.
 
 **Was `OK=1` nicht heißt.** Der Audi-Server hat den Auftrag mit HTTP 200
 entgegengenommen. Ob das Fahrzeug ihn ausgeführt hat, zeigt erst der nächste

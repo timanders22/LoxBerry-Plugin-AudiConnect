@@ -849,6 +849,9 @@ function au_einmal_lesen()
         }
     }
     $aus['test'] = isset($d['test']) && is_string($d['test']) ? $d['test'] : '';
+    // X-2 (B-Nachzug 01.10.2026): die Eingaben des beanstandeten Formulars.
+    // Geprueft wird beim Setzen (index.php, au_eingaben()).
+    $aus['eingaben'] = (isset($d['eingaben']) && is_array($d['eingaben'])) ? $d['eingaben'] : null;
     return $aus;
 }
 
@@ -1376,6 +1379,215 @@ function au_wartezeit_fuer($aktion, $vorgabe)
     return (int) $vorgabe;
 }
 
+/* ---------------- Befehlsbremse fuer Sollwerte (X-7, B-Nachzug 01.10.2026) ----------------
+ *
+ * Entscheidung Nr. 19 vom 01.10.2026: derselbe Sollwert innerhalb von 60 s
+ * wird nicht noch einmal gesendet - der Endpunkt antwortet HTTP 200 mit
+ * UNVERAENDERT=1 und reiht nichts ein. Kein zusaetzliches 429. Das gilt nur
+ * fuer Sollwerte (Klima an/aus samt Temperatur, Laden an/aus, Ver-/
+ * Entriegeln, Scheibenheizung, Zieltemperatur, Ladegrenze, die Ja/Nein-
+ * Einstellungen), nicht fuer Ereignisse und Taster (Abruf, Wecken, Hupe,
+ * Lichthupe, S-PIN-Pruefung). Der Ladestrom hat seine Bremse im Dienst.
+ *
+ * Warum: Loxone sendet einen Ausgang bei jeder Aenderung, und ein
+ * flatternder Baustein sendet denselben Wert mehrmals. Jede Sendung weckt
+ * das Fahrzeug und zaehlt bei Audi - bis zur Sperre des Kontos. Die
+ * Stundenbremse im Dienst faengt das erst nach 30 Befehlen.
+ *
+ * Bauform EVCC 0.9.37 / Marstek 1.1.19: Merker unter flock, faellt
+ * geschlossen aus (503). Anders als dort wird der Befehl VOR dem Absetzen
+ * vorgemerkt und die Sperre nicht ueber das Warten auf den Dienst gehalten
+ * (bis zu 45 s): ein zweiter gleicher Aufruf waehrend des Wartens ist damit
+ * schon "unveraendert". Lehnt der Dienst ab (OK=0), wird der Eintrag wieder
+ * verworfen. Auch OK=2 (eingereiht, Ergebnis unbekannt) bleibt gemerkt: der
+ * Befehl laeuft dann meist noch, und ein zweiter waere genau die
+ * Mehrfachanfrage, vor der die Meldung warnt. Der Trockenlauf (probe=1 oder
+ * der Haken Probelauf) liest den Merker nur, er merkt nichts. Ein Befehl aus
+ * dem Reiter Test geht an der Bremse vorbei und verwirft den Eintrag seiner
+ * Gruppe (au_bremse_vergessen), sonst hielte die Bremse einen Wert fuer
+ * "gleich", den das Fahrzeug nicht mehr hat.
+ */
+define('AU_BREMSE_GLEICH_S', 60);
+
+/** Pfad des Merkers. */
+function au_bremse_datei()
+{
+    return au_paths()['datadir'] . '/befehlsbremse.json';
+}
+
+/**
+ * Welche Gruppe und welcher Sollwert? null = nicht gebremst.
+ * $befehl ist der Auftrag, wie er in die Warteschlange ginge.
+ */
+function au_bremse_gruppe($aktion, array $befehl)
+{
+    $paare = array(
+        'klima_start' => array('klima', 'an'), 'klima_stop' => array('klima', 'aus'),
+        'laden_start' => array('laden', 'an'), 'laden_stop' => array('laden', 'aus'),
+        'verriegeln'  => array('schloss', 'zu'), 'entriegeln' => array('schloss', 'auf'),
+        'scheibe_ein' => array('scheibe', 'an'), 'scheibe_aus' => array('scheibe', 'aus'),
+    );
+    $aktion = (string) $aktion;
+    if (isset($paare[$aktion])) {
+        $g = $paare[$aktion];
+        if ($aktion === 'klima_start') {
+            // Die Temperatur gehoert zum Sollwert: 21 und 22 sind zwei Befehle.
+            $g[1] .= '|' . (isset($befehl['temp']) ? (string) (float) $befehl['temp'] : '');
+        }
+        return $g;
+    }
+    if ($aktion === 'zieltemperatur') {
+        return array('zieltemp', isset($befehl['temp']) ? (string) (float) $befehl['temp'] : '');
+    }
+    if ($aktion === 'ladegrenze') {
+        return array('ladegrenze', isset($befehl['prozent']) ? (string) (int) $befehl['prozent'] : '');
+    }
+    if ($aktion === 'einstellung' && isset($befehl['name'])) {
+        return array('einst_' . preg_replace('/[^a-z_]/', '', (string) $befehl['name']),
+                     isset($befehl['wert']) ? (string) $befehl['wert'] : '');
+    }
+    return null;
+}
+
+/**
+ * Der Schluessel des Fahrzeugs: die VIN, sonst die Nummer. So trifft ein
+ * Aufruf mit fahrzeug=1 denselben Eintrag wie einer mit der VIN.
+ */
+function au_bremse_fz($fz, $ersatz)
+{
+    if (is_array($fz) && isset($fz['vin']) && is_string($fz['vin']) && trim($fz['vin']) !== '') {
+        return strtoupper(trim($fz['vin']));
+    }
+    return 'nr' . preg_replace('/[^0-9A-Za-z]/', '', (string) $ersatz);
+}
+
+/**
+ * Das Urteil - rein, ohne Datei (Selbsttest).
+ * Rueckgabe: array('' | 'UNVERAENDERT', Sekunden seit dem gemerkten Befehl).
+ */
+function au_bremse_urteil(array $m, $schluessel, $wert, $jetzt)
+{
+    if (!isset($m[$schluessel]) || !is_array($m[$schluessel])
+        || !isset($m[$schluessel]['w'], $m[$schluessel]['t']) || !is_scalar($m[$schluessel]['t'])) {
+        return array('', 0);
+    }
+    $seit = (int) $jetzt - (int) $m[$schluessel]['t'];
+    // Uhr zurueckgesprungen: der Merker sagt nichts mehr.
+    if ($seit < 0) {
+        return array('', 0);
+    }
+    if ((string) $m[$schluessel]['w'] === (string) $wert && $seit < AU_BREMSE_GLEICH_S) {
+        return array('UNVERAENDERT', $seit);
+    }
+    return array('', $seit);
+}
+
+/**
+ * Vor dem Absetzen. Rueckgabe: array(Urteil, Sekunden, Marke).
+ *   'UNVERAENDERT' - derselbe Wert ging vor weniger als 60 s hinaus;
+ *   'MERKER'       - der Merker laesst sich nicht oeffnen, sperren oder
+ *                    schreiben: geschlossen ausfallen;
+ *   ''             - senden. Ausser im Trockenlauf ist der Befehl dann unter
+ *                    der Marke vorgemerkt.
+ */
+function au_bremse_pruefen($schluessel, $wert, $nur_lesen)
+{
+    $f = au_bremse_datei();
+    if ($nur_lesen) {
+        // Trockenlauf: nichts anlegen, nichts schreiben. Was den echten
+        // Befehl mit 503 abweisen wuerde, weist auch den Trockenlauf ab.
+        clearstatcache(true, $f);
+        if (!file_exists($f)) {
+            $ordner = dirname($f);
+            return array((is_dir($ordner) ? is_writable($ordner) : is_writable(dirname($ordner)))
+                         ? '' : 'MERKER', 0, '');
+        }
+        if (!is_file($f)) {
+            return array('MERKER', 0, '');
+        }
+        $fh = @fopen($f, 'r');
+        $sperre = LOCK_SH;
+    } else {
+        if (!is_dir(dirname($f))) {
+            @mkdir(dirname($f), 0775, true);
+        }
+        $fh = @fopen($f, 'c+');
+        $sperre = LOCK_EX;
+    }
+    if ($fh === false || !@flock($fh, $sperre)) {
+        if (is_resource($fh)) {
+            fclose($fh);
+        }
+        return array('MERKER', 0, '');
+    }
+    $m = json_decode((string) stream_get_contents($fh), true);
+    if (!is_array($m)) {
+        $m = array();
+    }
+    $jetzt = time();
+    list($urteil, $seit) = au_bremse_urteil($m, $schluessel, $wert, $jetzt);
+    if ($urteil !== '' || $nur_lesen) {
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        return array($urteil, $seit, '');
+    }
+    // Abgelaufene Eintraege fallen heraus - der Merker bleibt klein.
+    foreach ($m as $k => $e) {
+        if (!is_array($e) || !isset($e['t']) || !is_scalar($e['t'])
+            || $jetzt - (int) $e['t'] >= AU_BREMSE_GLEICH_S || (int) $e['t'] > $jetzt) {
+            unset($m[$k]);
+        }
+    }
+    $marke = bin2hex(random_bytes(6));
+    $m[$schluessel] = array('w' => (string) $wert, 't' => $jetzt, 'm' => $marke);
+    $js = json_encode($m);
+    $ok = $js !== false && ftruncate($fh, 0) && rewind($fh)
+          && fwrite($fh, $js) === strlen($js) && fflush($fh);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    if (!$ok) {
+        // Nicht vermerkt heisst: die Bremse wuerde den naechsten gleichen
+        // Befehl nicht erkennen. Geschlossen ausfallen.
+        return array('MERKER', 0, '');
+    }
+    return array('', 0, $marke);
+}
+
+/**
+ * Einen Eintrag verwerfen - nach OK=0, oder weil ein Befehl an der Bremse
+ * vorbei ging (Reiter Test). $marke '' verwirft jeden Eintrag des
+ * Schluessels, sonst nur den eigenen. Rueckgabe: true, wenn danach kein
+ * passender Eintrag mehr steht.
+ */
+function au_bremse_vergessen($schluessel, $marke = '')
+{
+    $f = au_bremse_datei();
+    clearstatcache(true, $f);
+    if (!is_file($f)) {
+        return true;
+    }
+    $fh = @fopen($f, 'c+');
+    if ($fh === false || !@flock($fh, LOCK_EX)) {
+        if (is_resource($fh)) {
+            fclose($fh);
+        }
+        return false;
+    }
+    $m = json_decode((string) stream_get_contents($fh), true);
+    $ok = true;
+    if (is_array($m) && isset($m[$schluessel]) && ($marke === ''
+            || (is_array($m[$schluessel]) && isset($m[$schluessel]['m'])
+                && (string) $m[$schluessel]['m'] === (string) $marke))) {
+        unset($m[$schluessel]);
+        $js = json_encode($m);
+        $ok = $js !== false && ftruncate($fh, 0) && rewind($fh)
+              && fwrite($fh, $js) === strlen($js) && fflush($fh);
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $ok;
+}
+
 function au_befehl_absetzen($befehl, $wartezeit = null)
 {
     $p = au_paths();
@@ -1839,12 +2051,12 @@ function au_felder()
         // erscheint. Ohne Eintrag waere es der einzige Wert, den der Endpunkt
         // sendet und keine Tabelle nennt.
         'OK'         => array('quelle_feld' => '', 'einheit' => '',
-                              'bez' => 'AU_FELD.OK',
+                              'bez' => 'AU_FELD.OK', 'kurz' => 'AU_KURZ.OK',
                               'zeilen' => array('status', 'laden', 'wartung', 'position'),
                               'herkunft' => 'bestand', 'mqtt' => ''),
         // ---- Status -------------------------------------------------------
         'SOC'        => array('quelle_feld' => 'soc', 'einheit' => '%',
-                              'bez' => 'AU_FELD.SOC', 'zeilen' => array('status', 'laden'),
+                              'bez' => 'AU_FELD.SOC', 'kurz' => 'AU_KURZ.SOC', 'zeilen' => array('status', 'laden'),
                               'herkunft' => 'connector', 'mqtt' => 'soc'),
         'TANK'       => array('quelle_feld' => 'tank_prozent', 'einheit' => '%',
                               'bez' => 'AU_FELD.TANK', 'zeilen' => array('status'),
@@ -1856,7 +2068,7 @@ function au_felder()
         // steht als REICHWBAT in der Ladezeile; ohne diese hier liesse sich
         // die Summe nicht aufteilen.
         'REICHWVERBR' => array('quelle_feld' => 'reichweite_verbrenner_km', 'einheit' => 'km',
-                              'bez' => 'AU_FELD.REICHWVERBR', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.REICHWVERBR', 'kurz' => 'AU_KURZ.REICHWVERBR', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'reichweite_verbrenner_km'),
         'KM'         => array('quelle_feld' => 'kilometerstand', 'einheit' => 'km',
                               'bez' => 'AU_FELD.KM', 'zeilen' => array('status', 'wartung'),
@@ -1877,22 +2089,22 @@ function au_felder()
                               'bez' => 'AU_FELD.HANDBR', 'zeilen' => array('status'),
                               'herkunft' => 'leer', 'mqtt' => 'handbremse'),
         'KLIMA'      => array('quelle_feld' => 'klima_an', 'einheit' => '',
-                              'bez' => 'AU_FELD.KLIMA', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.KLIMA', 'kurz' => 'AU_KURZ.KLIMA', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'klima_an'),
         'ZIELTEMP'   => array('quelle_feld' => 'zieltemperatur', 'einheit' => '&deg;C',
-                              'bez' => 'AU_FELD.ZIELTEMP', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.ZIELTEMP', 'kurz' => 'AU_KURZ.ZIELTEMP', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'zieltemperatur'),
         'AUSSEN'     => array('quelle_feld' => 'aussentemperatur', 'einheit' => '&deg;C',
-                              'bez' => 'AU_FELD.AUSSEN', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.AUSSEN', 'kurz' => 'AU_KURZ.AUSSEN', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'aussentemperatur'),
         'SCHEIBE'    => array('quelle_feld' => 'scheibenheizung', 'einheit' => '',
                               'bez' => 'AU_FELD.SCHEIBE', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'scheibenheizung'),
         'ZUSTAND'    => array('quelle_feld' => 'zustand', 'einheit' => '',
-                              'bez' => 'AU_FELD.ZUSTAND', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.ZUSTAND', 'kurz' => 'AU_KURZ.ZUSTAND', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'zustand'),
         'ERREICH'    => array('quelle_feld' => 'erreichbar', 'einheit' => '',
-                              'bez' => 'AU_FELD.ERREICH', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.ERREICH', 'kurz' => 'AU_KURZ.ERREICH', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'erreichbar'),
         // ---- Neu in 0.9.8, Status ----------------------------------------
         'TUERANZ'    => array('quelle_feld' => 'tueren_anzahl', 'einheit' => '',
@@ -1902,31 +2114,31 @@ function au_felder()
                               'bez' => 'AU_FELD.FENSTERANZ', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'fenster_anzahl'),
         'KLIMAART'   => array('quelle_feld' => 'klima_stufe', 'einheit' => '',
-                              'bez' => 'AU_FELD.KLIMAART', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.KLIMAART', 'kurz' => 'AU_KURZ.KLIMAART', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'klima_stufe'),
         'KLIMAFERTIG' => array('quelle_feld' => '', 'einheit' => 'min',
-                              'bez' => 'AU_FELD.KLIMAFERTIG', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.KLIMAFERTIG', 'kurz' => 'AU_KURZ.KLIMAFERTIG', 'zeilen' => array('status'),
                               'herkunft' => 'gerechnet', 'mqtt' => ''),
         'SITZHEIZ'   => array('quelle_feld' => 'sitzheizung_ein', 'einheit' => '',
-                              'bez' => 'AU_FELD.SITZHEIZ', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.SITZHEIZ', 'kurz' => 'AU_KURZ.SITZHEIZ', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'sitzheizung_ein'),
         'KLIMAUNLOCK' => array('quelle_feld' => 'klima_bei_entriegeln', 'einheit' => '',
-                              'bez' => 'AU_FELD.KLIMAUNLOCK', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.KLIMAUNLOCK', 'kurz' => 'AU_KURZ.KLIMAUNLOCK', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'klima_bei_entriegeln'),
         'AKTIV'      => array('quelle_feld' => 'aktiv', 'einheit' => '',
                               'bez' => 'AU_FELD.AKTIV', 'zeilen' => array('status'),
                               'herkunft' => 'connector', 'mqtt' => 'aktiv'),
         'STANDZEIT'  => array('quelle_feld' => 'standzeit_min', 'einheit' => 'min',
-                              'bez' => 'AU_FELD.STANDZEIT', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.STANDZEIT', 'kurz' => 'AU_KURZ.STANDZEIT', 'zeilen' => array('status'),
                               'herkunft' => 'gerechnet', 'mqtt' => 'standzeit_min'),
         'FZOK'       => array('quelle_feld' => 'ok', 'einheit' => '',
-                              'bez' => 'AU_FELD.FZOK', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.FZOK', 'kurz' => 'AU_KURZ.FZOK', 'zeilen' => array('status'),
                               'herkunft' => 'bestand', 'mqtt' => 'ok'),
         'AUSFALL'    => array('quelle_feld' => '', 'einheit' => '',
-                              'bez' => 'AU_FELD.AUSFALL', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.AUSFALL', 'kurz' => 'AU_KURZ.AUSFALL', 'zeilen' => array('status'),
                               'herkunft' => 'gerechnet', 'mqtt' => ''),
         'FEHLFOLGE'  => array('quelle_feld' => 'fehlfolge', 'einheit' => '',
-                              'bez' => 'AU_FELD.FEHLFOLGE', 'zeilen' => array('status'),
+                              'bez' => 'AU_FELD.FEHLFOLGE', 'kurz' => 'AU_KURZ.FEHLFOLGE', 'zeilen' => array('status'),
                               'herkunft' => 'gerechnet', 'mqtt' => 'fehlfolge'),
         // ---- Laden --------------------------------------------------------
         'LAEDT'      => array('quelle_feld' => 'laedt', 'einheit' => '',
@@ -1954,49 +2166,49 @@ function au_felder()
                               'bez' => 'AU_LFELD.REICHWBAT', 'zeilen' => array('laden'),
                               'herkunft' => 'connector', 'mqtt' => 'reichweite_elektro_km'),
         'FERTIGMIN'  => array('quelle_feld' => '', 'einheit' => 'min',
-                              'bez' => 'AU_LFELD.FERTIGMIN', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.FERTIGMIN', 'kurz' => 'AU_KURZ.FERTIGMIN', 'zeilen' => array('laden'),
                               'herkunft' => 'gerechnet', 'mqtt' => ''),
         // ---- Neu in 0.9.8, Laden -----------------------------------------
         'LADESTUFE'  => array('quelle_feld' => 'lade_stufe', 'einheit' => '',
-                              'bez' => 'AU_LFELD.LADESTUFE', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.LADESTUFE', 'kurz' => 'AU_KURZ.LADESTUFE', 'zeilen' => array('laden'),
                               'herkunft' => 'connector', 'mqtt' => 'lade_stufe'),
         'LADEART'    => array('quelle_feld' => 'ladeart_zahl', 'einheit' => '',
-                              'bez' => 'AU_LFELD.LADEART', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.LADEART', 'kurz' => 'AU_KURZ.LADEART', 'zeilen' => array('laden'),
                               'herkunft' => 'connector', 'mqtt' => 'ladeart_zahl'),
         'EXTSTROM'   => array('quelle_feld' => 'externe_kraft', 'einheit' => '',
-                              'bez' => 'AU_LFELD.EXTSTROM', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.EXTSTROM', 'kurz' => 'AU_KURZ.EXTSTROM', 'zeilen' => array('laden'),
                               'herkunft' => 'connector', 'mqtt' => 'externe_kraft'),
         'STECKERAUTO' => array('quelle_feld' => 'stecker_entriegeln', 'einheit' => '',
-                              'bez' => 'AU_LFELD.STECKERAUTO', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.STECKERAUTO', 'kurz' => 'AU_KURZ.STECKERAUTO', 'zeilen' => array('laden'),
                               'herkunft' => 'connector', 'mqtt' => 'stecker_entriegeln'),
         'BATTTEMP'   => array('quelle_feld' => 'batterie_temp', 'einheit' => '&deg;C',
                               'bez' => 'AU_LFELD.BATTTEMP', 'zeilen' => array('laden'),
                               'herkunft' => 'connector', 'mqtt' => 'batterie_temp'),
         'VERBRAUCH'  => array('quelle_feld' => 'verbrauch', 'einheit' => 'kWh/100km',
-                              'bez' => 'AU_LFELD.VERBRAUCH', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.VERBRAUCH', 'kurz' => 'AU_KURZ.VERBRAUCH', 'zeilen' => array('laden'),
                               'herkunft' => 'gerechnet', 'mqtt' => 'verbrauch'),
         'LADEKWH'    => array('quelle_feld' => 'ladekwh', 'einheit' => 'kWh',
-                              'bez' => 'AU_LFELD.LADEKWH', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.LADEKWH', 'kurz' => 'AU_KURZ.LADEKWH', 'zeilen' => array('laden'),
                               'herkunft' => 'gerechnet', 'mqtt' => 'ladekwh'),
         'LADEEMPF'   => array('quelle_feld' => 'ladeempf', 'einheit' => '',
-                              'bez' => 'AU_LFELD.LADEEMPF', 'zeilen' => array('laden'),
+                              'bez' => 'AU_LFELD.LADEEMPF', 'kurz' => 'AU_KURZ.LADEEMPF', 'zeilen' => array('laden'),
                               'herkunft' => 'gerechnet', 'mqtt' => 'ladeempf'),
         // ---- Wartung ------------------------------------------------------
         'INSPTAGE'   => array('quelle_feld' => 'inspektion_tage', 'einheit' => 'd',
                               'bez' => 'AU_WFELD.INSPTAGE', 'zeilen' => array('wartung'),
                               'herkunft' => 'connector', 'mqtt' => 'inspektion_tage'),
         'INSPKM'     => array('quelle_feld' => 'inspektion_km', 'einheit' => 'km',
-                              'bez' => 'AU_WFELD.INSPKM', 'zeilen' => array('wartung'),
+                              'bez' => 'AU_WFELD.INSPKM', 'kurz' => 'AU_KURZ.INSPKM', 'zeilen' => array('wartung'),
                               'herkunft' => 'connector', 'mqtt' => 'inspektion_km'),
         'OELTAGE'    => array('quelle_feld' => 'oelservice_tage', 'einheit' => 'd',
                               'bez' => 'AU_WFELD.OELTAGE', 'zeilen' => array('wartung'),
                               'herkunft' => 'connector', 'mqtt' => 'oelservice_tage'),
         'OELKM'      => array('quelle_feld' => 'oelservice_km', 'einheit' => 'km',
-                              'bez' => 'AU_WFELD.OELKM', 'zeilen' => array('wartung'),
+                              'bez' => 'AU_WFELD.OELKM', 'kurz' => 'AU_KURZ.OELKM', 'zeilen' => array('wartung'),
                               'herkunft' => 'connector', 'mqtt' => 'oelservice_km'),
         // ---- Neu in 0.9.8, Wartung ---------------------------------------
         'ADBLUE'     => array('quelle_feld' => 'adblue_km', 'einheit' => 'km',
-                              'bez' => 'AU_WFELD.ADBLUE', 'zeilen' => array('wartung'),
+                              'bez' => 'AU_WFELD.ADBLUE', 'kurz' => 'AU_KURZ.ADBLUE', 'zeilen' => array('wartung'),
                               'herkunft' => 'connector', 'mqtt' => 'adblue_km'),
         'OELSTAND'   => array('quelle_feld' => 'oelstand_prozent', 'einheit' => '%',
                               'bez' => 'AU_WFELD.OELSTAND', 'zeilen' => array('wartung'),
@@ -2012,20 +2224,20 @@ function au_felder()
                               'bez' => 'AU_PFELD.POSART', 'zeilen' => array('position'),
                               'herkunft' => 'connector', 'mqtt' => 'positionsart_zahl'),
         'ZUHAUSE'    => array('quelle_feld' => 'zuhause', 'einheit' => '',
-                              'bez' => 'AU_PFELD.ZUHAUSE',
+                              'bez' => 'AU_PFELD.ZUHAUSE', 'kurz' => 'AU_KURZ.ZUHAUSE',
                               'zeilen' => array('status', 'position'),
                               'herkunft' => 'gerechnet', 'mqtt' => 'zuhause'),
         'ENTF'       => array('quelle_feld' => 'entfernung_m', 'einheit' => 'm',
-                              'bez' => 'AU_PFELD.ENTF',
+                              'bez' => 'AU_PFELD.ENTF', 'kurz' => 'AU_KURZ.ENTF',
                               'zeilen' => array('status', 'position'),
                               'herkunft' => 'gerechnet', 'mqtt' => 'entfernung_m'),
         // ---- In JEDER Zeile, immer am Ende --------------------------------
         'ALTER'      => array('quelle_feld' => '', 'einheit' => 's',
-                              'bez' => 'AU_FELD.ALTER',
+                              'bez' => 'AU_FELD.ALTER', 'kurz' => 'AU_KURZ.ALTER',
                               'zeilen' => array('status', 'laden', 'wartung', 'position'),
                               'herkunft' => 'bestand', 'mqtt' => ''),
         'GRUND'      => array('quelle_feld' => '', 'einheit' => '',
-                              'bez' => 'AU_FELD.GRUND',
+                              'bez' => 'AU_FELD.GRUND', 'kurz' => 'AU_KURZ.GRUND',
                               'zeilen' => array('status', 'laden', 'wartung', 'position'),
                               'herkunft' => 'bestand', 'mqtt' => ''),
         'FEHLERTEXT' => array('quelle_feld' => '', 'einheit' => '',
@@ -2054,6 +2266,10 @@ function au_felder_von($zeile)
  * Kommentar, der hier stand, sprach von 'den drei alten Namen'; es waren
  * vier, und au_position_felder() hat es vor 0.9.8 nie gegeben. Wer die
  * Felder einer Zeile braucht, ruft au_felder_von('status') unmittelbar. */
+
+/* 'kurz' (seit dem B-Nachzug 01.10.2026): Sprachschluessel eines Kurztexts
+ * fuer den Comment der Loxone-Vorlage (<= 40 Zeichen samt Einheit). Fehlt er,
+ * nimmt die Vorlage die Bedeutung 'bez'. */
 
 /**
  * Der Suchtext eines Feldes fuer den virtuellen Eingang in Loxone.
@@ -2325,6 +2541,13 @@ function au_vorlage($nummer = 1, $art = 'status')
         // aufloesen - sonst stuende in Loxone Config wortwoertlich
         // 'l&auml;dt' statt 'laedt'.
         $bedeutung = au_klartext(au_t($info['bez']));
+        /* Der Comment wird in Loxone Config zum Kachelnamen und soll nicht
+         * laenger als 40 Zeichen sein (Regeln/07). Die Bedeutung der
+         * Feldtabelle ist dafuer oft zu lang (bis 297 Zeichen); wo sie es ist,
+         * traegt das Feld einen Kurztext (B-Nachzug 01.10.2026). */
+        if (isset($info['kurz'])) {
+            $bedeutung = au_klartext(au_t($info['kurz']));
+        }
         $einheit = au_klartext($info['einheit']);
         if ($info['herkunft'] === 'leer') {
             $bedeutung .= ' [' . au_klartext(au_t('LOX.HERKUNFT_LEER')) . ']';
@@ -2676,7 +2899,7 @@ function au_wert_pruefen($k, $v)
  *
  * Das Formulargeheimnis bleibt draussen (au_nicht_sichern()).
  */
-function au_sicherung_bauen()
+function au_sicherung_bauen($pruefen = true)
 {
     $cfg = au_config();
     $aus = array(
@@ -2696,7 +2919,47 @@ function au_sicherung_bauen()
         'passwort' => isset($z['passwort']) ? (string) $z['passwort'] : '',
         'spin'     => isset($z['spin']) ? (string) $z['spin'] : '',
     );
+    /* X-3 (B-Nachzug 01.10.2026): wuerde das eigene Zurueckspielen diese
+     * Datei abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert
+     * wird sie trotzdem vollstaendig. */
+    if ($pruefen) {
+        $namen = au_rueckspiel_altwerte();
+        if ($namen) {
+            $aus = array('_warnung' => sprintf(au_t('EINST.SICH_WARN_KOPF'), implode(', ', $namen)))
+                 + $aus;
+        }
+    }
     return $aus;
+}
+
+/**
+ * X-3 (B-Nachzug 01.10.2026): Welche Einstellungen wuerden beim Zurueckspielen
+ * der EIGENEN Sicherung abgewiesen? Gebaut wird genau die Datei, die
+ * "Einstellungen sichern" liefert, und durch dieselbe Pruefung geschickt wie
+ * beim Zurueckspielen (au_sicherung_lesen). Rueckgabe: Namen (nie Werte),
+ * leer heisst "wuerde angenommen".
+ *
+ * Die Faelle, die hier anschlagen: ein Wert in audi.json, den das Formular
+ * nie gespeichert haette (von Hand, aus einer anderen Fassung, eine Grenze,
+ * die sich geaendert hat), oder ein unbekannter Schluessel. au_config()
+ * setzt solche Werte beim Lesen nicht zurueck - sie stehen in der Sicherung,
+ * und das Zurueckspielen weist die ganze Datei ab.
+ */
+function au_rueckspiel_altwerte()
+{
+    $js = json_encode(au_sicherung_bauen(false),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) {
+        return array();     // Sichern meldet dann selbst SICH_SCHREIBFEHLER
+    }
+    $namen = array();
+    list($neu) = au_sicherung_lesen($js, null, $namen);
+    $namen = array_values(array_unique($namen));
+    sort($namen);
+    if ($neu === null && !$namen) {
+        $namen[] = au_t('EINST.SICH_GANZE_DATEI');
+    }
+    return $namen;
 }
 
 /**
@@ -2719,9 +2982,10 @@ function au_sicherung_bauen()
  * Rueckgabe: array(Konfiguration|null, Zugang|null, Beanstandungen[],
  *                  uebernommen, nicht enthalten, behaltene Token[]).
  */
-function au_sicherung_lesen($roh, $bestand = null)
+function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
 {
     $mangel = array();
+    $namen = array();     // X-3: die Namen der beanstandeten Einstellungen, nie Werte
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, null, array(au_t('EINST.SICH_KEIN_JSON')), 0, 0, array());
@@ -2747,27 +3011,32 @@ function au_sicherung_lesen($roh, $bestand = null)
              * gruener Meldung (gemessen, p3c Fall 3). */
             if (!is_array($w) || $w === array() || array_keys($w) === range(0, count($w) - 1)) {
                 $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang');
+                $namen[] = 'zugang';
                 continue;
             }
             $z = array();
             foreach (array('email', 'passwort', 'spin') as $zk) {
                 if (!array_key_exists($zk, $w)) {
                     $mangel[] = sprintf(au_t('EINST.SICH_ZUGANG_FEHLT'), 'zugang.' . $zk);
+                    $namen[] = 'zugang.' . $zk;
                     continue 2;
                 }
                 $zw = $w[$zk];
                 if (!is_string($zw) || !au_wert_taugt($zw)) {
                     $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang.' . $zk);
+                    $namen[] = 'zugang.' . $zk;
                     continue 2;
                 }
                 $z[$zk] = $zw;
             }
             if ($z['email'] !== '' && !filter_var($z['email'], FILTER_VALIDATE_EMAIL)) {
                 $mangel[] = au_t('EINST.FEHLER_EMAIL');
+                $namen[] = 'zugang.email';
                 continue;
             }
             if ($z['spin'] !== '' && !preg_match('/^[0-9]{4}$/', $z['spin'])) {
                 $mangel[] = au_t('EINST.FEHLER_SPIN');
+                $namen[] = 'zugang.spin';
                 continue;
             }
             $zugang = $z;
@@ -2782,6 +3051,7 @@ function au_sicherung_lesen($roh, $bestand = null)
         }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(au_t('EINST.SICH_FREMD'), au_e((string) $k));
+            $namen[] = (string) $k;
             continue;
         }
         if (($k === 'aktionstoken' || $k === 'schalttoken') && $w === '') {
@@ -2797,6 +3067,7 @@ function au_sicherung_lesen($roh, $bestand = null)
         $grund = au_wert_pruefen($k, $w);
         if ($grund !== '') {
             $mangel[] = $grund;
+            $namen[] = (string) $k;
             continue;
         }
         $neu[$k] = is_string($w) && isset(au_grenzen()[$k]) ? (int) $w : $w;
@@ -2807,6 +3078,8 @@ function au_sicherung_lesen($roh, $bestand = null)
     }
     if (isset($neu['temp_min'], $neu['temp_max']) && $neu['temp_min'] > $neu['temp_max']) {
         $mangel[] = au_t('EINST.FEHLER_TEMP_TAUSCH');
+        $namen[] = 'temp_min';
+        $namen[] = 'temp_max';
     }
     /* Fehlende Schluessel sind eine Beanstandung, kein stiller Rueckfall -
      * ueber den Bestand ausgerollt am 07.09.2026. Der Hausstandard sagt:
@@ -2833,6 +3106,9 @@ function au_sicherung_lesen($roh, $bestand = null)
     if ($fehlend) {
         $mangel[] = sprintf(au_t('EINST.SICH_FEHLEND'), count($fehlend),
             au_e(implode(', ', $fehlend)));
+        foreach ($fehlend as $k) {
+            $namen[] = (string) $k;
+        }
     }
     if ($mangel) {
         return array(null, null, $mangel, $anzahl, $fehlend, $behalten);

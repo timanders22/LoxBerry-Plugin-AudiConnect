@@ -3444,7 +3444,10 @@ class AnmeldesperreGilt(Exception):
 # C11: bis 0.9.21 lief jeder andere Aufruf als Dienst - ein vertipptes
 # "--selftest" legte den laufenden Dienst still (Sollmerker entfernt) oder
 # stellte einen zweiten daneben (gemessen, lauf_dienst.sh).
-SCHALTER = ("--einmal", "--selbsttest", "--themen", "--mqtt-leeren")
+# AUFRUFE hiess bis 0.9.23 SCHALTER und ueberschrieb damit das gleichnamige
+# Woerterbuch der Fahrzeugeinstellungen weiter oben - aktion=einstellung
+# antwortete immer "Unbekannte Einstellung" (B-Nachzug 01.10.2026).
+AUFRUFE = ("--einmal", "--selbsttest", "--themen", "--mqtt-leeren")
 _SPERRE = None
 
 
@@ -3470,11 +3473,11 @@ def dienst_sperre():
 
 def main() -> int:
     global _SPERRE
-    fremd = [a for a in sys.argv[1:] if a not in SCHALTER]
+    fremd = [a for a in sys.argv[1:] if a not in AUFRUFE]
     if fremd:
         sys.stderr.write("FEHLER: unbekannter Schalter %s. Erlaubt: %s, oder ohne Schalter fuer "
                          "den Dienst. Es wurde nichts gestartet und nichts veraendert.\n"
-                         % (" ".join(fremd), ", ".join(SCHALTER)))
+                         % (" ".join(fremd), ", ".join(AUFRUFE)))
         return 2
     if "--themen" in sys.argv:
         return themen_ausgeben()

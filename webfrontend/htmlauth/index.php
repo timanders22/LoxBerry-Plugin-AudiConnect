@@ -78,6 +78,125 @@ if (isset($_POST['activetab']) && preg_match($au_muster, (string) $_POST['active
     $au_tab = 'tab-' . (string) $_GET['form'];
 }
 
+/* ---------- X-2: Eingaben nach einer Beanstandung (B-Nachzug 01.10.2026) ----------
+ *
+ * Regeln/04, "Nach einer Beanstandung stehen die eingetippten Werte wieder im
+ * Formular". Seit der Umleitung nach jedem POST (U1) zeigte der GET nach einer
+ * Beanstandung die GESPEICHERTEN Werte; wer drei Felder richtig und eines
+ * falsch eingab, tippte alle vier neu.
+ *
+ * Mit der Einmalmeldung reisen unter 'eingaben' die Felder des EINEN
+ * beanstandeten Formulars und die Namen der beanstandeten Felder. Nie mit
+ * reisen Passwort und S-PIN - sie stehen in keiner Liste; ihre Felder werden
+ * nur markiert. Ein Wert, der keine Zeichenkette in gueltigem UTF-8 ist oder
+ * laenger als 512 Byte, reist nicht mit; sein Feld zeigt dann den
+ * gespeicherten Wert (und bleibt markiert). Bauform Abfahrtsassistent 1.6.19. */
+function au_eingabe_felder($formular)
+{
+    $f = array(
+        'einst'     => array('email', 'intervall', 'takt_wartung', 'verlauf_tage', 'temp_min',
+                             'temp_max', 'wartezeit', 'abruf_abstand', 'befehle_stunde',
+                             'strom_abstand', 'steuerung_ein', 'gefahr_ein', 'probe_ein',
+                             'gps_ein', 'melden_ein', 'nur_miniserver'),
+        'automatik' => array('kapazitaet', 'heim_breite', 'heim_laenge', 'heim_radius',
+                             'abfahrt_ein', 'abfahrt_praefix', 'abfahrt_vorlauf', 'abfahrt_temp',
+                             'abfahrt_fahrzeug', 'abfahrt_alter', 'ladeempf_ein', 'ladeempf_thema',
+                             'ladeempf_grenze', 'ladeempf_unter', 'ladeempf_alter'),
+        'mqtt'      => array('mqtt_ein', 'mqtt_topic'),
+    );
+    return isset($f[$formular]) ? $f[$formular] : array();
+}
+/* Geheimnisfelder: werden markiert, ihr Wert reist nie mit. */
+function au_eingabe_geheim()
+{
+    return array('passwort', 'spin');
+}
+function au_eingabe_tauglich($w)
+{
+    return is_string($w) && strlen($w) <= 512 && preg_match('//u', $w) === 1;
+}
+/* Ein Feld beanstanden; ohne Argument die Liste. */
+function au_bean($feld = null)
+{
+    static $liste = array();
+    if ($feld !== null && !in_array((string) $feld, $liste, true)) {
+        $liste[] = (string) $feld;
+    }
+    return $liste;
+}
+/* Die Eingaben eines Formulars aus $_POST - nur die Felder der Liste. */
+function au_eingaben_sammeln($formular)
+{
+    $werte = array();
+    foreach (au_eingabe_felder($formular) as $f) {
+        if (isset($_POST[$f]) && au_eingabe_tauglich($_POST[$f])) {
+            $werte[$f] = $_POST[$f];
+        }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'falsch' => au_bean());
+}
+/* Beim GET: die Eingaben aus der Einmalmeldung pruefen und ablegen. */
+function au_eingaben($setzen = null)
+{
+    static $e = null;
+    if ($setzen !== null) {
+        $e = null;
+        if (is_array($setzen) && isset($setzen['formular'], $setzen['werte'], $setzen['falsch'])
+            && is_string($setzen['formular']) && is_array($setzen['werte'])
+            && is_array($setzen['falsch']) && au_eingabe_felder($setzen['formular'])) {
+            $erlaubt = au_eingabe_felder($setzen['formular']);
+            $werte = array();
+            foreach ($setzen['werte'] as $f => $w) {
+                if (in_array((string) $f, $erlaubt, true) && au_eingabe_tauglich($w)) {
+                    $werte[(string) $f] = $w;
+                }
+            }
+            $falsch = array();
+            foreach ($setzen['falsch'] as $n) {
+                if (is_string($n) && (in_array($n, $erlaubt, true)
+                                      || in_array($n, au_eingabe_geheim(), true))) {
+                    $falsch[] = $n;
+                }
+            }
+            $e = array('formular' => $setzen['formular'], 'werte' => $werte, 'falsch' => $falsch);
+        }
+    }
+    return $e;
+}
+/* Gilt fuer dieses Feld eine Eingabe? Nur im beanstandeten Formular. */
+function au_eingabe_aktiv($feld)
+{
+    $e = au_eingaben();
+    return $e !== null && in_array($feld, au_eingabe_felder($e['formular']), true);
+}
+/* Wert eines Textfelds: die Eingabe, sonst der gespeicherte Wert. */
+function au_ein_w($feld, $gespeichert)
+{
+    if (au_eingabe_aktiv($feld)) {
+        $e = au_eingaben();
+        if (isset($e['werte'][$feld]) && is_string($e['werte'][$feld])) {
+            return $e['werte'][$feld];
+        }
+    }
+    return (string) $gespeichert;
+}
+/* Haken: nach einer Beanstandung so, wie er abgeschickt wurde. */
+function au_ein_h($feld, $gespeichert)
+{
+    if (!au_eingabe_aktiv($feld)) {
+        return (bool) $gespeichert;
+    }
+    $e = au_eingaben();
+    return isset($e['werte'][$feld]);
+}
+/* Markierung eines beanstandeten Felds (Attribute, schon maskiert). */
+function au_ein_m($feld)
+{
+    $e = au_eingaben();
+    return ($e !== null && in_array($feld, $e['falsch'], true))
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
 $au_meldungen = array();   // Erfolgsmeldungen
 $au_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
 /* Zwei Listen mehr SEIT 0.9.15. Bis 0.9.14 landete alles, was nicht
@@ -96,6 +215,7 @@ $au_testausgabe = '';
 $au_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 // U1: war es ein POST? Bleibt wahr, auch wenn das Formularmerkmal nicht passt.
 $au_post_roh = $au_post;
+$au_eingaben = null;       // X-2: die Eingaben eines beanstandeten Formulars
 
 /* U1 (Durchgang 29.09.2026): die Einmalmeldung der vorigen Anfrage - NUR beim
  * GET. Beim POST sind die Listen zugleich die Sammler der Eingabepruefung. */
@@ -107,6 +227,7 @@ if (!$au_post) {
         $au_stoerungen = $au_einmal['stoerungen'];
         $au_hinweise = $au_einmal['hinweise'];
         $au_testausgabe = $au_einmal['test'];
+        au_eingaben($au_einmal['eingaben']);     // X-2
     }
 }
 
@@ -186,12 +307,14 @@ if ($au_post && isset($_POST['speichern'])) {
         $au_wert = isset($_POST[$au_feld]) ? trim((string) $_POST[$au_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $au_wert)) {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_ZAHL'), au_t('EINST.L_' . strtoupper($au_feld)));
+            au_bean($au_feld);     // X-2
             continue;
         }
         $au_zahl = (int) $au_wert;
         if ($au_zahl < $au_grenzen[0] || $au_zahl > $au_grenzen[1]) {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_BEREICH'),
                 au_t('EINST.L_' . strtoupper($au_feld)), $au_grenzen[0], $au_grenzen[1]);
+            au_bean($au_feld);     // X-2
             continue;
         }
         $au_cfg[$au_feld] = $au_zahl;
@@ -199,6 +322,8 @@ if ($au_post && isset($_POST['speichern'])) {
     if (isset($au_cfg['temp_min'], $au_cfg['temp_max'])
         && $au_cfg['temp_min'] > $au_cfg['temp_max']) {
         $au_fehler[] = au_t('EINST.FEHLER_TEMP_TAUSCH');
+        au_bean('temp_min');     // X-2
+        au_bean('temp_max');
     }
 
     $au_cfg['steuerung_ein']  = isset($_POST['steuerung_ein']) ? 1 : 0;
@@ -250,15 +375,28 @@ if ($au_post && isset($_POST['speichern'])) {
     if ($au_email !== '' && (preg_match('/[\x00-\x1F\x7F]/', $au_email)
             || !filter_var($au_email, FILTER_VALIDATE_EMAIL))) {
         $au_fehler[] = au_t('EINST.FEHLER_EMAIL');
+        au_bean('email');     // X-2
+    }
+    /* Nr. 16/19 (B-Nachzug 01.10.2026): ein leer abgeschicktes E-Mail-Feld
+     * behielt still das gespeicherte Konto - mit gruener Meldung. Das Feld
+     * zeigt die gespeicherte E-Mail an; leer wird es nur, wenn jemand sie
+     * loescht. Jetzt eine Beanstandung, und nichts wird gespeichert. Zum
+     * Entfernen der Zugangsdaten gibt es den eigenen Knopf. Passwort und
+     * S-PIN sind Geheimnisfelder: dort bleibt "leer = unveraendert". */
+    if ($au_email === '' && $au_zg_vorher['email'] !== '') {
+        $au_fehler[] = au_t('EINST.FEHLER_EMAIL_LEER');
+        au_bean('email');
     }
     if ($au_spin_neu !== '' && !preg_match('/^[0-9]{4}$/', $au_spin_neu)) {
         // Ist die FORM eines Geheimnisses erkennbar falsch, wird beim Speichern
         // abgewiesen, statt den Benutzer in eine Fehlermeldung des Anbieters
         // laufen zu lassen.
         $au_fehler[] = au_t('EINST.FEHLER_SPIN');
+        au_bean('spin');     // X-2 (der Wert reist nie mit)
     }
     if ($au_pw !== '' && $au_email === '' && $au_zg_vorher['email'] === '') {
         $au_fehler[] = au_t('EINST.WARN_PW_OHNE_KONTO');
+        au_bean('email');     // X-2: es fehlt das Konto
     }
 
     if (!$au_fehler) {
@@ -269,6 +407,9 @@ if ($au_post && isset($_POST['speichern'])) {
         } else {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
         }
+    }
+    if ($au_fehler) {
+        $au_eingaben = au_eingaben_sammeln('einst');     // X-2
     }
     $au_tab = 'tab-settings';
 
@@ -300,12 +441,14 @@ if ($au_post && isset($_POST['save_automatik'])) {
         $au_wert = isset($_POST[$au_feld]) ? trim((string) $_POST[$au_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $au_wert)) {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_ZAHL'), au_t('EINST.L_' . strtoupper($au_feld)));
+            au_bean($au_feld);     // X-2
             continue;
         }
         $au_zahl = (int) $au_wert;
         if ($au_zahl < $au_grenzen[0] || $au_zahl > $au_grenzen[1]) {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_BEREICH'),
                 au_t('EINST.L_' . strtoupper($au_feld)), $au_grenzen[0], $au_grenzen[1]);
+            au_bean($au_feld);     // X-2
             continue;
         }
         $au_acfg[$au_feld] = $au_zahl;
@@ -317,6 +460,7 @@ if ($au_post && isset($_POST['save_automatik'])) {
     $au_gr = str_replace(',', '.', $au_gr);
     if ($au_gr === '' || !preg_match('/^-?[0-9]+(\.[0-9]+)?$/', $au_gr)) {
         $au_fehler[] = sprintf(au_t('EINST.FEHLER_ZAHL'), au_t('EINST.L_LADEEMPF_GRENZE'));
+        au_bean('ladeempf_grenze');     // X-2
     } else {
         $au_acfg['ladeempf_grenze'] = (float) $au_gr;
     }
@@ -331,6 +475,7 @@ if ($au_post && isset($_POST['save_automatik'])) {
         ? trim($_POST['abfahrt_praefix']) : '';
     if (!au_thema_gueltig($au_pr, 64, false)) {
         $au_fehler[] = au_t('EINST.FEHLER_PRAEFIX');
+        au_bean('abfahrt_praefix');     // X-2
     } else {
         $au_acfg['abfahrt_praefix'] = $au_pr;
     }
@@ -339,11 +484,13 @@ if ($au_post && isset($_POST['save_automatik'])) {
         ? trim($_POST['ladeempf_thema']) : '';
     if ($au_th !== '' && !au_thema_gueltig($au_th, 128, true)) {
         $au_fehler[] = au_t('EINST.FEHLER_THEMA');
+        au_bean('ladeempf_thema');     // X-2
     } else {
         $au_acfg['ladeempf_thema'] = $au_th;
     }
     if ($au_acfg['ladeempf_ein'] && $au_acfg['ladeempf_thema'] === '') {
         $au_fehler[] = au_t('EINST.FEHLER_THEMA_LEER');
+        au_bean('ladeempf_thema');     // X-2
     }
 
     // Heimatposition: entweder beide oder keine. Eine halbe Koordinate ergibt
@@ -359,6 +506,7 @@ if ($au_post && isset($_POST['save_automatik'])) {
             || (float) $au_wert < $au_gr2[0] || (float) $au_wert > $au_gr2[1]) {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_BEREICH'),
                 au_t('EINST.L_' . strtoupper($au_feld)), $au_gr2[0], $au_gr2[1]);
+            au_bean($au_feld);     // X-2
             continue;
         }
         $au_acfg[$au_feld] = $au_wert;
@@ -366,6 +514,8 @@ if ($au_post && isset($_POST['save_automatik'])) {
     if ((trim((string) $au_acfg['heim_breite']) === '')
         !== (trim((string) $au_acfg['heim_laenge']) === '')) {
         $au_fehler[] = au_t('EINST.FEHLER_HEIM_HALB');
+        au_bean('heim_breite');     // X-2
+        au_bean('heim_laenge');
     }
 
     if (!$au_fehler) {
@@ -374,6 +524,9 @@ if ($au_post && isset($_POST['save_automatik'])) {
         } else {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
         }
+    }
+    if ($au_fehler) {
+        $au_eingaben = au_eingaben_sammeln('automatik');     // X-2
     }
     $au_tab = 'tab-settings';
 }
@@ -389,6 +542,7 @@ if ($au_post && isset($_POST['save_mqtt'])) {
         ? trim($_POST['mqtt_topic']) : '';
     if (!au_thema_gueltig($au_mtopic, 64, false)) {
         $au_fehler[] = au_t('EINST.FEHLER_TOPIC');
+        au_bean('mqtt_topic');     // X-2
     } else {
         $au_mcfg['mqtt_topic'] = $au_mtopic;
     }
@@ -400,6 +554,9 @@ if ($au_post && isset($_POST['save_mqtt'])) {
         } else {
             $au_fehler[] = sprintf(au_t('EINST.FEHLER_SPEICHERN'), $au_p['config']);
         }
+    }
+    if ($au_fehler) {
+        $au_eingaben = au_eingaben_sammeln('mqtt');     // X-2
     }
     $au_tab = 'tab-mqtt';
 }
@@ -625,9 +782,14 @@ if ($au_post && isset($_POST['au_zurueck'])) {
 if ($au_post_roh && !($au_post && isset($_POST['au_sichern']))) {
     if (au_einmal_schreiben(array('meldungen' => $au_meldungen, 'fehler' => $au_fehler,
             'stoerungen' => $au_stoerungen, 'hinweise' => $au_hinweise,
-            'test' => $au_testausgabe))) {
+            'test' => $au_testausgabe, 'eingaben' => $au_eingaben))) {
         header('Location: index.php?form=' . rawurlencode(substr($au_tab, 4)), true, 303);
         exit;
+    }
+    // Die Umleitung scheiterte, die Seite wird direkt gezeigt: dann auch hier
+    // mit den eingetippten Werten (X-2).
+    if ($au_eingaben !== null) {
+        au_eingaben($au_eingaben);
     }
 }
 
@@ -774,6 +936,9 @@ if ($au_rahmen) {
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* X-2 (B-Nachzug 01.10.2026): ein beanstandetes Feld nach der Umleitung -
+   eigene Zutat, nicht Teil der Hausvorlage. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 
 </style>
 <div class="sm-wrap">
@@ -939,17 +1104,17 @@ if ($au_rahmen) {
 <div class="sm-warnung"><?= au_t('EINST.KONTO_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="email"><?= au_e(au_t('EINST.L_EMAIL')) ?></label>
-  <input data-role="none" type="text" id="email" name="email" value="<?= au_e($au_zg['email']) ?>" placeholder="name@example.com">
+  <input data-role="none" type="text" id="email" name="email" value="<?= au_e(au_ein_w('email', $au_zg['email'])) ?>"<?= au_ein_m('email') ?> placeholder="name@example.com">
   <div class="sm-hilfe"><?= au_t('EINST.H_EMAIL') ?></div>
 </div>
 <div class="sm-feld">
   <label for="passwort"><?= au_e(au_t('EINST.L_PASSWORT')) ?></label>
-  <input data-role="none" type="password" id="passwort" name="passwort" value="" placeholder="<?= $au_zg['laenge'] > 0 ? au_e(sprintf(au_t('EINST.PW_GESETZT'), $au_zg['laenge'])) : au_e(au_t('EINST.PW_LEER')) ?>">
+  <input data-role="none" type="password" id="passwort" name="passwort" value=""<?= au_ein_m('passwort') ?> placeholder="<?= $au_zg['laenge'] > 0 ? au_e(sprintf(au_t('EINST.PW_GESETZT'), $au_zg['laenge'])) : au_e(au_t('EINST.PW_LEER')) ?>">
   <div class="sm-hilfe"><?= au_t('EINST.H_PASSWORT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="spin"><?= au_e(au_t('EINST.L_SPIN')) ?></label>
-  <input data-role="none" type="password" id="spin" name="spin" value="" maxlength="4" placeholder="<?= $au_zg['spin_laenge'] > 0 ? au_e(au_t('EINST.SPIN_GESETZT')) : au_e(au_t('EINST.SPIN_LEER')) ?>">
+  <input data-role="none" type="password" id="spin" name="spin" value=""<?= au_ein_m('spin') ?> maxlength="4" placeholder="<?= $au_zg['spin_laenge'] > 0 ? au_e(au_t('EINST.SPIN_GESETZT')) : au_e(au_t('EINST.SPIN_LEER')) ?>">
   <div class="sm-hilfe"><?= au_t('EINST.H_SPIN') ?></div>
 </div>
 <div class="sm-hinweis"><?= au_t('EINST.SITZUNG_ERKLAERUNG') ?></div>
@@ -958,17 +1123,17 @@ if ($au_rahmen) {
 <div class="sm-warnung"><?= au_t('EINST.TAKT_WARNUNG') ?></div>
 <div class="sm-feld">
   <label for="intervall"><?= au_e(au_t('EINST.L_INTERVALL')) ?></label>
-  <input data-role="none" type="number" id="intervall" name="intervall" value="<?= (int) $au_cfg['intervall'] ?>" min="180" max="3600">
+  <input data-role="none" type="number" id="intervall" name="intervall" value="<?= au_e(au_ein_w('intervall', (int) $au_cfg['intervall'])) ?>"<?= au_ein_m('intervall') ?> min="180" max="3600">
   <div class="sm-hilfe"><?= au_t('EINST.H_INTERVALL') ?></div>
 </div>
 <div class="sm-feld">
   <label for="takt_wartung"><?= au_e(au_t('EINST.L_TAKT_WARTUNG')) ?></label>
-  <input data-role="none" type="number" id="takt_wartung" name="takt_wartung" value="<?= (int) $au_cfg['takt_wartung'] ?>" min="1" max="240">
+  <input data-role="none" type="number" id="takt_wartung" name="takt_wartung" value="<?= au_e(au_ein_w('takt_wartung', (int) $au_cfg['takt_wartung'])) ?>"<?= au_ein_m('takt_wartung') ?> min="1" max="240">
   <div class="sm-hilfe"><?= au_t('EINST.H_TAKT_WARTUNG') ?></div>
 </div>
 <div class="sm-feld">
   <label for="verlauf_tage"><?= au_e(au_t('EINST.L_VERLAUF_TAGE')) ?></label>
-  <input data-role="none" type="number" id="verlauf_tage" name="verlauf_tage" value="<?= (int) $au_cfg['verlauf_tage'] ?>" min="1" max="90">
+  <input data-role="none" type="number" id="verlauf_tage" name="verlauf_tage" value="<?= au_e(au_ein_w('verlauf_tage', (int) $au_cfg['verlauf_tage'])) ?>"<?= au_ein_m('verlauf_tage') ?> min="1" max="90">
   <div class="sm-hilfe"><?= au_t('EINST.H_VERLAUF_TAGE') ?></div>
 </div>
 
@@ -976,37 +1141,37 @@ if ($au_rahmen) {
 <div class="sm-warnung"><?= au_t('EINST.STEUERUNG_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="steuerung_ein" value="1" <?= !empty($au_cfg['steuerung_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="steuerung_ein" value="1" <?= au_ein_h('steuerung_ein', !empty($au_cfg['steuerung_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_STEUERUNG_EIN')) ?>
   </label>
 </div>
 <div class="sm-fehler"><?= au_t('EINST.GEFAHR_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="gefahr_ein" value="1" <?= !empty($au_cfg['gefahr_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="gefahr_ein" value="1" <?= au_ein_h('gefahr_ein', !empty($au_cfg['gefahr_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_GEFAHR_EIN')) ?>
   </label>
   <div class="sm-hilfe"><?= au_t('EINST.H_GEFAHR_EIN') ?></div>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="probe_ein" value="1" <?= !empty($au_cfg['probe_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="probe_ein" value="1" <?= au_ein_h('probe_ein', !empty($au_cfg['probe_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_PROBE_EIN')) ?>
   </label>
   <div class="sm-hilfe"><?= au_t('EINST.H_PROBE_EIN') ?></div>
 </div>
 <div class="sm-feld">
   <label for="temp_min"><?= au_e(au_t('EINST.L_TEMP_MIN')) ?></label>
-  <input data-role="none" type="number" id="temp_min" name="temp_min" value="<?= (int) $au_cfg['temp_min'] ?>" min="10" max="30">
+  <input data-role="none" type="number" id="temp_min" name="temp_min" value="<?= au_e(au_ein_w('temp_min', (int) $au_cfg['temp_min'])) ?>"<?= au_ein_m('temp_min') ?> min="10" max="30">
 </div>
 <div class="sm-feld">
   <label for="temp_max"><?= au_e(au_t('EINST.L_TEMP_MAX')) ?></label>
-  <input data-role="none" type="number" id="temp_max" name="temp_max" value="<?= (int) $au_cfg['temp_max'] ?>" min="10" max="30">
+  <input data-role="none" type="number" id="temp_max" name="temp_max" value="<?= au_e(au_ein_w('temp_max', (int) $au_cfg['temp_max'])) ?>"<?= au_ein_m('temp_max') ?> min="10" max="30">
   <div class="sm-hilfe"><?= au_t('EINST.H_TEMP') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wartezeit"><?= au_e(au_t('EINST.L_WARTEZEIT')) ?></label>
-  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $au_cfg['wartezeit'] ?>" min="0" max="30">
+  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= au_e(au_ein_w('wartezeit', (int) $au_cfg['wartezeit'])) ?>"<?= au_ein_m('wartezeit') ?> min="0" max="30">
   <div class="sm-hilfe"><?= au_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
@@ -1014,31 +1179,31 @@ if ($au_rahmen) {
 <div class="sm-warnung"><?= au_t('EINST.DROSSEL_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="abruf_abstand"><?= au_e(au_t('EINST.L_ABRUF_ABSTAND')) ?></label>
-  <input data-role="none" type="number" id="abruf_abstand" name="abruf_abstand" value="<?= (int) $au_cfg['abruf_abstand'] ?>" min="0" max="3600">
+  <input data-role="none" type="number" id="abruf_abstand" name="abruf_abstand" value="<?= au_e(au_ein_w('abruf_abstand', (int) $au_cfg['abruf_abstand'])) ?>"<?= au_ein_m('abruf_abstand') ?> min="0" max="3600">
   <div class="sm-hilfe"><?= au_t('EINST.H_ABRUF_ABSTAND') ?></div>
 </div>
 <div class="sm-feld">
   <label for="befehle_stunde"><?= au_e(au_t('EINST.L_BEFEHLE_STUNDE')) ?></label>
-  <input data-role="none" type="number" id="befehle_stunde" name="befehle_stunde" value="<?= (int) $au_cfg['befehle_stunde'] ?>" min="0" max="500">
+  <input data-role="none" type="number" id="befehle_stunde" name="befehle_stunde" value="<?= au_e(au_ein_w('befehle_stunde', (int) $au_cfg['befehle_stunde'])) ?>"<?= au_ein_m('befehle_stunde') ?> min="0" max="500">
   <div class="sm-hilfe"><?= au_t('EINST.H_BEFEHLE_STUNDE') ?></div>
 </div>
 <div class="sm-feld">
   <label for="strom_abstand"><?= au_e(au_t('EINST.L_STROM_ABSTAND')) ?></label>
-  <input data-role="none" type="number" id="strom_abstand" name="strom_abstand" value="<?= (int) $au_cfg['strom_abstand'] ?>" min="0" max="3600">
+  <input data-role="none" type="number" id="strom_abstand" name="strom_abstand" value="<?= au_e(au_ein_w('strom_abstand', (int) $au_cfg['strom_abstand'])) ?>"<?= au_ein_m('strom_abstand') ?> min="0" max="3600">
   <div class="sm-hilfe"><?= au_t('EINST.H_STROM_ABSTAND') ?></div>
 </div>
 
 <h2><?= au_e(au_t('EINST.H_DATENSCHUTZ')) ?></h2>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="gps_ein" value="1" <?= !empty($au_cfg['gps_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="gps_ein" value="1" <?= au_ein_h('gps_ein', !empty($au_cfg['gps_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_GPS_EIN')) ?>
   </label>
   <div class="sm-hilfe"><?= au_t('EINST.H_GPS_EIN') ?></div>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="nur_miniserver" value="1" <?= !empty($au_cfg['nur_miniserver']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="nur_miniserver" value="1" <?= au_ein_h('nur_miniserver', !empty($au_cfg['nur_miniserver'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_NUR_MINISERVER')) ?>
   </label>
   <div class="sm-hilfe"><?= au_t('EINST.H_NUR_MINISERVER') ?>
@@ -1051,7 +1216,7 @@ if ($au_rahmen) {
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="melden_ein" value="1" <?= !empty($au_cfg['melden_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="melden_ein" value="1" <?= au_ein_h('melden_ein', !empty($au_cfg['melden_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_MELDEN_EIN')) ?>
   </label>
   <div class="sm-hilfe"><?= au_t('EINST.H_MELDEN_EIN') ?></div>
@@ -1083,20 +1248,20 @@ if ($au_rahmen) {
 <p class="sm-hilfe"><?= au_t('EINST.GERECHNET_ERKLAERUNG') ?></p>
 <div class="sm-feld">
   <label for="kapazitaet"><?= au_e(au_t('EINST.L_KAPAZITAET')) ?></label>
-  <input data-role="none" type="number" id="kapazitaet" name="kapazitaet" value="<?= (int) $au_cfg['kapazitaet'] ?>" min="0" max="500">
+  <input data-role="none" type="number" id="kapazitaet" name="kapazitaet" value="<?= au_e(au_ein_w('kapazitaet', (int) $au_cfg['kapazitaet'])) ?>"<?= au_ein_m('kapazitaet') ?> min="0" max="500">
   <div class="sm-hilfe"><?= au_t('EINST.H_KAPAZITAET') ?></div>
 </div>
 <div class="sm-feld">
   <label for="heim_breite"><?= au_e(au_t('EINST.L_HEIM_BREITE')) ?></label>
-  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= au_e($au_cfg['heim_breite']) ?>" placeholder="51.318">
+  <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= au_e(au_ein_w('heim_breite', $au_cfg['heim_breite'])) ?>"<?= au_ein_m('heim_breite') ?> placeholder="51.318">
 </div>
 <div class="sm-feld">
   <label for="heim_laenge"><?= au_e(au_t('EINST.L_HEIM_LAENGE')) ?></label>
-  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= au_e($au_cfg['heim_laenge']) ?>" placeholder="9.490">
+  <input data-role="none" type="text" id="heim_laenge" name="heim_laenge" value="<?= au_e(au_ein_w('heim_laenge', $au_cfg['heim_laenge'])) ?>"<?= au_ein_m('heim_laenge') ?> placeholder="9.490">
 </div>
 <div class="sm-feld">
   <label for="heim_radius"><?= au_e(au_t('EINST.L_HEIM_RADIUS')) ?></label>
-  <input data-role="none" type="number" id="heim_radius" name="heim_radius" value="<?= (int) $au_cfg['heim_radius'] ?>" min="20" max="5000">
+  <input data-role="none" type="number" id="heim_radius" name="heim_radius" value="<?= au_e(au_ein_w('heim_radius', (int) $au_cfg['heim_radius'])) ?>"<?= au_ein_m('heim_radius') ?> min="20" max="5000">
   <div class="sm-hilfe"><?= au_t('EINST.H_HEIM') ?></div>
 </div>
 
@@ -1104,32 +1269,32 @@ if ($au_rahmen) {
 <div class="sm-warnung"><?= au_t('EINST.ABFAHRT_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="abfahrt_ein" value="1" <?= !empty($au_cfg['abfahrt_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="abfahrt_ein" value="1" <?= au_ein_h('abfahrt_ein', !empty($au_cfg['abfahrt_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_ABFAHRT_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label for="abfahrt_praefix"><?= au_e(au_t('EINST.L_ABFAHRT_PRAEFIX')) ?></label>
-  <input data-role="none" type="text" id="abfahrt_praefix" name="abfahrt_praefix" value="<?= au_e($au_cfg['abfahrt_praefix']) ?>" placeholder="abfahrt">
+  <input data-role="none" type="text" id="abfahrt_praefix" name="abfahrt_praefix" value="<?= au_e(au_ein_w('abfahrt_praefix', $au_cfg['abfahrt_praefix'])) ?>"<?= au_ein_m('abfahrt_praefix') ?> placeholder="abfahrt">
   <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_PRAEFIX') ?></div>
 </div>
 <div class="sm-feld">
   <label for="abfahrt_vorlauf"><?= au_e(au_t('EINST.L_ABFAHRT_VORLAUF')) ?></label>
-  <input data-role="none" type="number" id="abfahrt_vorlauf" name="abfahrt_vorlauf" value="<?= (int) $au_cfg['abfahrt_vorlauf'] ?>" min="1" max="120">
+  <input data-role="none" type="number" id="abfahrt_vorlauf" name="abfahrt_vorlauf" value="<?= au_e(au_ein_w('abfahrt_vorlauf', (int) $au_cfg['abfahrt_vorlauf'])) ?>"<?= au_ein_m('abfahrt_vorlauf') ?> min="1" max="120">
   <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_VORLAUF') ?></div>
 </div>
 <div class="sm-feld">
   <label for="abfahrt_temp"><?= au_e(au_t('EINST.L_ABFAHRT_TEMP')) ?></label>
-  <input data-role="none" type="number" id="abfahrt_temp" name="abfahrt_temp" value="<?= (int) $au_cfg['abfahrt_temp'] ?>" min="10" max="30">
+  <input data-role="none" type="number" id="abfahrt_temp" name="abfahrt_temp" value="<?= au_e(au_ein_w('abfahrt_temp', (int) $au_cfg['abfahrt_temp'])) ?>"<?= au_ein_m('abfahrt_temp') ?> min="10" max="30">
 </div>
 <div class="sm-feld">
   <label for="abfahrt_fahrzeug"><?= au_e(au_t('EINST.L_ABFAHRT_FAHRZEUG')) ?></label>
-  <input data-role="none" type="number" id="abfahrt_fahrzeug" name="abfahrt_fahrzeug" value="<?= (int) $au_cfg['abfahrt_fahrzeug'] ?>" min="1" max="99">
+  <input data-role="none" type="number" id="abfahrt_fahrzeug" name="abfahrt_fahrzeug" value="<?= au_e(au_ein_w('abfahrt_fahrzeug', (int) $au_cfg['abfahrt_fahrzeug'])) ?>"<?= au_ein_m('abfahrt_fahrzeug') ?> min="1" max="99">
   <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_FAHRZEUG') ?></div>
 </div>
 <div class="sm-feld">
   <label for="abfahrt_alter"><?= au_e(au_t('EINST.L_ABFAHRT_ALTER')) ?></label>
-  <input data-role="none" type="number" id="abfahrt_alter" name="abfahrt_alter" value="<?= (int) $au_cfg['abfahrt_alter'] ?>" min="60" max="3600">
+  <input data-role="none" type="number" id="abfahrt_alter" name="abfahrt_alter" value="<?= au_e(au_ein_w('abfahrt_alter', (int) $au_cfg['abfahrt_alter'])) ?>"<?= au_ein_m('abfahrt_alter') ?> min="60" max="3600">
   <div class="sm-hilfe"><?= au_t('EINST.H_ABFAHRT_ALTER') ?></div>
 </div>
 
@@ -1137,30 +1302,30 @@ if ($au_rahmen) {
 <div class="sm-warnung"><?= au_t('EINST.LADEEMPF_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="ladeempf_ein" value="1" <?= !empty($au_cfg['ladeempf_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="ladeempf_ein" value="1" <?= au_ein_h('ladeempf_ein', !empty($au_cfg['ladeempf_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_LADEEMPF_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label for="ladeempf_thema"><?= au_e(au_t('EINST.L_LADEEMPF_THEMA')) ?></label>
-  <input data-role="none" type="text" id="ladeempf_thema" name="ladeempf_thema" value="<?= au_e($au_cfg['ladeempf_thema']) ?>" placeholder="awattar/preis_jetzt">
+  <input data-role="none" type="text" id="ladeempf_thema" name="ladeempf_thema" value="<?= au_e(au_ein_w('ladeempf_thema', $au_cfg['ladeempf_thema'])) ?>"<?= au_ein_m('ladeempf_thema') ?> placeholder="awattar/preis_jetzt">
   <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_THEMA') ?></div>
 </div>
 <div class="sm-feld">
   <label for="ladeempf_grenze"><?= au_e(au_t('EINST.L_LADEEMPF_GRENZE')) ?></label>
-  <input data-role="none" type="text" id="ladeempf_grenze" name="ladeempf_grenze" value="<?= au_e($au_cfg['ladeempf_grenze']) ?>" placeholder="0">
+  <input data-role="none" type="text" id="ladeempf_grenze" name="ladeempf_grenze" value="<?= au_e(au_ein_w('ladeempf_grenze', $au_cfg['ladeempf_grenze'])) ?>"<?= au_ein_m('ladeempf_grenze') ?> placeholder="0">
   <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_GRENZE') ?></div>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="ladeempf_unter" value="1" <?= !empty($au_cfg['ladeempf_unter']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="ladeempf_unter" value="1" <?= au_ein_h('ladeempf_unter', !empty($au_cfg['ladeempf_unter'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_LADEEMPF_UNTER')) ?>
   </label>
   <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_UNTER') ?></div>
 </div>
 <div class="sm-feld">
   <label for="ladeempf_alter"><?= au_e(au_t('EINST.L_LADEEMPF_ALTER')) ?></label>
-  <input data-role="none" type="number" id="ladeempf_alter" name="ladeempf_alter" value="<?= (int) $au_cfg['ladeempf_alter'] ?>" min="60" max="86400">
+  <input data-role="none" type="number" id="ladeempf_alter" name="ladeempf_alter" value="<?= au_e(au_ein_w('ladeempf_alter', (int) $au_cfg['ladeempf_alter'])) ?>"<?= au_ein_m('ladeempf_alter') ?> min="60" max="86400">
   <div class="sm-hilfe"><?= au_t('EINST.H_LADEEMPF_ALTER') ?></div>
 </div>
 
@@ -1210,6 +1375,14 @@ if ($au_rahmen) {
 <h2><?= au_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= au_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= au_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* X-3 (B-Nachzug 01.10.2026): Wuerde das Zurueckspielen die eigene
+         Sicherung abweisen, steht es hier - gelb, nur Namen, nie Werte. Die
+         Sicherung wird trotzdem vollstaendig geliefert, ihr Kopf traegt
+         '_warnung'. */
+$au_sich_warn = au_rueckspiel_altwerte();
+if ($au_sich_warn) { ?>
+<div class="sm-warnung"><?= au_e(sprintf(au_t('EINST.SICH_WARN_KNOPF'), implode(', ', $au_sich_warn))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1239,13 +1412,13 @@ if ($au_rahmen) {
 <?php au_formfelder('tab-mqtt', $au_ftoken); ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($au_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= au_ein_h('mqtt_ein', !empty($au_cfg['mqtt_ein'])) ? 'checked' : '' ?>>
     <?= au_e(au_t('EINST.L_MQTT_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label for="mqtt_topic"><?= au_e(au_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= au_e($au_cfg['mqtt_topic']) ?>" placeholder="audi">
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= au_e(au_ein_w('mqtt_topic', $au_cfg['mqtt_topic'])) ?>"<?= au_ein_m('mqtt_topic') ?> placeholder="audi">
   <div class="sm-hilfe"><?= au_t('EINST.H_MQTT_TOPIC') ?></div>
 </div>
 <div class="sm-knopfreihe">

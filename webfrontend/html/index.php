@@ -44,6 +44,15 @@
  * Jeder schaltende Aufruf vertraegt &probe=1: dann wird der ganze Weg samt
  * aller Wachen gegangen, aber NICHTS an das Fahrzeug gesendet.
  *
+ * BEFEHLSBREMSE FUER SOLLWERTE (X-7, B-Nachzug 01.10.2026, Entscheidung
+ * Nr. 19): derselbe Sollwert fuer dasselbe Fahrzeug innerhalb von 60 s geht
+ * nicht noch einmal hinaus - HTTP 200, SET;OK=1;AKTION=..;UNVERAENDERT=1,
+ * nichts eingereiht. Gilt fuer klima_start/klima_stop (samt Temperatur),
+ * laden_start/laden_stop, verriegeln/entriegeln, scheibe_ein/scheibe_aus,
+ * zieltemperatur, ladegrenze und einstellung (je Name). Nicht fuer abruf,
+ * wecken, hupe, lichthupe, spin_pruefen; ladestrom bremst der Dienst. Laesst
+ * sich der Merker nicht fuehren: HTTP 503, GRUND=BREMSE_MERKER.
+ *
  * Der Endpunkt spricht NIE selbst mit der Audi-Schnittstelle. Lesende Aktionen
  * beantwortet er aus dem Zwischenspeicher, schaltende legt er in einer
  * Warteschlange ab, die der Dienst abarbeitet.
@@ -517,7 +526,39 @@ if ($au_eig['zusatz'] === 'temp') {
     $au_befehl['wert'] = $au_wert;
 }
 
+/* X-7 (B-Nachzug 01.10.2026): Befehlsbremse fuer Sollwerte, siehe Kopf und
+ * au_lib.php. Erst hier, hinter allen Wachen und Parameterpruefungen: ein
+ * abgewiesener Aufruf merkt nichts. */
+$au_bgr = au_bremse_gruppe($au_aktion, $au_befehl);
+$au_bschl = '';
+$au_bmarke = '';
+if ($au_bgr !== null) {
+    $au_trocken = ($au_probe === '1' || !empty($au_cfg['probe_ein']));
+    $au_bschl = au_bremse_fz($au_f, $au_fahrzeug) . '|' . $au_bgr[0];
+    list($au_burteil, $au_bseit, $au_bmarke) = au_bremse_pruefen($au_bschl, $au_bgr[1], $au_trocken);
+    if ($au_burteil === 'MERKER') {
+        au_endpunkt_abweisung('BREMSE_MERKER', $au_aktion);
+        http_response_code(503);
+        echo "SET;OK=0;GRUND=BREMSE_MERKER\n";
+        echo "Die Merkerdatei der Befehlsbremse laesst sich nicht oeffnen oder schreiben - "
+           . "Sollwert-Befehle werden abgewiesen, bis das behoben ist. Pruefen: Platz und "
+           . "Eigentuemer (loxberry) des Datenordners des Plugins.\n";
+        exit;
+    }
+    if ($au_burteil === 'UNVERAENDERT') {
+        printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;MELDUNG=%s\n", $au_aktion,
+               au_sauber('Derselbe Befehl ging vor ' . (int) $au_bseit . ' s hinaus - es wurde '
+                   . 'nichts gesendet. Gleiche Sollwerte innerhalb von ' . AU_BREMSE_GLEICH_S
+                   . ' s gehen nur einmal an Audi.'));
+        exit;
+    }
+}
+
 list($au_erg, $au_meldung) = au_befehl_absetzen($au_befehl);
+if ($au_bmarke !== '' && (int) $au_erg === 0) {
+    // Abgelehnt: nicht gemerkt, der naechste gleiche Befehl geht hinaus.
+    au_bremse_vergessen($au_bschl, $au_bmarke);
+}
 if ($au_erg === 0) {
     http_response_code(500);
 }
