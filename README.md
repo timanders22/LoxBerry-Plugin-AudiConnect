@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,15 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.24
+
+Baustein-Liste nach Hausregel A4 (Nachzug B, Bestand 02.10.).
+Gemessen mit der gerenderten Oberfläche unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Baustein-Liste:** Die Meldung „Fahrzeug offen“ läuft jetzt über drei ODER (#14 bis #16). Bisher hingen vier Quellen an den zwei Eingängen eines einzigen ODER. Jetzt trägt jeder Eingang eines UND/ODER genau eine Quelle. Alle späteren Zeilen rücken um zwei (#15 → #17 … #41 → #43), die Erläuterungen nennen die neuen Nummern.
+
+**In Loxone:** Eine nach der alten Liste gebaute Logik arbeitet unverändert weiter. Wer neu baut, folgt den neuen Nummern.
 
 ## Neu in 0.9.23
 
