@@ -1112,6 +1112,8 @@ if ($au_rahmen) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $au_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= au_t('EINST.WAS_IST_DAS') ?></div>
+
 <!-- U10: EINE Legende oben im Reiter, mit genau den Farben seiner Knoepfe. -->
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= au_t('LEGENDE.LESEN') ?></span>
