@@ -40,6 +40,10 @@ if (!function_exists('au_e')) {
     }
 }
 
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b, seit
+ * 0.9.25). Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -203,7 +207,16 @@ function au_vorgaben()
         'ladeempf_grenze'   => 0,
         'ladeempf_unter'    => 1,
         'ladeempf_alter'    => 900,
+        // Nr. 36 b (seit 0.9.25): Ansageanlaesse, je einzeln abwaehlbar - dieselben Werte wie
+        // VORGABEN in bin/audi.py. Gesprochen wird erst mit einer Ausgabeart (tts, ab Werk 'aus').
+        'ansage_laden_fertig'  => 1,
+        'ansage_laden_abbruch' => 1,
+        'ansage_offen'         => 1,
+        'ansage_licht'         => 1,
+        'ansage_klima'         => 1,
+        'ansage_ausfall'       => 1,
         // Nur hier, nicht im Dienst
+        'tts'               => ansage_vorgaben('aus'),
         'aktionstoken'      => '',
         'schalttoken'       => '',
         // Grundlage des Formularmerkmals. NEU IN 0.9.12 und ein eigenes
@@ -2782,7 +2795,9 @@ function au_haken()
 {
     return array('mqtt_ein', 'steuerung_ein', 'gefahr_ein', 'probe_ein',
                  'gps_ein', 'melden_ein', 'nur_miniserver', 'abfahrt_ein',
-                 'ladeempf_ein', 'ladeempf_unter');
+                 'ladeempf_ein', 'ladeempf_unter',
+                 'ansage_laden_fertig', 'ansage_laden_abbruch', 'ansage_offen', 'ansage_licht',
+                 'ansage_klima', 'ansage_ausfall');
 }
 
 /**
@@ -2886,6 +2901,114 @@ function au_wert_pruefen($k, $v)
     return '';
 }
 
+/* ==================================================================
+ * Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.9.25)
+ *
+ * Der Dienst bin/audi.py erkennt die Anlaesse und ruft bin/au_ansage.php;
+ * dort entsteht der Satz aus der Sprachdatei, gesprochen wird mit der
+ * gemeinsamen Sprachausgabe (sprachausgabe.php). Ab Werk ist die Ausgabe aus.
+ * ================================================================== */
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (die Linie gibt keinen Text an Loxone). */
+function au_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Optionen fuer Formular-Baustein und Formular-Lesen. */
+function au_ansage_opt()
+{
+    return array('modi' => au_ansage_modi());
+}
+
+/**
+ * Die Anlaesse: Name => array(Konfigschluessel, Beschriftung, Satz). Dieselbe
+ * Liste wie ANSAGE_ANLAESSE in bin/audi.py; die Bruecke nimmt nur diese Namen an.
+ */
+function au_ansage_anlaesse()
+{
+    return array(
+        'laden_fertig'  => array('ansage_laden_fertig', 'EINST.L_ANSAGE_LADEN_FERTIG', 'AU_ANSAGE.S_LADEN_FERTIG'),
+        'laden_abbruch' => array('ansage_laden_abbruch', 'EINST.L_ANSAGE_LADEN_ABBRUCH', 'AU_ANSAGE.S_LADEN_ABBRUCH'),
+        'offen'         => array('ansage_offen', 'EINST.L_ANSAGE_OFFEN', 'AU_ANSAGE.S_OFFEN'),
+        'licht'         => array('ansage_licht', 'EINST.L_ANSAGE_LICHT', 'AU_ANSAGE.S_LICHT'),
+        'klima'         => array('ansage_klima', 'EINST.L_ANSAGE_KLIMA', 'AU_ANSAGE.S_KLIMA'),
+        'ausfall'       => array('ansage_ausfall', 'EINST.L_ANSAGE_AUSFALL', 'AU_ANSAGE.S_AUSFALL'),
+    );
+}
+
+/** Die Schluessel, die mit 0.9.25 dazukamen - eine aeltere Sicherung kennt sie nicht. */
+function au_ansage_neue_schluessel()
+{
+    $s = array('tts');
+    foreach (au_ansage_anlaesse() as $a) {
+        $s[] = $a[0];
+    }
+    return $s;
+}
+
+/**
+ * Der Block tts, geprueft und vervollstaendigt (ab Werk 'aus'). au_config()
+ * prueft keine Einzelwerte; ein unzulaessiger Block (von Hand geschrieben)
+ * gilt deshalb hier als "aus", und das eigene Zurueckspielen nennt ihn (X-3).
+ * $heilen = false schreibt nichts (Bruecke).
+ */
+function au_tts($heilen = true)
+{
+    $c = au_config($heilen);
+    $t = isset($c['tts']) && is_array($c['tts']) ? $c['tts'] : array();
+    $g = '';
+    if (ansage_wert_pruefen($t, $g, au_ansage_modi()) === null) {
+        $t = array();
+    }
+    list($t) = ansage_vervollstaendigen($t, 'aus');
+    return $t;
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Ordner fuer <art>_letzte.json, Texte. */
+function au_ansage_k()
+{
+    $p = au_paths();
+    return array(
+        'port'   => ansage_webport(($p['home'] !== '' ? $p['home'] : dirname(dirname(__DIR__)))
+                                   . '/config/system/general.json'),
+        'kopf'   => array('User-Agent: LoxBerry AudiConnect'),
+        'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
+        't'      => function ($s) { return au_t($s); },
+        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz in [ANSAGE]; linieneigen wie Intercom
+         * 2.2.18, bis der Modulschluessel mit einer ergaenzenden Fassung kommt (Entwurf, Stufe 2). */
+        'schluessel' => array('K_TTS_EINTRAG' => 'EINST.SICH_TTS_EINTRAG'),
+    );
+}
+
+/**
+ * Der Satz zu einem Anlass, aus der Sprachdatei. $name ist der Fahrzeugname
+ * aus dem Konto; fehlt er, heisst es "Fahrzeug <nr>". Ladestand und
+ * Ladegrenze nur, wenn sie bekannt sind.
+ */
+function au_ansage_satz($anlass, $nr, $name, $soc = null, $grenze = null)
+{
+    $a = au_ansage_anlaesse();
+    if (!isset($a[$anlass])) {
+        return '';
+    }
+    $wer = ($name !== '') ? $name : sprintf(au_t('AU_ANSAGE.FAHRZEUG_NR'), (int) $nr);
+    if ($anlass === 'ausfall') {
+        return au_t('AU_ANSAGE.S_AUSFALL');
+    }
+    if ($anlass === 'laden_fertig') {
+        $s = sprintf(au_t('AU_ANSAGE.S_LADEN_FERTIG'), $wer);
+        return $soc === null ? $s : $s . ' ' . sprintf(au_t('AU_ANSAGE.S_LADESTAND'), (int) $soc);
+    }
+    if ($anlass === 'laden_abbruch') {
+        if ($soc === null || $grenze === null) {
+            return sprintf(au_t('AU_ANSAGE.S_LADEN_STOERUNG'), $wer);
+        }
+        return sprintf(au_t('AU_ANSAGE.S_LADEN_ABBRUCH'), $wer, (int) $soc, (int) $grenze);
+    }
+    return sprintf(au_t($a[$anlass][2]), $wer);
+}
+
 /**
  * Die Sicherungsdatei bauen.
  *
@@ -2912,6 +3035,10 @@ function au_sicherung_bauen($pruefen = true)
             continue;
         }
         $aus[$k] = $v;
+    }
+    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung (Entwurf 5). */
+    if (isset($aus['tts']) && is_array($aus['tts'])) {
+        $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']);
     }
     $z = au_json_lesen(au_paths()['zugang']);
     $aus['zugang'] = array(
@@ -3049,6 +3176,30 @@ function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
             // Anlage nicht durch ein fremdes ersetzt wird.
             continue;
         }
+        if ((string) $k === 'tts') {
+            /* Nr. 36 b (seit 0.9.25): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
+             * traegt die Datei eines (auch als Liste, Zahl oder null), stammt sie nicht aus
+             * "Einstellungen sichern" und wird abgewiesen; die geltenden Sprechtoken bleiben.
+             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). */
+            $au_tm = ansage_sicherung_mangel($w);
+            if ($au_tm) {
+                $mangel[] = sprintf(au_t('EINST.SICH_TTS_TOKEN'), au_e(implode(', ', $au_tm)));
+                $namen[] = 'tts';
+                continue;
+            }
+            $au_tg = '';
+            $au_tp = ansage_wert_pruefen($w, $au_tg, au_ansage_modi());
+            if ($au_tp === null) {
+                $mangel[] = sprintf(au_t('EINST.SICH_TTS'), au_e(ansage_kennung_text($au_tg, au_ansage_k())));
+                $namen[] = 'tts';
+                continue;
+            }
+            $au_tj = au_tts();
+            list($au_tv) = ansage_vervollstaendigen($au_tp + $au_tj, 'aus');
+            $neu['tts'] = ansage_sicherung_tokens_behalten($au_tv, $au_tj);
+            $anzahl++;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(au_t('EINST.SICH_FREMD'), au_e((string) $k));
             $namen[] = (string) $k;
@@ -3100,6 +3251,12 @@ function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
     $fehlend = array();
     foreach ($bekannt as $k) {
         if (!array_key_exists($k, $daten) && !in_array($k, au_nicht_sichern(), true)) {
+            /* Nr. 36 b: eine Sicherung von 0.9.24 oder frueher kennt die Sprachausgabe noch
+             * nicht. Sie bleibt zurueckspielbar; die neuen Schluessel behalten den Wert dieser
+             * Anlage ($neu geht vom Bestand aus), und die Seite sagt es. */
+            if (in_array($k, au_ansage_neue_schluessel(), true)) {
+                continue;
+            }
             $fehlend[] = $k;
         }
     }

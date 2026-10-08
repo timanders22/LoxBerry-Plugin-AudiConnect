@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.25 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,25 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.25
+
+Ansagen über die gemeinsame Sprachausgabe der Plugins dieses Hauses (Nr. 36). Gemessen unter PHP 7.4 und 8.5
+gegen Attrappen (Music Server, Alexa-NG); nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Neu: das Plugin sagt einzelne Ereignisse an (ab Werk aus).** Reiter Einstellungen, Abschnitt
+  „Sprachausgabe“: Loxone Music Server, MusicServer4Home, eine eigene Adressvorlage, Alexa-NG oder
+  Google-Lautsprecher (Chromecast 4 Lox NG). Anlässe, jeder einzeln abwählbar: Ladung beendet, Ladung unter
+  der Ladegrenze oder mit Störung beendet, Fahrzeug steht offen oder unverriegelt, Licht an, Klimatisierung
+  beendet, keine Daten mehr. Angesagt wird nur ein Wechsel, derselbe Anlass je Fahrzeug höchstens einmal je
+  Stunde; nach einem Neustart des Dienstes spricht die erste Abfrage nie. MQTT, Loxone und die
+  Benachrichtigungen bleiben unverändert.
+* Adresse des Music Servers und Adressvorlage müssen im Heimnetz liegen.
+* Testansage per Knopf im Reiter Test; die Zeile „Sprachausgabe“ zeigt Ausgabeart, letzte Ansage und die
+  eingeschalteten Anlässe.
+* Die Sprechtoken für Alexa-NG und Chromecast 4 Lox NG stehen nie in der Seite, im Protokoll oder in einer
+  Sicherung; eine Sicherungsdatei, die eines trägt, wird abgewiesen. Eine Sicherung von 0.9.24 lässt sich
+  weiter zurückspielen.
 
 ## Neu in 0.9.24
 

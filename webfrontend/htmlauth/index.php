@@ -104,12 +104,17 @@ function au_eingabe_felder($formular)
                              'ladeempf_grenze', 'ladeempf_unter', 'ladeempf_alter'),
         'mqtt'      => array('mqtt_ein', 'mqtt_topic'),
     );
+    /* Nr. 36 b: die Sprachausgabe und die Anlass-Haken - nie die Sprechtoken (ansage_x2_felder()). */
+    $f['einst'] = array_merge($f['einst'], ansage_x2_felder(au_ansage_opt()),
+        array('ansage_laden_fertig', 'ansage_laden_abbruch', 'ansage_offen', 'ansage_licht',
+              'ansage_klima', 'ansage_ausfall'));
     return isset($f[$formular]) ? $f[$formular] : array();
 }
 /* Geheimnisfelder: werden markiert, ihr Wert reist nie mit. */
 function au_eingabe_geheim()
 {
-    return array('passwort', 'spin');
+    // Nr. 36 b: die Sprechtoken werden markiert, ihr Wert reist nie mit.
+    return array('passwort', 'spin', 'tts_alexa_token', 'tts_google_token');
 }
 function au_eingabe_tauglich($w)
 {
@@ -399,6 +404,23 @@ if ($au_post && isset($_POST['speichern'])) {
         au_bean('email');     // X-2: es fehlt das Konto
     }
 
+    /* Nr. 36 b (Stufe 2, seit 0.9.25): Sprachausgabe und Anlaesse. Jede Beanstandung verhindert
+     * das Speichern (Nr. 16); kein Sprechtoken steht in einer Meldung, ein leeres Tokenfeld heisst
+     * "behalten", der Haken loescht, beides zugleich ist ein Widerspruch. */
+    foreach (au_ansage_anlaesse() as $au_a) {
+        $au_cfg[$au_a[0]] = isset($_POST[$au_a[0]]) ? 1 : 0;
+    }
+    $au_tmangel = array();
+    $au_tbean = array();
+    $au_cfg['tts'] = ansage_formular_lesen($_POST, au_tts(), $au_tmangel, $au_tbean, au_ansage_opt(),
+                                           au_ansage_k());
+    foreach ($au_tmangel as $au_tm) {
+        $au_fehler[] = au_e($au_tm['text']);
+    }
+    foreach ($au_tbean as $au_tb) {
+        au_bean($au_tb);     // X-2
+    }
+
     if (!$au_fehler) {
         if (!au_zugang_speichern($au_email !== '' ? $au_email : null, $au_pw, $au_spin_neu)) {
             $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
@@ -682,6 +704,25 @@ if ($au_post && isset($_POST['test'])) {
     }
     $au_tab = 'tab-test';
 }
+/* ---------------- Testansage (Nr. 36 b, seit 0.9.25) ----------------
+ * Spricht den Pruefsatz des Moduls ueber die eingestellte Ausgabeart - unabhaengig
+ * von den Anlaessen. Ins Protokoll nur die Kurzform ohne Text und Token. F5 nach dem
+ * Knopf spricht nicht erneut: der PRG-Block unten leitet um. */
+if ($au_post && isset($_POST['ansage_test'])) {
+    $au_ak = au_ansage_k();
+    $au_ar = ansage_testansage(au_tts(), $au_ak);
+    au_log('Testansage: ' . ansage_kurz($au_ar));
+    if ($au_ar['stand'] === 1) {
+        $au_meldungen[] = au_e(au_t('TEST.M_ANSAGE_TEST_OK'));
+    } elseif ($au_ar['stand'] === -1) {
+        $au_meldungen[] = au_e(sprintf(au_t('TEST.M_ANSAGE_TEST_NICHTS'),
+                                       ansage_kennung_text($au_ar['kennung'], $au_ak)));
+    } else {
+        $au_stoerungen[] = au_e(sprintf(au_t('TEST.M_ANSAGE_TEST_FEHL'),
+                                        ansage_kennung_text($au_ar['kennung'], $au_ak)));
+    }
+    $au_tab = 'tab-test';
+}
 if ($au_post && isset($_POST['selbsttest'])) {
     $au_testausgabe = au_selbsttest();
     $au_tab = 'tab-test';
@@ -744,6 +785,12 @@ if ($au_post && isset($_POST['au_zurueck'])) {
                 $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
             }
             $au_meldungen[] = sprintf(au_t('EINST.SICH_UEBERNOMMEN'), $au_n);
+            /* Nr. 36 b: eine Sicherung von 0.9.24 oder frueher kennt die Sprachausgabe nicht -
+             * deren Einstellungen bleiben, und die Seite sagt es. */
+            $au_sd = json_decode((string) @file_get_contents($_FILES['au_sicherung']['tmp_name']), true);
+            if (is_array($au_sd) && !array_key_exists('tts', $au_sd)) {
+                $au_hinweise[] = au_t('EINST.SICH_OHNE_ANSAGE');
+            }
             if ($au_behalten) {
                 $au_hinweise[] = au_e(sprintf(au_t('EINST.SICH_TOKEN_BEHALTEN'),
                     implode(', ', $au_behalten)));
@@ -1222,6 +1269,24 @@ if ($au_rahmen) {
   <div class="sm-hilfe"><?= au_t('EINST.H_MELDEN_EIN') ?></div>
 </div>
 
+<h2><?= au_e(au_t('EINST.H_ANSAGE')) ?></h2>
+<div class="sm-hinweis"><?= au_t('EINST.ANSAGE_ERKLAERUNG') ?></div>
+<?= ansage_formular_html(au_tts(), array(
+    'w' => function ($n, $g) { return au_ein_w($n, $g); },
+    'm' => function ($n) { return au_ein_m($n); },
+    'c' => function ($n, $g) { return au_ein_h($n, $g); },
+    'modi' => au_ansage_modi()), au_ansage_k()) ?>
+<h3><?= au_e(au_t('EINST.H_ANSAGE_ANLAESSE')) ?></h3>
+<?php foreach (au_ansage_anlaesse() as $au_a) { ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="<?= au_e($au_a[0]) ?>" value="1" <?= au_ein_h($au_a[0], !empty($au_cfg[$au_a[0]])) ? 'checked' : '' ?><?= au_ein_m($au_a[0]) ?>>
+    <?= au_e(au_t($au_a[1])) ?>
+  </label>
+</div>
+<?php } ?>
+<div class="sm-hilfe"><?= au_t('EINST.H_ANSAGE_ANLAESSE_HILFE') ?></div>
+
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1375,6 +1440,7 @@ if ($au_rahmen) {
 <h2><?= au_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= au_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= au_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-hinweis"><?= au_t('EINST.SICH_OHNE_SPRECHTOKEN') ?></div>
 <?php /* X-3 (B-Nachzug 01.10.2026): Wuerde das Zurueckspielen die eigene
          Sicherung abweisen, steht es hier - gelb, nur Namen, nie Werte. Die
          Sicherung wird trotzdem vollstaendig geliefert, ihr Kopf traegt
@@ -1813,6 +1879,15 @@ function au_bausteine()
 <?php if ($au_testausgabe !== '') { ?>
 <div class="sm-pre"><?= au_e($au_testausgabe) ?></div>
 <?php } ?>
+
+<h3><?= au_e(au_t('TEST.H_ANSAGE')) ?></h3>
+<p class="sm-hilfe"><?= au_e(au_t('TEST.ANSAGE_TEST_TEXT')) ?></p>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php au_formfelder('tab-test', $au_ftoken); ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= au_e(au_t('TEST.K_ANSAGE_TEST')) ?></button>
+  </form>
+</div>
 
 <h3><?= au_e(au_t('TEST.H_SCHALTEN')) ?></h3>
 <div class="sm-warnung"><?= au_t('TEST.SCHALTEN_WARNUNG') ?></div>

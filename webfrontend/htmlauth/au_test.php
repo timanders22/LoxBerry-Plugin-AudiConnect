@@ -292,6 +292,10 @@ function au_pruefungen($oberflaeche = array())
     list($s, $t) = au_pruef_vorlagen();
     $zeilen[] = au_pruefzeile($s, au_t('TEST.F_VORLAGE'), $t);
 
+    // Nr. 36 b (seit 0.9.25): die Sprachausgabe. Alexa-NG/Chromecast werden nur gefragt, wenn der
+    // Reiter Test der offene ist (selftest=1, spricht nicht); der Music Server nie.
+    $zeilen[] = au_ansage_zeile(isset($GLOBALS['au_tab']) && $GLOBALS['au_tab'] === 'tab-test');
+
     return $zeilen;
 }
 
@@ -525,6 +529,23 @@ function au_pruef_vorlagen()
  * die Datei blieb liegen und wurde beim naechsten Start ausgefuehrt. Genau
  * dieselbe Regression beschreibt au_lib.php in au_dienst_pid() als behoben.
  */
+/** Die Zeile der Sprachausgabe: Ausgabeart, letzte Ansage und die eingeschalteten Anlaesse. */
+function au_ansage_zeile($offen)
+{
+    $cfg = au_config();
+    list($st, $html) = ansage_pruefzeile(au_tts(), (bool) $offen, au_ansage_k());
+    $an = array();
+    foreach (au_ansage_anlaesse() as $a) {
+        if ((string) (isset($cfg[$a[0]]) ? $cfg[$a[0]] : '') === '1') {
+            $an[] = au_e(au_t($a[1]));
+        }
+    }
+    $html .= ' ' . sprintf(au_t('TEST.A_ANSAGE_ANLAESSE'), count($an),
+                           $an ? implode('; ', $an) : au_e(au_t('TEST.A_ANSAGE_KEINE')));
+    // -2 (aus, nicht gefragt) ist hier ein Hinweis, kein Haken.
+    return au_pruefzeile($st === -2 ? -1 : $st, au_t('TEST.F_ANSAGE'), $html);
+}
+
 function au_test_aktion($aktion)
 {
     $cfg = au_config();
