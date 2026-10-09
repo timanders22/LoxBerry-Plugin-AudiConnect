@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.26 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,20 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.27
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Quellen in fester Form: `#5` statt „I ← #5“, `I1 = #13, I2 = #6` statt „I1 ← #13, I2 ← #6“.
+  Was aus der eigenen Anlage kommt (Anwesenheitsmelder, Szene), bleibt in Worten. Gleiche Bausteine,
+  gleiche Verbindungen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Den Satz zu einem
+  unbekannten Eintrag im Block der Sprachausgabe bringt jetzt das Modul mit; die eigene Umlenkung ist
+  gestrichen (gleicher Wortlaut). Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die
+  Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.26
 
