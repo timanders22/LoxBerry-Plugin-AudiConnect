@@ -987,6 +987,16 @@ if ($au_rahmen) {
    eigene Zutat, nicht Teil der Hausvorlage. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 
+/* Welle Bild 17 (0.9.28): vier Seiten aus dem Musterprojekt in Schritt 8 - Bild, Ueberschrift, Schritte und
+   Hinweise je Seite (wie Weissware 0.9.42). */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+
 </style>
 <div class="sm-wrap">
 
@@ -1644,9 +1654,10 @@ foreach ($au_endpunkte as $au_art => $au_info) {
      * fertigen Entitaeten &amp; und &lt;v&gt; traegt. */
     $au_z = '/plugins/' . au_e($au_p['plugin']) . '/index.php?token=' . au_e($au_stoken)
           . '&amp;aktion=' . $au_ak . ($au_eig['ohne_fz'] ? '' : '&amp;fahrzeug=1');
-    if ($au_eig['zusatz'] === 'temp')    { $au_z .= '&amp;temp=&lt;v&gt;'; }
-    if ($au_eig['zusatz'] === 'prozent') { $au_z .= '&amp;prozent=&lt;v&gt;'; }
-    if ($au_eig['zusatz'] === 'ampere')  { $au_z .= '&amp;ampere=&lt;v&gt;'; }
+    /* Welle Bild 17 (0.9.28): Wertformat wie die Vorlage (au_vorlage_vo), bis 0.9.27 &lt;v&gt;. */
+    if ($au_eig['zusatz'] === 'temp')    { $au_z .= '&amp;temp=&lt;v.1&gt;'; }
+    if ($au_eig['zusatz'] === 'prozent') { $au_z .= '&amp;prozent=&lt;v.0&gt;'; }
+    if ($au_eig['zusatz'] === 'ampere')  { $au_z .= '&amp;ampere=&lt;v.0&gt;'; }
     if ($au_eig['zusatz'] === 'dauer')   { $au_z .= '&amp;dauer=10'; }
 ?>
 <tr><td><?= au_t($au_eig['bez']) ?><?= $au_eig['gefahr'] ? ' <b>(' . au_e(au_t('LOX.EINGRIFF')) . ')</b>' : '' ?></td>
@@ -1693,93 +1704,288 @@ foreach ($au_endpunkte as $au_art => $au_info) {
 
 <?php
 /**
- * Die komplette Baustein-Liste. Pflicht im Hausstandard.
+ * Die Baustein-Listen fuer Schritt 8 (Welle Bild 17, 0.9.28; Hausherr 11.10.2026: Vollausstattung, ein
+ * absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 17 au, Entscheidung 15, gemeinsame
+ * Form der fuenf Auto-Plugins). Vier Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut
+ * und verbunden (Musterprojekt/baustein_listen.txt, Abschnitte "AudiConnect" 33, "AudiConnect Laden" 36,
+ * "AudiConnect Klima und Befehle" 33 und "AudiConnect Fahrzeug" 35 Zeilen, wortgleich). Je Tabellenzeile EIN
+ * Sprachschluessel BAUSTEIN.Z<seite>_<nn> = "Typ | Name | Parameter | Eingaenge" ohne Auszeichnung, jedes
+ * Prozentzeichen verdoppelt (sonst hielte sprachplatzhalter_pruefen "20 % oder" fuer eine Umwandlung); jede Zelle
+ * und jeder Satz wird maskiert ausgegeben.
  *
- * Anspruch: Wer die Tabelle von oben nach unten abarbeitet, hat die Funktion
- * nachgebaut, ohne nachzudenken. Loxone Config fuehrt alle Bausteine in der
- * Baustein-Suche (F5).
+ * Bis 0.9.27 stand hier au_bausteine() mit 43 Zeilen. Dort trafen "Audi Klima ein/aus" die eigene Vorlage nicht
+ * (die Klimatisierung ist ein Analogbefehl mit der Temperatur), die Schwellwertschalter fuer Akku und Tank
+ * standen bei einem nie gelieferten Wert (0) dauerhaft ein, und eine Schwelle auf ALTER loeste bei stehendem
+ * LoxBerry nie aus (Entwurf Welle 17 au, Abschnitt 1, Befunde).
  *
- * Je Zeile: Nummer, Typ, Name, Parameter, woran die Eingaenge kommen.
- * Typ, Name und Parameter stehen als Sprachschluessel drin, die Eingangsspalte
- * ist symbolisch und damit sprachfrei.
- *
- * X-10 (0.9.27): die Eingangsspalte in der Schreibweise von
- * Werkzeuge/leitungen_setzen.py - "#N" (Ausgang von Zeile N auf den ersten
- * Eingang), "I1 = #N, I2 = #M"; bis 0.9.26 stand dort "I &larr; #N".
- *
- * ACHTUNG bei UND und ODER: die Zahl der Eingaenge ist eine Eigenschaft des
- * Bausteins, die Loxone Config selbst setzt. Wer einen dritten Eingang
- * aufzieht, verliert beim naechsten Oeffnen der Datei alle Verbindungen, die
- * daran hingen - ohne Meldung. An einem ODER duerfen deshalb mehrere Quellen
- * an EINEM Eingang haengen (sie werden dort ODER-verknuepft); an einem UND
- * waere dieselbe Form falsch, weil sie das UND still in ein ODER verwandelte.
+ * Rueckgabe: je Seite 'kopf' (Name der Musterseite), 'bild', 'schritte' und 'hinweise' (Saetze), 'zeilen'
+ * (je ein Text mit vier Zellen, %% fuer ein Prozentzeichen) - alles reiner Text, noch nicht durch sprintf()
+ * bzw. au_bs_text().
  */
-function au_bausteine()
+function au_bausteinseiten()
 {
     return array(
-        array(1,  'BAUSTEIN.T_VE',      'BAUSTEIN.N01', 'BAUSTEIN.P01', '&mdash;'),
-        array(2,  'BAUSTEIN.T_VE',      'BAUSTEIN.N02', 'BAUSTEIN.P02', '&mdash;'),
-        array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03', 'BAUSTEIN.P03', '&mdash;'),
-        array(4,  'BAUSTEIN.T_VE',      'BAUSTEIN.N04', 'BAUSTEIN.P04', '&mdash;'),
-        array(5,  'BAUSTEIN.T_VE',      'BAUSTEIN.N05', 'BAUSTEIN.P05', '&mdash;'),
-        array(6,  'BAUSTEIN.T_VE',      'BAUSTEIN.N06', 'BAUSTEIN.P06', '&mdash;'),
-        array(7,  'BAUSTEIN.T_VE',      'BAUSTEIN.N07', 'BAUSTEIN.P07', '&mdash;'),
-        array(8,  'BAUSTEIN.T_VE',      'BAUSTEIN.N08', 'BAUSTEIN.P08', '&mdash;'),
-        array(9,  'BAUSTEIN.T_VE',      'BAUSTEIN.N09', 'BAUSTEIN.P09', '&mdash;'),
-        array(10, 'BAUSTEIN.T_VE',      'BAUSTEIN.N10', 'BAUSTEIN.P10', '&mdash;'),
-        array(11, 'BAUSTEIN.T_VE',      'BAUSTEIN.N11', 'BAUSTEIN.P11', '&mdash;'),
-        array(12, 'BAUSTEIN.T_VE',      'BAUSTEIN.N12', 'BAUSTEIN.P12', '&mdash;'),
-        array(13, 'BAUSTEIN.T_NICHT',   'BAUSTEIN.N13', '',             '#5'),
-        /* Regel A4 (Regeln/04; Nachzug 02.10.2026): ein UND/ODER hat zwei Eingaenge, an jedem
-         * genau eine Quelle. Bisher hingen an #14 vier Quellen an zwei Eingaengen; jetzt drei
-         * ODER, und jede spaetere Zeile rueckt um zwei. Die Sprachschluessel N15 ff. behalten
-         * ihre Namen - die angezeigte Nummer ist die erste Spalte. */
-        array(14, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14A', '',            'I1 = #13, I2 = #6'),
-        array(15, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14B', '',            'I1 = #7, I2 = #8'),
-        array(16, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N14', '',             'I1 = #14, I2 = #15'),
-        array(17, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N15', 'BAUSTEIN.P15', '#16'),
-        array(18, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N16', 'BAUSTEIN.P16', '#17'),
-        array(19, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N17', 'BAUSTEIN.P17', '#1'),
-        array(20, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N18', 'BAUSTEIN.P18', '#2'),
-        array(21, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N19', '',             'I1 = #19, I2 = #20'),
-        array(22, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N20', 'BAUSTEIN.P20', '#21'),
-        array(23, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N21', 'BAUSTEIN.P21', '#10'),
-        array(24, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N22', 'BAUSTEIN.P22', '#23'),
-        array(25, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N23', 'BAUSTEIN.P23', '#12'),
-        array(26, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N24', 'BAUSTEIN.P24', '#25'),
-        array(27, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N25', 'BAUSTEIN.P25', '#11'),
-        array(28, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N26', 'BAUSTEIN.P26', '#27'),
-        array(29, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N27', 'BAUSTEIN.P27', 'I1 = #1, I2 = #3, I3 = #5'),
-        array(30, 'BAUSTEIN.T_WOCHE',   'BAUSTEIN.N28', 'BAUSTEIN.P28', '&mdash;'),
-        array(31, 'BAUSTEIN.T_TASTER',  'BAUSTEIN.N29', 'BAUSTEIN.P29', '&mdash;'),
-        array(32, 'BAUSTEIN.T_UND',     'BAUSTEIN.N30', 'BAUSTEIN.P30', 'I1 = #30, I2 = ' . au_t('BAUSTEIN.ANWESEND')),
-        array(33, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N31', '',             'I1 = #31, I2 = #32'),
-        array(34, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N32', 'BAUSTEIN.P32', '#33'),
-        array(35, 'BAUSTEIN.T_VA',      'BAUSTEIN.N33', 'BAUSTEIN.P33', '#34'),
-        array(36, 'BAUSTEIN.T_VA',      'BAUSTEIN.N34', 'BAUSTEIN.P34', au_t('BAUSTEIN.MANUELL')),
-        // ---- Neu in 0.9.8 ------------------------------------------------
-        array(37, 'BAUSTEIN.T_VE',      'BAUSTEIN.N35', 'BAUSTEIN.P35', '&mdash;'),
-        array(38, 'BAUSTEIN.T_VE',      'BAUSTEIN.N36', 'BAUSTEIN.P36', '&mdash;'),
-        array(39, 'BAUSTEIN.T_VE',      'BAUSTEIN.N37', 'BAUSTEIN.P37', '&mdash;'),
-        array(40, 'BAUSTEIN.T_UND',     'BAUSTEIN.N38', 'BAUSTEIN.P38', 'I1 = #37, I2 = #38'),
-        array(41, 'BAUSTEIN.T_VA',      'BAUSTEIN.N39', 'BAUSTEIN.P39', '#40'),
-        array(42, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N40', 'BAUSTEIN.P40', '#39'),
-        array(43, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N41', 'BAUSTEIN.P41', '#42'),
+        array('kopf' => 'AudiConnect', 'bild' => 'einbindung_loxone.png',
+              'schritte' => array(
+                  sprintf(au_t('BAUSTEIN.S1_SCHRITT1'), au_t('REITER.EINSTELLUNGEN'), au_t('EINST.K_START'), au_t('REITER.TEST'), au_t('TEST.K_ABRUF')),
+                  sprintf(au_t('BAUSTEIN.S1_SCHRITT2'), au_t('REITER.LOXONE'), au_t('LOX.EP_STATUS'), au_t('LOX.EP_LADEN'), au_t('LOX.EP_WARTUNG'), au_t('LOX.EP_POSITION')),
+                  au_t('BAUSTEIN.S1_SCHRITT3'),
+                  au_t('BAUSTEIN.S1_SCHRITT4'),
+                  au_t('BAUSTEIN.S1_SCHRITT5'),
+                  au_t('BAUSTEIN.S1_SCHRITT6')),
+              'zeilen' => array(
+                  au_t('BAUSTEIN.Z1_01'),
+                  au_t('BAUSTEIN.Z1_02'),
+                  au_t('BAUSTEIN.Z1_03'),
+                  au_t('BAUSTEIN.Z1_04'),
+                  au_t('BAUSTEIN.Z1_05'),
+                  au_t('BAUSTEIN.Z1_06'),
+                  au_t('BAUSTEIN.Z1_07'),
+                  au_t('BAUSTEIN.Z1_08'),
+                  au_t('BAUSTEIN.Z1_09'),
+                  au_t('BAUSTEIN.Z1_10'),
+                  au_t('BAUSTEIN.Z1_11'),
+                  au_t('BAUSTEIN.Z1_12'),
+                  au_t('BAUSTEIN.Z1_13'),
+                  au_t('BAUSTEIN.Z1_14'),
+                  au_t('BAUSTEIN.Z1_15'),
+                  au_t('BAUSTEIN.Z1_16'),
+                  au_t('BAUSTEIN.Z1_17'),
+                  au_t('BAUSTEIN.Z1_18'),
+                  au_t('BAUSTEIN.Z1_19'),
+                  au_t('BAUSTEIN.Z1_20'),
+                  au_t('BAUSTEIN.Z1_21'),
+                  au_t('BAUSTEIN.Z1_22'),
+                  au_t('BAUSTEIN.Z1_23'),
+                  au_t('BAUSTEIN.Z1_24'),
+                  au_t('BAUSTEIN.Z1_25'),
+                  au_t('BAUSTEIN.Z1_26'),
+                  au_t('BAUSTEIN.Z1_27'),
+                  au_t('BAUSTEIN.Z1_28'),
+                  au_t('BAUSTEIN.Z1_29'),
+                  au_t('BAUSTEIN.Z1_30'),
+                  au_t('BAUSTEIN.Z1_31'),
+                  au_t('BAUSTEIN.Z1_32'),
+                  au_t('BAUSTEIN.Z1_33')),
+              'hinweise' => array(
+                  au_t('BAUSTEIN.S1_H1'),
+                  au_t('BAUSTEIN.S1_H2'),
+                  au_t('BAUSTEIN.S1_H3'),
+                  au_t('BAUSTEIN.S1_H4'),
+                  au_t('BAUSTEIN.S1_H5'),
+                  au_t('BAUSTEIN.S1_H6'),
+                  sprintf(au_t('BAUSTEIN.S1_H7'), au_t('LOX.K_TOKEN_LESEN')))),
+        array('kopf' => 'AudiConnect Laden', 'bild' => 'einbindung_loxone_laden.png',
+              'schritte' => array(
+                  sprintf(au_t('BAUSTEIN.S2_SCHRITT1'), au_t('REITER.EINSTELLUNGEN'), au_t('EINST.H_GERECHNET'), au_t('EINST.L_LADEEMPF_EIN')),
+                  sprintf(au_t('BAUSTEIN.S2_SCHRITT2'), au_t('REITER.EINSTELLUNGEN'), au_t('EINST.L_STEUERUNG_EIN'), au_t('EINST.L_GEFAHR_EIN'), au_t('REITER.LOXONE')),
+                  au_t('BAUSTEIN.S2_SCHRITT3'),
+                  au_t('BAUSTEIN.S2_SCHRITT4'),
+                  au_t('BAUSTEIN.S2_SCHRITT5'),
+                  au_t('BAUSTEIN.S2_SCHRITT6')),
+              'zeilen' => array(
+                  au_t('BAUSTEIN.Z2_01'),
+                  au_t('BAUSTEIN.Z2_02'),
+                  au_t('BAUSTEIN.Z2_03'),
+                  au_t('BAUSTEIN.Z2_04'),
+                  au_t('BAUSTEIN.Z2_05'),
+                  au_t('BAUSTEIN.Z2_06'),
+                  au_t('BAUSTEIN.Z2_07'),
+                  au_t('BAUSTEIN.Z2_08'),
+                  au_t('BAUSTEIN.Z2_09'),
+                  au_t('BAUSTEIN.Z2_10'),
+                  au_t('BAUSTEIN.Z2_11'),
+                  au_t('BAUSTEIN.Z2_12'),
+                  au_t('BAUSTEIN.Z2_13'),
+                  au_t('BAUSTEIN.Z2_14'),
+                  au_t('BAUSTEIN.Z2_15'),
+                  au_t('BAUSTEIN.Z2_16'),
+                  au_t('BAUSTEIN.Z2_17'),
+                  au_t('BAUSTEIN.Z2_18'),
+                  au_t('BAUSTEIN.Z2_19'),
+                  au_t('BAUSTEIN.Z2_20'),
+                  au_t('BAUSTEIN.Z2_21'),
+                  au_t('BAUSTEIN.Z2_22'),
+                  au_t('BAUSTEIN.Z2_23'),
+                  au_t('BAUSTEIN.Z2_24'),
+                  au_t('BAUSTEIN.Z2_25'),
+                  au_t('BAUSTEIN.Z2_26'),
+                  au_t('BAUSTEIN.Z2_27'),
+                  au_t('BAUSTEIN.Z2_28'),
+                  au_t('BAUSTEIN.Z2_29'),
+                  au_t('BAUSTEIN.Z2_30'),
+                  au_t('BAUSTEIN.Z2_31'),
+                  au_t('BAUSTEIN.Z2_32'),
+                  au_t('BAUSTEIN.Z2_33'),
+                  au_t('BAUSTEIN.Z2_34'),
+                  au_t('BAUSTEIN.Z2_35'),
+                  au_t('BAUSTEIN.Z2_36')),
+              'hinweise' => array(
+                  au_t('BAUSTEIN.S2_H1'),
+                  au_t('BAUSTEIN.S2_H2'),
+                  au_t('BAUSTEIN.S2_H3'),
+                  au_t('BAUSTEIN.S2_H4'),
+                  au_t('BAUSTEIN.S2_H5'),
+                  au_t('BAUSTEIN.S2_H6'))),
+        array('kopf' => 'AudiConnect Klima und Befehle', 'bild' => 'einbindung_loxone_klima_befehle.png',
+              'schritte' => array(
+                  sprintf(au_t('BAUSTEIN.S3_SCHRITT1'), au_t('EINST.L_STEUERUNG_EIN')),
+                  au_t('BAUSTEIN.S3_SCHRITT2'),
+                  au_t('BAUSTEIN.S3_SCHRITT3'),
+                  au_t('BAUSTEIN.S3_SCHRITT4'),
+                  au_t('BAUSTEIN.S3_SCHRITT5')),
+              'zeilen' => array(
+                  au_t('BAUSTEIN.Z3_01'),
+                  au_t('BAUSTEIN.Z3_02'),
+                  au_t('BAUSTEIN.Z3_03'),
+                  au_t('BAUSTEIN.Z3_04'),
+                  au_t('BAUSTEIN.Z3_05'),
+                  au_t('BAUSTEIN.Z3_06'),
+                  au_t('BAUSTEIN.Z3_07'),
+                  au_t('BAUSTEIN.Z3_08'),
+                  au_t('BAUSTEIN.Z3_09'),
+                  au_t('BAUSTEIN.Z3_10'),
+                  au_t('BAUSTEIN.Z3_11'),
+                  au_t('BAUSTEIN.Z3_12'),
+                  au_t('BAUSTEIN.Z3_13'),
+                  au_t('BAUSTEIN.Z3_14'),
+                  au_t('BAUSTEIN.Z3_15'),
+                  au_t('BAUSTEIN.Z3_16'),
+                  au_t('BAUSTEIN.Z3_17'),
+                  au_t('BAUSTEIN.Z3_18'),
+                  au_t('BAUSTEIN.Z3_19'),
+                  au_t('BAUSTEIN.Z3_20'),
+                  au_t('BAUSTEIN.Z3_21'),
+                  au_t('BAUSTEIN.Z3_22'),
+                  au_t('BAUSTEIN.Z3_23'),
+                  au_t('BAUSTEIN.Z3_24'),
+                  au_t('BAUSTEIN.Z3_25'),
+                  au_t('BAUSTEIN.Z3_26'),
+                  au_t('BAUSTEIN.Z3_27'),
+                  au_t('BAUSTEIN.Z3_28'),
+                  au_t('BAUSTEIN.Z3_29'),
+                  au_t('BAUSTEIN.Z3_30'),
+                  au_t('BAUSTEIN.Z3_31'),
+                  au_t('BAUSTEIN.Z3_32'),
+                  au_t('BAUSTEIN.Z3_33')),
+              'hinweise' => array(
+                  au_t('BAUSTEIN.S3_H1'),
+                  au_t('BAUSTEIN.S3_H2'),
+                  sprintf(au_t('BAUSTEIN.S3_H3'), au_t('EINST.L_ABFAHRT_EIN')),
+                  au_t('BAUSTEIN.S3_H4'),
+                  au_t('BAUSTEIN.S3_H5'),
+                  sprintf(au_t('BAUSTEIN.S3_H6'), au_t('EINST.L_GEFAHR_EIN')),
+                  au_t('BAUSTEIN.S3_H7'))),
+        array('kopf' => 'AudiConnect Fahrzeug', 'bild' => 'einbindung_loxone_fahrzeug.png',
+              'schritte' => array(
+                  sprintf(au_t('BAUSTEIN.S4_SCHRITT1'), au_t('REITER.EINSTELLUNGEN'), au_t('EINST.L_GPS_EIN')),
+                  au_t('BAUSTEIN.S4_SCHRITT2'),
+                  au_t('BAUSTEIN.S4_SCHRITT3'),
+                  au_t('BAUSTEIN.S4_SCHRITT4'),
+                  au_t('BAUSTEIN.S4_SCHRITT5')),
+              'zeilen' => array(
+                  au_t('BAUSTEIN.Z4_01'),
+                  au_t('BAUSTEIN.Z4_02'),
+                  au_t('BAUSTEIN.Z4_03'),
+                  au_t('BAUSTEIN.Z4_04'),
+                  au_t('BAUSTEIN.Z4_05'),
+                  au_t('BAUSTEIN.Z4_06'),
+                  au_t('BAUSTEIN.Z4_07'),
+                  au_t('BAUSTEIN.Z4_08'),
+                  au_t('BAUSTEIN.Z4_09'),
+                  au_t('BAUSTEIN.Z4_10'),
+                  au_t('BAUSTEIN.Z4_11'),
+                  au_t('BAUSTEIN.Z4_12'),
+                  au_t('BAUSTEIN.Z4_13'),
+                  au_t('BAUSTEIN.Z4_14'),
+                  au_t('BAUSTEIN.Z4_15'),
+                  au_t('BAUSTEIN.Z4_16'),
+                  au_t('BAUSTEIN.Z4_17'),
+                  au_t('BAUSTEIN.Z4_18'),
+                  au_t('BAUSTEIN.Z4_19'),
+                  au_t('BAUSTEIN.Z4_20'),
+                  au_t('BAUSTEIN.Z4_21'),
+                  au_t('BAUSTEIN.Z4_22'),
+                  au_t('BAUSTEIN.Z4_23'),
+                  au_t('BAUSTEIN.Z4_24'),
+                  au_t('BAUSTEIN.Z4_25'),
+                  au_t('BAUSTEIN.Z4_26'),
+                  au_t('BAUSTEIN.Z4_27'),
+                  au_t('BAUSTEIN.Z4_28'),
+                  au_t('BAUSTEIN.Z4_29'),
+                  au_t('BAUSTEIN.Z4_30'),
+                  au_t('BAUSTEIN.Z4_31'),
+                  au_t('BAUSTEIN.Z4_32'),
+                  au_t('BAUSTEIN.Z4_33'),
+                  au_t('BAUSTEIN.Z4_34'),
+                  au_t('BAUSTEIN.Z4_35')),
+              'hinweise' => array(
+                  au_t('BAUSTEIN.S4_H1'),
+                  au_t('BAUSTEIN.S4_H2'),
+                  au_t('BAUSTEIN.S4_H3'),
+                  sprintf(au_t('BAUSTEIN.S4_H4'), au_t('EINST.L_GPS_EIN')),
+                  sprintf(au_t('BAUSTEIN.S4_H5'), au_t('EINST.L_TAKT_WARTUNG')),
+                  au_t('BAUSTEIN.S4_H6'))),
     );
+}
+
+/**
+ * Ein Text der Baustein-Seiten fuer die Ausgabe: die Namen der Vorlagen (Behaelter "Audi 1 ...", Befehle AUDI_1_... und "AUDI 1 ...", "Fahrzeug 1") auf das
+ * gezeigte Fahrzeug gerechnet - wie die Vorlagen-Knoepfe je Fahrzeug (Entwurf Welle 17 au, Abschnitt 4: die
+ * Nummer wird gerechnet, nicht abgeschrieben). Das Musterprojekt zeigt Fahrzeug 1.
+ */
+function au_bs_text($s, $nr)
+{
+    $s = (string) $s;
+    $nr = (int) $nr;
+    if ($nr === 1) {
+        return $s;
+    }
+    return str_replace(array('AUDI_1_', 'AUDI 1 ', 'Audi 1 ', 'Fahrzeug 1', 'vehicle 1'),
+                       array('AUDI_' . $nr . '_', 'AUDI ' . $nr . ' ', 'Audi ' . $nr . ' ', 'Fahrzeug ' . $nr,
+                             'vehicle ' . $nr), $s);
+}
+
+// Gezeigt wird das Fahrzeug mit der kleinsten Nummer (ohne Fahrzeug: 1, wie das Musterprojekt).
+$au_bnr = 1;
+if ($au_fahrzeuge) {
+    $au_bnr = max(1, min(99, (int) min(array_map('intval', array_keys($au_fahrzeuge)))));
 }
 ?>
 
 <div class="sm-step"><b><?= au_e(au_t('LOX.S8_TITEL')) ?></b><br>
 <?= au_t('LOX.S8_TEXT') ?>
+<?php foreach (au_bausteinseiten() as $au_bs) { ?>
+<h4 class="sm-h4"><?= au_e($au_bs['kopf']) ?></h4>
+<div class="sm-hinweis"><b><?= au_e(au_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($au_bs['schritte'] as $au_bx) { ?>
+<li><?= au_e(au_bs_text($au_bx, $au_bnr)) ?></li>
+<?php } ?>
+</ol></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?= au_e(au_t('LOX.T_BAUSTEIN')) ?></th><th><?= au_e(au_t('LOX.T_NAMENSVORSCHLAG')) ?></th>
     <th><?= au_e(au_t('LOX.T_PARAMETER')) ?></th><th><?= au_e(au_t('LOX.T_EINGAENGE')) ?></th></tr>
-<?php foreach (au_bausteine() as $au_b) { ?>
-<tr><td><?= (int) $au_b[0] ?></td><td><?= au_t($au_b[1]) ?></td><td><?= au_t($au_b[2]) ?></td>
-    <td><?= $au_b[3] !== '' ? au_t($au_b[3]) : '&mdash;' ?></td><td><?= $au_b[4] ?></td></tr>
+<?php foreach ($au_bs['zeilen'] as $au_i => $au_bz) {
+    /* Jede Zeile traegt ihre Prozentzeichen verdoppelt (%%); sprintf() ohne Argumente macht daraus eines
+     * (einheitliche Form der Auto-Linien, Welle Bild 17). */
+    $au_c = array_pad(explode(' | ', au_bs_text(sprintf($au_bz), $au_bnr), 4), 4, ''); ?>
+<tr><td><?= (int) $au_i + 1 ?></td><td><?= au_e($au_c[0]) ?></td><td><?= au_e($au_c[1]) ?></td>
+    <td><?= au_e($au_c[2]) ?></td><td><?= au_e($au_c[3]) ?></td></tr>
 <?php } ?>
 </table>
-<?= au_t('LOX.S8_ERLAEUTERUNG') ?>
+<div class="sm-warnung"><b><?= au_e(au_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($au_bs['hinweise'] as $au_bx) { ?>
+<li><?= au_e(au_bs_text($au_bx, $au_bnr)) ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= au_e($au_bs['bild']) ?>" alt="<?= au_e(au_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= au_e(sprintf(au_t('LOX.BILD_UNTERSCHRIFT'), $au_bs['kopf'])) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= au_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= au_e(au_t('LOX.S9_TITEL')) ?></b><br>

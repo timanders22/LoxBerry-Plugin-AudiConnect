@@ -1289,8 +1289,12 @@ function au_befehle()
     return array(
         'abruf'          => array('bez' => 'BEFEHL.ABRUF',       'zusatz' => '',
                                   'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 1),
+        /* Welle Bild 17 (0.9.28, Entwurf Welle 17 au, O2): klima_start ohne Gegenbefehl. Die Klimatisierung
+         * ist ein Analogbefehl (temp=<v.1>); der Ruhewert einer Formel (-1) und die Frage, ob Config beim Wert
+         * 0 den Aus-Befehl schickt, machen einen gemeinsamen Ausgang unklar. klima_stop steht dadurch als
+         * eigener Befehl 'AUDI n Klimatisierung aus' in der Vorlage. Endpunkt und Dienst unveraendert. */
         'klima_start'    => array('bez' => 'BEFEHL.KLIMA',       'zusatz' => 'temp',
-                                  'gefahr' => 0, 'gegen' => 'klima_stop', 'ohne_fz' => 0),
+                                  'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
         'klima_stop'     => array('bez' => 'BEFEHL.KLIMA_AUS',   'zusatz' => '',
                                   'gefahr' => 0, 'gegen' => '', 'ohne_fz' => 0),
         'zieltemperatur' => array('bez' => 'BEFEHL.ZIELTEMP',    'zusatz' => 'temp',
@@ -2591,6 +2595,40 @@ function au_vorlage($nummer = 1, $art = 'status')
 }
 
 /**
+ * Feste deutsche Titel der Ausgangsvorlage (Welle Bild 17, 0.9.28; Entwurf Welle 17 au, E14; Sprachregel
+ * 13.10.2026, Regeln/07). Bis 0.9.27 kam der Titel ueber au_t() aus der Sprachdatei: eine englische Oberflaeche
+ * legte "AUDI 1 Climatisation" an, Baustein-Liste, Bild und Musterprojekt passten dann nicht mehr. Die Werte sind
+ * die deutschen [BEFEHL]/[EINSTELLUNG]-Texte (im Bauskript gegen die Sprachdatei geprueft); nur der Kommentar
+ * (Comment) bleibt uebersetzt. Ein unbekannter Schluessel faellt auf den Text der Oberflaeche zurueck.
+ */
+function au_vo_titel($bez)
+{
+    $titel = array(
+        'BEFEHL.ABRUF' => 'Sofortabruf',
+        'BEFEHL.KLIMA' => 'Klimatisierung',
+        'BEFEHL.KLIMA_AUS' => 'Klimatisierung aus',
+        'BEFEHL.ZIELTEMP' => 'Zieltemperatur',
+        'BEFEHL.LADEN' => 'Laden',
+        'BEFEHL.LADEGRENZE' => 'Ladegrenze',
+        'BEFEHL.LADESTROM' => 'Ladestrom',
+        'BEFEHL.SCHEIBE' => 'Scheibenheizung',
+        'BEFEHL.WECKEN' => 'Fahrzeug wecken',
+        'BEFEHL.VERRIEGELN' => 'Verriegeln',
+        'BEFEHL.HUPE' => 'Hupe und Lichthupe',
+        'BEFEHL.LICHTHUPE' => 'Lichthupe',
+        'EINSTELLUNG.STECKER_AUTO' => 'Stecker nach dem Laden entriegeln',
+        'EINSTELLUNG.KLIMA_UNLOCK' => 'Klimatisierung beim Entriegeln beenden',
+        'EINSTELLUNG.SCHEIBE_DAUER' => 'Scheibenheizung bei jeder Klimatisierung',
+        'EINSTELLUNG.KLIMA_OHNE_STROM' => 'Klimatisieren ohne Netzanschluss erlauben',
+        'EINSTELLUNG.ZONE_VL' => 'Klimazone vorne links',
+        'EINSTELLUNG.ZONE_VR' => 'Klimazone vorne rechts',
+        'EINSTELLUNG.ZONE_HL' => 'Klimazone hinten links',
+        'EINSTELLUNG.ZONE_HR' => 'Klimazone hinten rechts',
+    );
+    return isset($titel[$bez]) ? $titel[$bez] : au_klartext(au_t($bez));
+}
+
+/**
  * Vorlage fuer den virtuellen AUSGANG - alle Schaltbefehle.
  *
  * Die eingreifenden Befehle (Ver-/Entriegeln, Hupe) kommen nur mit hinein,
@@ -2605,6 +2643,11 @@ function au_vorlage_vo($nummer = 1)
     $token = au_token('schalten');
     $basis = '/plugins/' . $p['plugin'] . '/index.php?token=' . $token;
     $fz = '&fahrzeug=' . (int) $nummer;
+    /* Welle Bild 17 (0.9.28, Entwurf Welle 17 au, E14): Wertformat wie Regeln/07 ("Loxone schickt blanke
+     * Analogwerte ueber <v.0>") - die Temperatur mit einer Nachkommastelle (das Endpunktmuster nimmt 21 und
+     * 21.5), Ladegrenze und Ladestrom ganzzahlig. Bis 0.9.27 stand dort <v>; was Config dafuer sendet, ist
+     * nicht gemessen, "21.50" wiese der Endpunkt mit HTTP 400 ab. */
+    $format = array('temp' => '<v.1>', 'prozent' => '<v.0>', 'ampere' => '<v.0>');
     $cmds = array();
     foreach (au_befehle() as $aktion => $eig) {
         if ($eig['gefahr'] && empty($cfg['gefahr_ein'])) {
@@ -2614,34 +2657,30 @@ function au_vorlage_vo($nummer = 1)
             continue;   // eigene Zeilen weiter unten
         }
         // Ein Zustand gehoert an EINEN Ausgang mit Ein- und Ausbefehl, nicht
-        // an zwei Ausgaenge. Klima ein/aus ist genau so ein Fall.
+        // an zwei Ausgaenge (Laden, Scheibenheizung). Die Klimatisierung ist
+        // seit 0.9.28 keiner mehr: siehe au_befehle(), klima_start.
         $gegen = (string) $eig['gegen'];
         if ($gegen === '' && au_ist_gegenstueck($aktion)) {
             continue;   // steht als Ausbefehl an seinem Partner
         }
-        $titel = 'AUDI ' . (int) $nummer . ' ' . au_klartext(au_t($eig['bez']));
         $ziel = $basis . '&aktion=' . $aktion . ($eig['ohne_fz'] ? '' : $fz);
-        if ($eig['zusatz'] === 'temp') {
-            $ziel .= '&temp=<v>';
-        } elseif ($eig['zusatz'] === 'prozent') {
-            $ziel .= '&prozent=<v>';
-        } elseif ($eig['zusatz'] === 'ampere') {
-            $ziel .= '&ampere=<v>';
+        if (isset($format[$eig['zusatz']])) {
+            $ziel .= '&' . $eig['zusatz'] . '=' . $format[$eig['zusatz']];
         }
         $cmds[] = array(
-            'title'   => $titel,
-            'comment' => 'AUDI_' . (int) $nummer . '_' . strtoupper($aktion),
+            'title'   => 'AUDI ' . (int) $nummer . ' ' . au_vo_titel($eig['bez']),
+            'comment' => au_klartext(au_t($eig['bez'])),
             'on'      => $ziel,
             'off'     => $gegen === '' ? ''
                          : $basis . '&aktion=' . $gegen . ($eig['ohne_fz'] ? '' : $fz),
-            'analog'  => in_array($eig['zusatz'], array('temp', 'prozent', 'ampere'), true) ? 1 : 0,
+            'analog'  => isset($format[$eig['zusatz']]) ? 1 : 0,
         );
     }
     // Die Ja/Nein-Einstellungen: je eine Zeile mit Ein- und Ausbefehl.
     foreach (au_einstellungen() as $name => $bez) {
         $cmds[] = array(
-            'title'   => 'AUDI ' . (int) $nummer . ' ' . au_klartext(au_t($bez)),
-            'comment' => 'AUDI_' . (int) $nummer . '_' . strtoupper($name),
+            'title'   => 'AUDI ' . (int) $nummer . ' ' . au_vo_titel($bez),
+            'comment' => au_klartext(au_t($bez)),
             'on'      => $basis . '&aktion=einstellung' . $fz . '&name=' . $name . '&wert=1',
             'off'     => $basis . '&aktion=einstellung' . $fz . '&name=' . $name . '&wert=0',
             'analog'  => 0,

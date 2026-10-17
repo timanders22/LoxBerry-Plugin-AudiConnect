@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.28 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,37 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.28
+
+Einbindung in Loxone in Vollausstattung: vier Seiten aus dem gemeinsamen Musterprojekt mit vier Bildern und
+Schritt-für-Schritt-Anleitung; die Ausgangsvorlage hat feste deutsche Titel, `<v.1>`/`<v.0>` und einen eigenen
+Befehl „Klimatisierung aus“.
+
+* **Reiter „Einbindung in Loxone“, Schritt 8:** Statt der bisherigen Liste mit 43 Zeilen stehen dort die vier
+  Seiten des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), je
+  mit Kasten „So übernehmen Sie diese Seite“, Tabelle, Hinweisen und Bild: „AudiConnect“ (33 Zeilen: Zustand mit
+  allen Fehlergründen, Störung über `OK` und eine Analogwertvalidierung am Alter, Ladestand oder Reichweite knapp,
+  Ladung beendet), „AudiConnect Laden“ (36: Ladewerte, Ladestörung, Ladegrenze, Ladestrom, Laden nach Empfehlung
+  oder von Hand), „AudiConnect Klima und Befehle“ (33: Klimatisierung mit Zieltemperatur, Vorklimatisieren
+  Mo–Fr nur bei Anwesenheit, Klima aus, Scheibenheizung, vier Einstellungen, Wecken, Sofortabruf) und „AudiConnect
+  Fahrzeug“ (35: Türen und Fenster, offen nur, wenn das Fahrzeug steht, Standort und Kilometer, Service fällig).
+* **Wer die alte Liste gebaut hat:** „Audi Klima ein“ (Impuls) traf die eigene Vorlage nicht – die Klimatisierung
+  ist ein Analogbefehl mit der Temperatur, ein Impuls 1 wurde als 1 °C abgewiesen. Die Schwellwertschalter für
+  Akku und Tank standen bei einem nie gelieferten Wert (0) dauerhaft ein, die echte Meldung kam dann nie; eine
+  Schwelle auf `ALTER` löst bei stehendem LoxBerry nie aus. Die neuen Seiten nehmen Formeln vor den
+  Schwellwertschaltern, Einschaltverzögerungen vor den Meldungen und die Analogwertvalidierung.
+* **Ausgangsvorlage (neu einlesen):** Titel fest deutsch, auch bei englischer Oberfläche („AUDI 1 Klimatisierung“,
+  nicht „AUDI 1 Climatisation“), der Kommentar ist die übersetzte Bezeichnung. Werte mit `temp=<v.1>`,
+  `prozent=<v.0>`, `ampere=<v.0>` statt `<v>`. „AUDI 1 Klimatisierung“ hat keinen Aus-Befehl mehr; dafür gibt es
+  den eigenen Befehl „AUDI 1 Klimatisierung aus“. Wer die Ausgangsvorlage schon eingelesen hat, holt sie neu
+  (oder legt „Klimatisierung aus“ mit `aktion=klima_stop&fahrzeug=1` von Hand an und stellt die Werte auf
+  `<v.1>`/`<v.0>` um). Die Eingangsvorlagen bleiben unverändert.
+* **Texte berichtigt:** Schritt 1 nennt HTTP als Weg des Musterprojekts (MQTT ist ab Werk aus), Schritt 4 die
+  Klartexte über das MQTT-Gateway (ein Virtueller Texteingang fragt nichts ab), Schritt 5 das Wertformat,
+  Schritt 7 die Ausfallerkennung über `OK` und die Analogwertvalidierung statt einer Schwelle auf `ALTER`.
+* Kein Verhalten des Dienstes oder des Endpunkts geändert. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät
+  angesehen; kein Audi im Haus.
 
 ## Neu in 0.9.27
 
@@ -854,6 +885,14 @@ wird beanstandet, solange ein Konto gespeichert ist — zum Entfernen gibt es de
 Knopf *Zugangsdaten löschen*. Für Passwort und S-PIN heißt ein leeres Feld
 weiterhin „unverändert“.
 
+## Einbindung in Loxone
+
+Der Reiter *Einbindung in Loxone* führt in neun Schritten durch die Einbindung über HTTP, mit den Vorlagen zum
+Einlesen und in Schritt 8 den **Baustein-Listen** der vier Seiten zum Nachbauen. Fertig verbunden stehen die
+Bausteine auf den Seiten „AudiConnect“, „AudiConnect Laden“, „AudiConnect Klima und Befehle“ und „AudiConnect
+Fahrzeug“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) –
+die ganze Projektdatei mit allen Plugin-Seiten und Vorlagen.
+
 ## Endpunkte für Loxone
 
 Lesende Aufrufe nehmen **beide** Token an, schaltende nur das Schalttoken.
@@ -866,7 +905,7 @@ Statt der laufenden Nummer darf überall auch die Fahrgestellnummer stehen
 | `?token=T&aktion=laden&fahrzeug=N` | Ladewerte, 20 Felder |
 | `?token=T&aktion=wartung&fahrzeug=N` | Inspektion, Ölservice, AdBlue |
 | `?token=T&aktion=position&fahrzeug=N` | Standort, Geofence, Anschrift in einer zweiten Zeile |
-| `?token=T&aktion=text&fahrzeug=N` | Klartexte für einen virtuellen Texteingang |
+| `?token=T&aktion=text&fahrzeug=N` | Klartexte zum Ansehen im Browser (in Loxone über MQTT, siehe Reiter Schritt 4) |
 | `?token=T&aktion=ladungen` | protokollierte Ladevorgänge |
 | `?token=T&aktion=fahrzeuge` | Liste der erkannten Fahrzeuge |
 | `?token=T&aktion=roh` | vollständiges Abbild als JSON |
