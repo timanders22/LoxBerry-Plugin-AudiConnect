@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.28 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.29 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,14 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.29
+
+* **Reiter „Einstellungen“, Tabelle „Erkannte Fahrzeuge“:** Modell, VIN und Antriebsart zeigen „vom Connector
+  nicht geliefert“, wenn sie im Abbild fehlen – wie schon Kennzeichen und Softwarestand. Die Felder füllt nur der
+  Stammdatenabruf; scheiterte er, warnte bis 0.9.28 jede Seite (PHP 7.4 Hinweis, 8.4 Warnung). Abgesichert sind
+  auch die Fahrzeugzeile über den Reitern (ohne Modell steht dort wie bisher „ohne Modellangabe“) und die Tabelle für
+  mehrere Fahrzeuge im Reiter „Einbindung in Loxone“.
 
 ## Neu in 0.9.28
 

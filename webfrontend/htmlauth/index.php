@@ -1068,7 +1068,7 @@ if ($au_rahmen) {
 
 <?php foreach ($au_fahrzeuge as $au_nr => $au_fz) { ?>
 <div class="sm-hinweis">
-<b><?= au_e($au_fz['modell'] ? $au_fz['modell'] : au_t('ALLG.OHNE_NAMEN')) ?></b>
+<b><?= au_e(!empty($au_fz['modell']) ? $au_fz['modell'] : au_t('ALLG.OHNE_NAMEN')) ?></b>
 (<?= au_e(au_t('ALLG.FAHRZEUG')) ?> <?= au_e($au_nr) ?>)
 &middot; <?= au_e(au_t('ALLG.SOC')) ?> <b><?= !isset($au_fz['soc']) || $au_fz['soc'] === null ? '&ndash;' : au_e($au_fz['soc']) . ' %' ?></b>
 &middot; <?= au_e(au_t('ALLG.REICHWEITE')) ?> <?= !isset($au_fz['reichweite_km']) || $au_fz['reichweite_km'] === null ? '&ndash;' : au_e($au_fz['reichweite_km']) . ' km' ?>
@@ -1437,10 +1437,10 @@ if ($au_rahmen) {
     <th><?= au_e(au_t('EINST.T_ANTRIEB')) ?></th><th><?= au_e(au_t('EINST.T_BATTERIE')) ?></th>
     <th><?= au_e(au_t('EINST.T_SOFTWARE')) ?></th></tr>
 <?php foreach ($au_fahrzeuge as $au_nr => $au_fz) { ?>
-<tr><td><?= au_e($au_nr) ?></td><td><?= au_e($au_fz['modell']) ?></td>
+<tr><td><?= au_e($au_nr) ?></td><td><?= empty($au_fz['modell']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['modell']) ?></td>
     <td><?= empty($au_fz['kennzeichen']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['kennzeichen']) ?></td>
-    <td><span class="sm-mono"><?= au_e($au_fz['vin']) ?></span></td>
-    <td><?= au_e($au_fz['antriebsart']) ?></td>
+    <td><?= empty($au_fz['vin']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : '<span class="sm-mono">' . au_e($au_fz['vin']) . '</span>' ?></td>
+    <td><?= empty($au_fz['antriebsart']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['antriebsart']) ?></td>
     <td><?= empty($au_fz['batterie_kwh']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['batterie_kwh']) . ' kWh' ?></td>
     <td><?= empty($au_fz['software']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['software']) ?></td></tr>
 <?php } ?>
@@ -1619,7 +1619,7 @@ foreach ($au_endpunkte as $au_art => $au_info) {
 <table class="sm-tbl">
 <tr><th><?= au_e(au_t('ALLG.FAHRZEUG')) ?></th><th><?= au_e(au_t('EINST.T_MODELL')) ?></th><th><?= au_e(au_t('LOX.T_ADRESSE')) ?></th></tr>
 <?php foreach ($au_fahrzeuge as $au_nr => $au_fz) { ?>
-<tr><td><?= au_e($au_nr) ?></td><td><?= au_e($au_fz['modell']) ?></td>
+<tr><td><?= au_e($au_nr) ?></td><td><?= empty($au_fz['modell']) ? '<span class="sm-leer">' . au_e(au_t('EINST.NICHT_GELIEFERT')) . '</span>' : au_e($au_fz['modell']) ?></td>
     <td><span class="sm-mono"><?= au_e($au_basis) ?>?token=<?= au_e($au_token) ?>&amp;aktion=status&amp;fahrzeug=<?= au_e($au_nr) ?></span></td></tr>
 <?php } ?>
 </table>
