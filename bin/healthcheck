@@ -1,0 +1,79 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Audi Connect - Anschluss an den LoxBerry-Healthcheck (seit 0.9.30, Gruppe 41, Nachtrag 29.10.2026)
+ *
+ * sbin/healthcheck.pl ruft eine ausfuehrbare Datei bin/healthcheck des Plugins auf - einmal mit "title", einmal
+ * mit "check" (Regeln/03 :73; direkt, die Shebang-Zeile entscheidet - Regeln/02 :691). Antworten sind JSON:
+ *   title -> {"desc":"Audi Connect"}
+ *   check -> {"desc", "status", "result", "url", "logfile"}; Status 0 unbekannt, 3 Fehler, 4 Warnung,
+ *            5 in Ordnung, 6 Hinweis. healthcheck.pl stellt das Ergebnis zusaetzlich retained nach MQTT
+ *            (<rechnername>/healthcheck/Audi Connect).
+ * Form von Renault NG 2.1.20: das Urteil steht in au_gesund_urteil() der Bibliothek, die Fakten sammelt
+ * au_gesund_fakten() - NUR LESEND: kein Netz, kein Broker, keine Anmeldung beim Hersteller, kein Protokoll,
+ * keine Datei. Geurteilt wird ueber das ALTER, nie ueber einen einzelnen Abruf (Regeln/04 :809):
+ *   - Zugangsdaten leer -> 6 "nicht eingerichtet" (eine Neuinstallation ist kein Fehler);
+ *   - Dienst bewusst angehalten (kein Sollmerker, kein Prozess) -> 6;
+ *   - Dienst soll laufen, es laeuft keiner -> 3 ("laeuft" = ein Prozess, dessen /proc/<pid>/cmdline das Skript
+ *     des Plugins ist; die PID-Datei allein genuegt nicht);
+ *   - Lebenszeichen aelter als max(10 min, 3 x Takt) -> 3;
+ *   - letzter gelungener Abruf aelter als max(15 min, 3 x Takt) -> 4, als max(1 h, 6 x Takt) -> 3; nach einem
+ *     Neustart zaehlt die Zeit seit dem Start;
+ *   - MQTT an, aber kein Gateway mit UDP-Eingang oder kein Autostart -> 4; der Dienst meldet keine Verbindung
+ *     zum Broker (Haus-Themen) -> 4; Gateway V2: Haken fehlen -> 4; Befehle ueber MQTT an, Bruecke steht -> 4.
+ * Der Text nennt keine Zugangsdaten, VIN, Kennzeichen oder Fahrzeugnamen.
+ * Bis 0.9.29 gab es die Datei nicht, und healthcheck.pl uebersprang das Plugin.
+ * Aufruf wie LoxBerry: direkt, als loxberry, Eingabe aus /dev/null. Der Installer setzt bin/ 755.
+ * Kompatibel mit PHP 7.4 und PHP 8.x.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+function au_hc_antwort(array $a)
+{
+    $j = json_encode($a, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    echo ($j !== false ? $j : '{"desc":"Audi Connect","status":0,"result":"unlesbar"}') . "\n";
+    exit(0);
+}
+
+$au_hc_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+if ($au_hc_was === 'title') {
+    au_hc_antwort(array('desc' => 'Audi Connect'));
+}
+
+/* Die Bibliothek: liegt diese Datei unter .../bin/plugins/<ordner>, ist sie installiert, sonst im Archiv. */
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $au_hc_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/au_lib.php';
+} else {
+    $au_hc_lib = dirname(__DIR__) . '/webfrontend/html/au_lib.php';
+}
+if (!is_file($au_hc_lib)) {
+    au_hc_antwort(array('desc' => 'Audi Connect', 'status' => 3,
+        'result' => 'au_lib.php nicht gefunden - das Plugin ist unvollstaendig installiert.'));
+}
+require_once $au_hc_lib;
+
+$au_hc_p = au_paths();
+if ($au_hc_p['home'] === '') {
+    /* Ohne LoxBerry-Wurzel wird nichts gelesen und nichts behauptet: 0 = unbekannt. */
+    au_hc_antwort(array('desc' => 'Audi Connect', 'status' => 0,
+        'result' => 'Kein LoxBerry-Wurzelverzeichnis gefunden (ausgepacktes Archiv oder Pruefordner) - nichts geprueft.'));
+}
+// Die Sprache des LoxBerry, wenn der Aufrufer keine setzt (nur gelesen) - fuer die Zeile "Gateway V2".
+if (!getenv('LBLANG')) {
+    $au_hc_gen = json_decode((string) @file_get_contents($au_hc_p['home'] . '/config/system/general.json'), true);
+    if (isset($au_hc_gen['Base']['Lang']) && is_string($au_hc_gen['Base']['Lang'])) {
+        putenv('LBLANG=' . $au_hc_gen['Base']['Lang']);
+    }
+}
+
+list($au_hc_status, $au_hc_text) = au_gesund_urteil(au_gesund_fakten(au_config(false)));
+
+au_hc_antwort(array(
+    'desc' => 'Audi Connect',
+    'status' => (int) $au_hc_status,
+    'result' => (string) $au_hc_text,
+    'url' => '/admin/plugins/' . $au_hc_p['plugin'] . '/index.php',
+    'logfile' => $au_hc_p['logdir'] . '/audi.log',
+));

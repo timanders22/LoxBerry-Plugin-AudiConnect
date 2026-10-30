@@ -196,6 +196,41 @@ fi
 chmod 600 "$PCONFIG/zugang.json"
 chmod 600 "$PCONFIG/audi.json"
 
+# ---------- endpunkt_ein beim Update (Gruppe 41, 0.9.30, Bauvorschrift G3) ----------
+# Neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke; dort ist der HTTP-Endpunkt ab Werk
+# aus (au_vorgaben()). Eine Anlage, die von einer Fassung vor 0.9.30 kommt, nutzt ihn vermutlich - fehlt
+# der Schluessel in der zurueckgespielten Konfiguration, wird er auf 1 gesetzt, in audi.json und in der
+# Zweitschrift. Ein vorhandener Wert bleibt (auch 0). Unteilbar (Nebendatei, Rechte vor dem Umbenennen).
+if [ "$UPGRADE" = 1 ] && command -v perl >/dev/null 2>&1; then
+    for f in "$PCONFIG/audi.json" "$BASE/config/plugins/$PFOLDER.backup.audi.json"; do
+        [ -s "$f" ] || continue
+        perl -MJSON::PP -e '
+            my $f = shift; local $/;
+            open my $fh, "<", $f or exit 1; my $r = <$fh>; close $fh;
+            my $d = eval { JSON::PP->new->decode($r) };
+            exit 1 unless ref $d eq "HASH";
+            exit 3 if exists $d->{endpunkt_ein};
+            $d->{endpunkt_ein} = 1;
+            my $mode = (stat $f)[2] & 07777;
+            my $t = "$f.g41.$$";
+            umask 077;
+            open my $o, ">", $t or exit 1;
+            (print $o JSON::PP->new->pretty->canonical->encode($d)) or exit 1;
+            close $o or exit 1;
+            chmod $mode, $t;
+            rename $t, $f or exit 1;
+            exit 0;
+        ' "$f"
+        case $? in
+            0) echo "<OK> $(basename "$f"): HTTP-Endpunkt bleibt eingeschaltet (endpunkt_ein = 1, Bestand)." ;;
+            3) ;;
+            *) echo "<INFO> $(basename "$f"): endpunkt_ein liess sich nicht ergaenzen - der Endpunkt ist aus,"
+               echo "<INFO> bis er im Reiter MQTT eingeschaltet wird." ;;
+        esac
+    done
+fi
+chmod 600 "$PCONFIG/audi.json" 2>/dev/null
+
 # ---------- Den Datenordner zurueckholen ----------
 #
 # NEU IN 0.9.12. Ein Upgrade raeumt data/plugins/<ordner>/ ab - nachgemessen
@@ -215,7 +250,10 @@ if [ "$UPGRADE" = 1 ] && [ -d "$RETTUNG" ]; then
     # nicht mehr am Datenordner allein.
     ERWARTET=0
     ANGEKOMMEN=0
-    for f in merker.json token.json; do
+    # ladung_mitschrift.json: offene Ladekosten-Mitschrift (Nachtrag 29.10.2026), wie in preupgrade.sh.
+    # pin_sperre.json, anmeldesperre.json, ansage_sperre.json: Nachtrag 3 (29.10.2026), wie in preupgrade.sh.
+    for f in merker.json token.json ladung_mitschrift.json pin_sperre.json anmeldesperre.json \
+             ansage_sperre.json; do
         if [ -f "$RETTUNG/$f" ]; then
             ERWARTET=1
             if [ -s "$PDATA/$f" ]; then

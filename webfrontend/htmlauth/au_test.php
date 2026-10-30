@@ -246,6 +246,34 @@ function au_pruefungen($oberflaeche = array())
         $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_PROBE'), au_t('TEST.A_PROBE_EIN'));
     }
 
+    /* Gruppe 41 (0.9.30): Gateway V2 (einheitliche Pruefzeile), Befehlsbruecke, HTTP-Endpunkt,
+     * Haus-Quellen und Vorklimatisierung. Grau (-1) heisst: nicht feststellbar oder bewusst aus. */
+    list($au_v2ok, $au_v2txt) = au_v2_haken_lage($cfg);
+    $zeilen[] = au_pruefzeile($au_v2ok === 2 ? -1 : (int) $au_v2ok, au_t('PRUEF.V2_FRAGE'), au_e($au_v2txt));
+    list($au_bbok, $au_bbtxt) = au_bruecke_lage();
+    $zeilen[] = au_pruefzeile($au_bbok === true ? 1 : ($au_bbok === null ? -1 : 0), au_t('BEFEHL.F_BRUECKE'), au_e($au_bbtxt));
+    if (!empty($cfg['befehle_mqtt_ein'])) {
+        // befehlsbruecke.php --pruefen (Einrichtung: Zuordnung, mosquitto_sub/_pub, Optionsdatei) - nur mit Haken.
+        list($au_prc, $au_pz) = au_bruecke_pruefen();
+        $au_pf = array_values(preg_grep('/^\[FEHL\]/', $au_pz));
+        $zeilen[] = au_pruefzeile($au_prc === 0 ? 1 : 0, au_t('BEFEHL.F_PRUEFEN'),
+            $au_prc === 0 ? au_t('BEFEHL.T_PRUEFEN_OK') : au_e(implode(' ', array_slice($au_pf, 0, 3))));
+    }
+    $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_HTTP_ENDPUNKT'),
+        !empty($cfg['endpunkt_ein']) ? au_t('TEST.A_ENDPUNKT_EIN') : au_t('TEST.A_ENDPUNKT_AUS'));
+    foreach (au_haus_pruefzeilen($cfg) as $au_hz) {
+        $zeilen[] = au_pruefzeile((int) $au_hz[1], au_e($au_hz[0]), au_e($au_hz[2]));
+    }
+    if (!empty($cfg['abfahrt_ein'])) {
+        $au_mk = au_json_lesen($p['datadir'] . '/merker.json');
+        $au_vnr = (string) max(1, (int) $cfg['abfahrt_fahrzeug']);
+        $au_vm = (isset($au_mk['vorklima'][$au_vnr]) && is_array($au_mk['vorklima'][$au_vnr])) ? $au_mk['vorklima'][$au_vnr] : array();
+        $zeilen[] = au_pruefzeile(-1, au_t('TEST.F_VORKLIMA'), isset($au_vm['kennung'])
+            ? au_e(sprintf(au_t('TEST.A_VORKLIMA'), $au_vnr, date('d.m. H:i', (int) $au_vm['kennung']),
+                isset($au_vm['versuche']) ? (int) $au_vm['versuche'] : 0, au_vorklima_wert($au_vm, time())))
+            : au_e(sprintf(au_t('TEST.A_VORKLIMA_KEINE'), $au_vnr)));
+    }
+
     /* Drosselung: hier steht, was gerade gilt - und wie viele Befehle in der
      * letzten Stunde wirklich hinausgingen. Ohne diese Zahl merkt niemand,
      * dass ein Baustein in Loxone flattert, bevor Audi das Konto sperrt. */

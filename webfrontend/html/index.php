@@ -53,6 +53,11 @@
  * wecken, hupe, lichthupe, spin_pruefen; ladestrom bremst der Dienst. Laesst
  * sich der Merker nicht fuehren: HTTP 503, GRUND=BREMSE_MERKER.
  *
+ * SEIT 0.9.30 (Gruppe 41): abschaltbar ueber endpunkt_ein (Reiter MQTT; neu ab Werk aus, beim Update an) -
+ * ausgeschaltet antwortet jeder Aufruf nach der Tokenpruefung mit 403 GRUND=ENDPUNKT_AUS. Die Pruefungen der
+ * schaltenden Aktionen stehen in au_befehl_annehmen() (au_lib.php), derselben Funktion wie fuer die
+ * Befehlsbruecke (bin/befehle_zuordnung.php); Antworten und HTTP-Codes sind unveraendert.
+ *
  * Der Endpunkt spricht NIE selbst mit der Audi-Schnittstelle. Lesende Aktionen
  * beantwortet er aus dem Zwischenspeicher, schaltende legt er in einer
  * Warteschlange ab, die der Dienst abarbeitet.
@@ -154,6 +159,21 @@ if (!$au_passt) {
     } else {
         echo "FEHLER;OK=0;GRUND=TOKEN\n";
     }
+    exit;
+}
+
+/* ---------------- endpunkt_ein (Gruppe 41, 0.9.30; Hausform MGiSmart 1.1.28 E-E1 A) ----------------
+ * Neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke; dieser Endpunkt ist dort ab Werk
+ * aus. Beim Update setzt postinstall.sh den Haken auf 1, wenn er in der Konfiguration fehlt - wer die
+ * HTTP-Vorlagen nutzt, merkt nichts. Ausgeschaltet antwortet JEDER Aufruf nach der Tokenpruefung mit
+ * 403 (lesend und schaltend): die Linie hat keinen Selbsttest-Aufruf, der offen bleiben muesste. Die
+ * Tokenpruefung steht davor, damit ein Fremder nicht erfaehrt, ob der Weg an ist. */
+if (empty($au_cfg['endpunkt_ein'])) {
+    au_endpunkt_abweisung('ENDPUNKT_AUS', $au_aktion);
+    http_response_code(403);
+    echo "FEHLER;OK=0;GRUND=ENDPUNKT_AUS\n";
+    echo "Der HTTP-Endpunkt ist ausgeschaltet (Reiter MQTT, Haken 'HTTP-Endpunkt fuer Loxone'). "
+       . "Neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke.\n";
     exit;
 }
 
@@ -439,127 +459,28 @@ if ($au_aktion === 'text') {
 
 /* ================= Schaltende Aktionen ================= */
 
-$au_eig = au_befehle();
-$au_eig = $au_eig[$au_aktion];
-
-if ($au_aktion !== 'abruf' && empty($au_cfg['steuerung_ein'])) {
-    au_endpunkt_abweisung('STEUERUNG_AUS', $au_aktion);
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
-    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
+/* Gruppe 41 (0.9.30): die Pruefungen stehen seit 0.9.30 in au_befehl_annehmen() (au_lib.php) - DERSELBEN
+ * Funktion, die die Befehlsbruecke (bin/befehle_zuordnung.php) ruft. Reihenfolge, Antwortzeilen und
+ * HTTP-Codes sind dieselben wie bis 0.9.29 (dort inline): Steuerung, zweiter Haken, Dienst, Zusatzwerte,
+ * Befehlsbremse X-7 (siehe Kopf), Warteschlange mit Warten auf den Dienst. */
+$au_erg = au_befehl_annehmen($au_aktion, array('temp' => $au_temp, 'prozent' => $au_prozent,
+    'ampere' => $au_ampere, 'dauer' => $au_dauer, 'name' => $au_name, 'wert' => $au_wert,
+    'probe' => $au_probe), $au_fahrzeug, 'http');
+if ($au_erg['art'] === 'abgewiesen') {
+    http_response_code((int) $au_erg['http']);
+    if (isset($au_erg['kopf'])) {
+        echo $au_erg['kopf'] . "\n";
+        exit;
+    }
+    echo 'SET;OK=0;GRUND=' . $au_erg['grund'] . "\n";
+    echo $au_erg['text'] . "\n";
     exit;
 }
-if ($au_eig['gefahr'] && empty($au_cfg['gefahr_ein'])) {
-    /* Der ZWEITE Haken. Ver- und Entriegeln, Hupe und Lichthupe wirken auf ein
-     * Fahrzeug, das im oeffentlichen Raum steht - ein versehentliches
-     * Entriegeln laesst es offen stehen, ohne dass es jemand merkt. Sie
-     * haengen deshalb nicht am allgemeinen Steuerungshaken. */
-    au_endpunkt_abweisung('EINGRIFF_GESPERRT', $au_aktion);
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=EINGRIFF_GESPERRT\n";
-    echo "Dieser Befehl greift in ein Fahrzeug ein, das im oeffentlichen Raum steht. "
-       . "Reiter Einstellungen, zweiter Haken 'Eingreifende Befehle zulassen'.\n";
+if ($au_erg['art'] === 'unveraendert') {
+    printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;MELDUNG=%s\n", $au_aktion, au_sauber($au_erg['text']));
     exit;
 }
-if (au_dienst_pid() === 0) {
-    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts,
-    // und der Befehl laege bis zum naechsten Start in der Warteschlange.
-    au_endpunkt_abweisung('DIENST_LAEUFT_NICHT', $au_aktion);
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
-$au_befehl = array('aktion' => $au_aktion);
-if (!$au_eig['ohne_fz']) {
-    $au_befehl['fahrzeug'] = $au_fahrzeug;
-}
-if ($au_probe === '1') {
-    $au_befehl['probe'] = 1;
-}
-
-if ($au_eig['zusatz'] === 'temp') {
-    if ($au_temp === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=TEMP_FEHLT\n";
-        echo "Der Parameter temp fehlt (Zieltemperatur in Grad Celsius).\n";
-        exit;
-    }
-    $au_befehl['temp'] = str_replace(',', '.', $au_temp);
-} elseif ($au_eig['zusatz'] === 'prozent') {
-    if ($au_prozent === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=PROZENT_FEHLT\n";
-        echo "Der Parameter prozent fehlt (Ladegrenze, 10 bis 100).\n";
-        exit;
-    }
-    $au_befehl['prozent'] = (int) $au_prozent;
-} elseif ($au_eig['zusatz'] === 'ampere') {
-    if ($au_ampere === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=AMPERE_FEHLT\n";
-        echo "Der Parameter ampere fehlt (zulaessig: 5, 6, 10, 13, 16 oder 32).\n";
-        exit;
-    }
-    $au_befehl['ampere'] = (int) $au_ampere;
-} elseif ($au_eig['zusatz'] === 'dauer') {
-    if ($au_dauer !== '') {
-        $au_befehl['dauer'] = (int) $au_dauer;
-    }
-} elseif ($au_eig['zusatz'] === 'einstellung') {
-    $au_bekannt = au_einstellungen();
-    if ($au_name === '' || !isset($au_bekannt[$au_name])) {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=NAME_FEHLT\n";
-        echo 'Der Parameter name fehlt oder ist unbekannt. Bekannt sind: '
-           . implode(', ', array_keys($au_bekannt)) . "\n";
-        exit;
-    }
-    if ($au_wert === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=WERT_FEHLT\n";
-        echo "Der Parameter wert fehlt (0 oder 1).\n";
-        exit;
-    }
-    $au_befehl['name'] = $au_name;
-    $au_befehl['wert'] = $au_wert;
-}
-
-/* X-7 (B-Nachzug 01.10.2026): Befehlsbremse fuer Sollwerte, siehe Kopf und
- * au_lib.php. Erst hier, hinter allen Wachen und Parameterpruefungen: ein
- * abgewiesener Aufruf merkt nichts. */
-$au_bgr = au_bremse_gruppe($au_aktion, $au_befehl);
-$au_bschl = '';
-$au_bmarke = '';
-if ($au_bgr !== null) {
-    $au_trocken = ($au_probe === '1' || !empty($au_cfg['probe_ein']));
-    $au_bschl = au_bremse_fz($au_f, $au_fahrzeug) . '|' . $au_bgr[0];
-    list($au_burteil, $au_bseit, $au_bmarke) = au_bremse_pruefen($au_bschl, $au_bgr[1], $au_trocken);
-    if ($au_burteil === 'MERKER') {
-        au_endpunkt_abweisung('BREMSE_MERKER', $au_aktion);
-        http_response_code(503);
-        echo "SET;OK=0;GRUND=BREMSE_MERKER\n";
-        echo "Die Merkerdatei der Befehlsbremse laesst sich nicht oeffnen oder schreiben - "
-           . "Sollwert-Befehle werden abgewiesen, bis das behoben ist. Pruefen: Platz und "
-           . "Eigentuemer (loxberry) des Datenordners des Plugins.\n";
-        exit;
-    }
-    if ($au_burteil === 'UNVERAENDERT') {
-        printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;MELDUNG=%s\n", $au_aktion,
-               au_sauber('Derselbe Befehl ging vor ' . (int) $au_bseit . ' s hinaus - es wurde '
-                   . 'nichts gesendet. Gleiche Sollwerte innerhalb von ' . AU_BREMSE_GLEICH_S
-                   . ' s gehen nur einmal an Audi.'));
-        exit;
-    }
-}
-
-list($au_erg, $au_meldung) = au_befehl_absetzen($au_befehl);
-if ($au_bmarke !== '' && (int) $au_erg === 0) {
-    // Abgelehnt: nicht gemerkt, der naechste gleiche Befehl geht hinaus.
-    au_bremse_vergessen($au_bschl, $au_bmarke);
-}
-if ($au_erg === 0) {
+if ((int) $au_erg['ok'] === 0) {
     http_response_code(500);
 }
-printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $au_erg, $au_aktion, au_sauber($au_meldung));
+printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", (int) $au_erg['ok'], $au_aktion, au_sauber($au_erg['text']));

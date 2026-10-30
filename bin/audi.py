@@ -300,6 +300,26 @@ VORGABEN = {
     "ladeempf_grenze": 0,
     "ladeempf_unter": 1,
     "ladeempf_alter": 900,
+    # --- Gruppe 41 (0.9.30): Hausform - dieselben Werte wie in au_vorgaben(), alles ab Werk aus ---
+    # Zweite Quelle der Ladeempfehlung: "thema" (wie bisher) oder "haus" (haus/strompreis/aktuell).
+    "ladeempf_quelle": "thema",
+    # Haus-Themen (Regeln/07 Nr. 15) ueber die Dauerverbindung des Horchers.
+    "haus_abfahrt_ein": 0,
+    "vorklima_anwesend_ein": 0,
+    "vorklima_wetter_ein": 0,
+    "vorklima_kalt_unter": 5,
+    "vorklima_heiss_ueber": 25,
+    "ankunft_ein": 0,
+    "ankunft_quelle": "",
+    "haus_strompreis_ein": 0,
+    # Meldungen an SignalBot (E9): Hauptschalter aus, je Ereignis abwaehlbar.
+    "signal_ein": 0,
+    "signal_praefix": "signalbot",
+    "signal_laden_fertig": 1,
+    "signal_laden_abbruch": 1,
+    "signal_offen": 1,
+    "signal_ausfall": 1,
+    "signal_vorklima": 1,
     # --- Nr. 36 b (seit 0.9.25): Ansageanlaesse - dieselben Werte wie in au_vorgaben().
     # Der Block tts gehoert der Bruecke (bin/au_ansage.php).
     "ansage_laden_fertig": 1,
@@ -625,6 +645,11 @@ def config() -> dict:
     c["abfahrt_alter"] = max(60, min(3600, ganz(c.get("abfahrt_alter"), 300)))
     c["abfahrt_fahrzeug"] = max(1, min(99, ganz(c.get("abfahrt_fahrzeug"), 1)))
     c["ladeempf_alter"] = max(60, min(86400, ganz(c.get("ladeempf_alter"), 900)))
+    # Gruppe 41 (0.9.30)
+    c["vorklima_kalt_unter"] = max(-30, min(45, ganz(c.get("vorklima_kalt_unter"), 5)))
+    c["vorklima_heiss_ueber"] = max(-30, min(45, ganz(c.get("vorklima_heiss_ueber"), 25)))
+    if c["ladeempf_quelle"] not in ("thema", "haus"):
+        c["ladeempf_quelle"] = "thema"
     return c
 
 
@@ -776,6 +801,8 @@ class Horcher:
     def __init__(self):
         self.client = None
         self.werte: dict = {}          # thema -> (wert, zeitstempel)
+        # Gruppe 41: haus/<quelle>/... mit Retain-Bit; Frische nur ueber den live gesehenen Zaehler.
+        self.haus: dict = {}
         self.themen: set = set()
         self.fehler = ""
         self.verbunden = False
@@ -902,6 +929,16 @@ class Horcher:
         self.verbunden = False
 
     def _nachricht(self, client, userdata, nachricht):
+        # Gruppe 41 (B3): Haus-Themen (Regeln/07 Nr. 15) werden auch retained angenommen - sie gelten aber
+        # erst mit einem LIVE gesehenen Zaehlerwechsel ihrer Quelle (haus_merken(), haus_frisch()).
+        thema = str(getattr(nachricht, "topic", ""))
+        if thema.startswith("haus/"):
+            try:
+                text = nachricht.payload.decode("utf-8", "replace").strip()
+            except Exception:  # noqa: BLE001
+                return
+            haus_merken(self.haus, thema, text, bool(getattr(nachricht, "retain", False)), time.time())
+            return
         # M9 (Durchgang 29.09.2026): eine ZURUECKBEHALTENE Nachricht kommt beim
         # Verbinden und nach jedem Reconnect, egal wie alt ihr Wert ist. Bis
         # 0.9.21 bekam sie das Alter 0 und galt als frisch (gemessen, F8).
@@ -938,6 +975,7 @@ class Horcher:
         self.client = None
         self.themen = set()
         self.verbunden = False
+        self.haus = {}
 
 
 # ---------------------------------------------------------------------------
@@ -1480,7 +1518,7 @@ SKRIPT_ANSAGE = SELF / "au_ansage.php"
 DATEI_ANSAGE_SPERRE = PDATA / "ansage_sperre.json"
 ANSAGE_ANLAESSE = ("laden_fertig", "laden_abbruch", "offen", "licht", "klima", "ausfall")
 ANSAGE_SPERRE_S = 3600     # derselbe Anlass fuer dasselbe Fahrzeug hoechstens einmal je Stunde
-ANSAGE_FRIST_S = 25        # Bruecke: PHP-Start plus hoechstens 10 s Sprechfrist des Moduls
+ANSAGE_FRIST_S = 25        # Bruecke: PHP-Start plus Sprechfrist 20 s (au_ansage_k(); Modul 1.2.1: in jedem Weg)
 ANSAGE_FOLGE = 2           # offen, licht: so viele Abrufe in Folge
 ANSAGE_AUSFALL_FOLGE = 3
 # audi.py importiert re nicht (gemessen 08.10.2026: NameError nach dem Bruecken-Aufruf, Eichung E3-E6) -
@@ -1615,6 +1653,7 @@ def ansagen(cfg: dict, fahrzeuge: dict, ok: int, fehler_folge: int) -> None:
     """Nach jedem Abruf: Anlaesse erkennen und ansagen."""
     if ansage_ausfall(ok, fehler_folge):
         ansage_senden("ausfall", "0", {}, cfg)
+        signal_senden(cfg, "ausfall", "0", SIGNAL_TEXTE["ausfall"])
     for nr in sorted(fahrzeuge, key=lambda n: ganz(n, 0)):
         f = fahrzeuge[nr]
         # Ein Fahrzeug ohne frischen Stand liefert keinen Wechsel.
@@ -1622,6 +1661,10 @@ def ansagen(cfg: dict, fahrzeuge: dict, ok: int, fehler_folge: int) -> None:
             continue
         for anlass, daten in ansage_ereignisse(nr, f):
             ansage_senden(anlass, nr, daten, cfg)
+            # Gruppe 41 (E9): dieselben Ereignisse an SignalBot - eine Erkennung fuer beide Wege.
+            if anlass in SIGNAL_TEXTE:
+                wer = str(daten.get("name") or "") or ("Fahrzeug %s" % nr)
+                signal_senden(cfg, anlass, nr, SIGNAL_TEXTE[anlass] % wer)
 
 
 def abgeleitetes_ergaenzen(nummer: str, d: dict, cfg: dict, merker: dict,
@@ -1666,6 +1709,11 @@ def abgeleitetes_ergaenzen(nummer: str, d: dict, cfg: dict, merker: dict,
                 m["l_start"] = jetzt
                 m["l_soc"] = soc
                 m["l_km"] = km
+                # Gruppe 41 (G6): Ladekosten nur fuer eine Ladung, die ZU HAUSE beginnt, und nur mit
+                # "Strompreis vom Spotpreis-Plugin". 1 mitschreiben, 0 unterwegs, -1 ohne Heimzone/aus.
+                z = d.get("zuhause")
+                m["l_haus"] = (1 if z == 1 else (0 if z == 0 else -1)) if cfg.get("haus_strompreis_ein") else -2
+                ladung_beginnen(nummer, m["l_haus"], jetzt)     # Mitschrift in DATEI_MITSCHRIFT (G6-Zusatz)
             # Verbrauch aus dem abgeschlossenen Fahrabschnitt.
             fs = m.get("f_soc")
             fk = m.get("f_km")
@@ -1689,10 +1737,19 @@ def abgeleitetes_ergaenzen(nummer: str, d: dict, cfg: dict, merker: dict,
                 dauer = int(round((jetzt - int(start)) / 60.0))
                 kwh = round((soc - ssoc) / 100.0 * kap, 2) if kap > 0 and soc > ssoc \
                     else None
+                # Gruppe 41 (G6): Kosten aus den Minutenproben der offenen Mitschrift (eigene Datei, uebersteht
+                # einen Neustart); -1 ohne Aussage (nie geschaetzt).
+                lh = m.get("l_haus")
+                kosten, preis, kgrund = ladung_abschliessen(nummer, lh, kwh, jetzt)
+                m["ladung_kosten"], m["ladung_preis"] = kosten, preis
+                if lh in (0, 1, -1):
+                    _LOG.info("Fahrzeug %s: Ladekosten %s EUR, Preis %s ct/kWh (%s).", nummer, kosten, preis, kgrund)
                 ladung_anhaengen({
                     "fahrzeug": nummer, "start": int(start), "ende": jetzt,
                     "dauer": dauer, "soc_start": ssoc, "soc_ende": soc,
-                    "km": km, "kwh": kwh}, cfg["verlauf_tage"])
+                    "km": km, "kwh": kwh,
+                    "kosten": None if kosten == -1 else kosten,
+                    "preis": None if preis == -1 else preis}, cfg["verlauf_tage"])
                 if kwh is not None:
                     m["ladekwh"] = kwh
                 _LOG.info("Fahrzeug %s: Ladevorgang beendet, %d Minuten, %s -> %s %%%s",
@@ -1701,6 +1758,9 @@ def abgeleitetes_ergaenzen(nummer: str, d: dict, cfg: dict, merker: dict,
             m.pop("l_start", None)
             m.pop("l_soc", None)
             m.pop("l_km", None)
+            m.pop("l_haus", None)
+            m.pop("l_proben", None)      # Merker der ersten 0.9.30-Probe; die Mitschrift steht in DATEI_MITSCHRIFT
+            ladung_mitschrift_entfernen(nummer, jetzt)
             # Ein neuer Fahrabschnitt beginnt.
             if soc is not None and km is not None:
                 m["f_soc"] = soc
@@ -1710,6 +1770,12 @@ def abgeleitetes_ergaenzen(nummer: str, d: dict, cfg: dict, merker: dict,
     d["verbrauch"] = m.get("verbrauch")
     d["verbrauch_km"] = m.get("verbrauch_km")
     d["ladekwh"] = m.get("ladekwh")
+    # Gruppe 41: Ladekosten der letzten Ladung (-1 ohne Aussage) und Zustand der Vorklimatisierung.
+    d["ladung_kosten"] = m.get("ladung_kosten", -1)
+    d["ladung_preis"] = m.get("ladung_preis", -1)
+    vk = (merker.get("vorklima") or {}).get(str(nummer)) \
+        if cfg.get("abfahrt_ein") and str(nummer) == str(max(1, ganz(cfg.get("abfahrt_fahrzeug"), 1))) else None
+    d["vorklima"] = vorklima_wert(vk, jetzt)
 
 
 # ---------------------------------------------------------------------------
@@ -1760,19 +1826,22 @@ def ladung_anhaengen(zeile: dict, tage: int) -> None:
     kuemmert, waechst genau so lange, bis sie stoert.
     """
     ORDNER_VERLAUF.mkdir(parents=True, exist_ok=True)
-    text = "%s;%d;%d;%s;%s;%s;%s;%s\n" % (
+    # Gruppe 41 (G6): kosten_eur;preis_ct hinten angehaengt - alte Zeilen bleiben, leer = unbekannt.
+    text = "%s;%d;%d;%s;%s;%s;%s;%s;%s;%s\n" % (
         str(zeile.get("fahrzeug") or "").replace(";", ","),
         int(zeile.get("start") or 0), int(zeile.get("ende") or 0),
         "" if zeile.get("dauer") is None else int(zeile["dauer"]),
         "" if zeile.get("soc_start") is None else zeile["soc_start"],
         "" if zeile.get("soc_ende") is None else zeile["soc_ende"],
         "" if zeile.get("km") is None else zeile["km"],
-        "" if zeile.get("kwh") is None else zeile["kwh"])
+        "" if zeile.get("kwh") is None else zeile["kwh"],
+        "" if zeile.get("kosten") is None else zeile["kosten"],
+        "" if zeile.get("preis") is None else zeile["preis"])
     try:
         neu = not DATEI_LADUNGEN.exists()
         with DATEI_LADUNGEN.open("a", encoding="utf-8") as f:
             if neu:
-                f.write("# fahrzeug;start;ende;dauer_min;soc_start;soc_ende;km;kwh\n")
+                f.write("# fahrzeug;start;ende;dauer_min;soc_start;soc_ende;km;kwh;kosten_eur;preis_ct\n")
             f.write(text)
     except OSError as err:
         _LOG.error("Ladeprotokoll nicht schreibbar: %s", err)
@@ -2504,6 +2573,95 @@ def thema_retained(k: str):
         return THEMEN["fahrzeug"].get(rest)
     return THEMEN["dienst"].get(k)
 
+# ---------------------------------------------------------------------------
+# Gruppe 41, Nachtrag 4 (29.10.2026) - Restminuten und die -1-Regel
+#
+# RESTMINUTEN: neben den Endzeiten (laden_fertig_um, klima_fertig_um - Unix-Zeit) gehen die Minuten bis dahin
+# als eigene Themen hinaus. Bis hier rechnete das Musterprojekt sie per Formel aus der Endzeit, und die haengt an
+# der Zeitzone des Miniservers. Ganze Minuten (aufgerundet, wie FERTIGMIN am Endpunkt), >= 0; ohne Aussage -1;
+# liegt das Ende in der Vergangenheit 0. Beim Abruf gerechnet und je Minute aus dem Wartetakt nachgefuehrt
+# (restminuten_nachfuehren()), sonst stuende die Zahl bis zum naechsten Abruf still. Namen wie Skoda.
+#
+# -1-REGEL (wie BYD 0.9.29; Regeln/07 "MinVal=-1 fuer Felder, die -1 als nicht bekannt senden"): ein MESSWERT
+# (retain 0, Zahl), fuer den ein gelungener Abruf keine Aussage hat, geht als -1 hinaus. Bis hier ging er gar nicht,
+# und in Loxone stand der letzte Wert und sah gemessen aus. Ausnahmen mit Grund: Temperaturen -999 (-1 Grad ist
+# eine echte Temperatur), Breite/Laenge und die Wartungstage gehen weiter nicht hinaus (-1 Grad ist ein echter Ort,
+# eine seit einem Tag faellige Inspektion ist -1). Nur fuer ein Fahrzeug mit ok 1, und nur wenn sein Abschnitt
+# geantwortet hat (MQTT_MESSWERT_ABSCHNITT) - sonst bleibt der Altwert stehen wie bisher. Zustaende ohne Aussage
+# bleiben "-" (mqtt_senden(), Entscheidung 5), Texte unveraendert. Nur MQTT: das Abbild und damit die
+# HTTP-Antworten bleiben byte-gleich.
+# ---------------------------------------------------------------------------
+RESTMIN_THEMEN = {"restzeit_min": "laden_fertig_um", "klima_restzeit_min": "klima_fertig_um"}
+# Welle Mehrfach-Ziele Los B, Zusatz "Ladeempfehlung ohne -1" (29.10.2026): die Ladeempfehlung ist ein Schaltsignal
+# (1 = jetzt laden, 0 = nicht) - ohne Aussage geht 0 hinaus, nie -1 (in Loxone hiesse -1 "ungleich 0" = laden).
+# Regel wie Tibber 0.9.33 "Schaltsignale ohne -1". Das Abbild (HTTP) bleibt unveraendert.
+MQTT_FEHLWERT = {"aussentemperatur": -999, "batterie_temp": -999,
+                 "breite": None, "laenge": None, "inspektion_tage": None, "oelservice_tage": None,
+                 "ladeempf": 0}
+MQTT_MESSWERT_ABSCHNITT = {
+    "soc": "reichweite", "tank_prozent": "reichweite", "reichweite_km": "reichweite",
+    "reichweite_verbrenner_km": "reichweite", "reichweite_elektro_km": "reichweite",
+    "batterie_temp": "reichweite", "adblue_km": "reichweite",
+    "aussentemperatur": "status", "erreichbar": "status", "standzeit_min": "status",
+    "klima_fertig_um": "status", "klima_restzeit_min": "status",
+    "ladeleistung_kw": "laden", "ladetempo_kmh": "laden", "laden_fertig_um": "laden",
+    "restzeit_min": "laden",
+    "positionsart_zahl": "position", "zuhause": "position", "entfernung_m": "position",
+}
+# Aussagen des Dienstes, die nie ohne Wert sind - die Regel laesst sie in Ruhe. vorklima traegt -1 schon als
+# "gescheitert"; ein -1 ohne Aussage waere dort doppeldeutig.
+MQTT_OHNE_FEHLWERT = ("ok", "fehlfolge", "vorklima")
+_RESTMIN = {"quelle": {}, "gesendet": {}}
+
+
+def restminuten(ende, jetzt: float) -> int:
+    """Ganze Minuten bis 'ende' (Unix-Zeit), aufgerundet; 0 nach dem Ende, -1 ohne Aussage (rein)."""
+    if isinstance(ende, bool):
+        return -1
+    try:
+        e = int(ende)
+    except (TypeError, ValueError, OverflowError):
+        return -1
+    if e <= 0:
+        return -1
+    if e <= jetzt:
+        return 0
+    return int(math.ceil((e - jetzt) / 60.0))
+
+
+def mqtt_messwert(feld: str, wert, ausfaelle=None):
+    """Der Wert eines Fahrzeugthemas fuer MQTT nach der -1-Regel (rein).
+
+    Zustaende (retain 1) und Texte kommen unveraendert zurueck - ueber sie entscheidet mqtt_senden() ("-" bzw.
+    nichts). None heisst: nicht senden."""
+    if wert is not None and not (isinstance(wert, str) and wert.strip() == ""):
+        return wert
+    if THEMEN["fahrzeug"].get(feld) != 0 or THEMEN["art"].get(feld) != "zahl" or feld in MQTT_OHNE_FEHLWERT:
+        return wert
+    abschnitt = MQTT_MESSWERT_ABSCHNITT.get(feld, "")
+    if abschnitt and isinstance(ausfaelle, dict) and abschnitt in ausfaelle:
+        return None             # Abschnitt ausgefallen: der Altwert bleibt stehen
+    return MQTT_FEHLWERT.get(feld, -1)
+
+
+def restminuten_nachfuehren(cfg: dict, jetzt=None) -> int:
+    """Je Minute aus dem Wartetakt: die Restminuten aus der zuletzt gemeldeten Endzeit neu rechnen und nur
+    Geaendertes senden. Quelle ist der letzte gelungene Abruf (abbild_schreiben()); bei einer Stoerung leer."""
+    if not cfg.get("mqtt_ein") or not _RESTMIN["quelle"]:
+        return 0
+    jetzt = time.time() if jetzt is None else jetzt
+    p = {}
+    for nummer, q in _RESTMIN["quelle"].items():
+        for thema, ende in q.items():
+            k = "fahrzeug%s/%s" % (nummer, thema)
+            w = restminuten(ende, jetzt)
+            if _RESTMIN["gesendet"].get(k) != w:
+                p[k] = w
+    if not p:
+        return 0
+    _RESTMIN["gesendet"].update(p)
+    return mqtt_senden(p, mqtt_praefix(cfg))
+
 
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
                      code: int = CODE_OK, fehler_folge: int = 0, zyklus: int = 0) -> dict:
@@ -2544,6 +2702,7 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
     # kein Alter, nur einen Zeitstempel).
     leben = {"status/ts": int(time.time()), "status/zaehler": int(zyklus)}
     if not ok:
+        _RESTMIN["quelle"] = {}     # Nachtrag 4: bei einer Stoerung nichts nachfuehren
         # Bei einer Stoerung nur das ok-Thema senden. Die alten Messwerte
         # erneut zu veroeffentlichen liesse sie frisch aussehen.
         if cfg.get("mqtt_ein"):
@@ -2563,13 +2722,28 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str = "",
 
     if cfg.get("mqtt_ein"):
         paare = {"ok": ok, "grund": 0, "fahrzeuge": len(fahrzeuge)}
+        jetzt_r = time.time()
+        quelle: dict = {}
         for nummer, f in fahrzeuge.items():
             # Zahlen UND Texte, auch leere: ob ein leerer Wert als "-"
             # hinausgeht oder gar nicht, entscheidet mqtt_senden() nach der
             # Tabelle (M2). Bis 0.9.21 fiel ein leerer Text hier weg, und der
             # Eingang behielt den Altwert.
+            # Nachtrag 4: Restminuten aus der Endzeit; -1-Regel nur fuer ein Fahrzeug mit ok 1.
+            fz_ok = bool(f.get("ok"))
+            ausfaelle = f.get("ausfaelle") if isinstance(f.get("ausfaelle"), dict) else {}
             for feld in MQTT_FELDER + MQTT_TEXTE:
-                paare[f"fahrzeug{nummer}/{feld}"] = f.get(feld)
+                if feld in RESTMIN_THEMEN:
+                    ende = f.get(RESTMIN_THEMEN[feld])
+                    w = None if ende is None else restminuten(ende, jetzt_r)
+                    if fz_ok and ende is not None:
+                        quelle.setdefault(str(nummer), {})[feld] = ende
+                else:
+                    w = f.get(feld)
+                paare[f"fahrzeug{nummer}/{feld}"] = mqtt_messwert(feld, w, ausfaelle) if fz_ok else w
+        _RESTMIN["quelle"] = quelle
+        _RESTMIN["gesendet"] = {k: v for k, v in paare.items()
+                                if k.rsplit("/", 1)[-1] in RESTMIN_THEMEN}
         paare.update(leben)
         mqtt_senden(paare, praefix)
 
@@ -2687,10 +2861,12 @@ def horcher_themen(cfg: dict) -> set:
         if p:
             t.add(p + "/ABFAHRT_IN")
             t.add(p + "/OK")
-    if cfg.get("ladeempf_ein"):
+    if cfg.get("ladeempf_ein") and cfg.get("ladeempf_quelle") != "haus":
         th = str(cfg.get("ladeempf_thema") or "").strip()
         if th:
             t.add(th)
+    # Gruppe 41: Haus-Themen - dieselbe Liste wie au_haus_themen() in au_lib.php.
+    t.update(haus_themen(cfg))
     return t
 
 
@@ -2708,6 +2884,18 @@ def ladeempfehlung(horcher: Horcher, cfg: dict):
     """
     if not cfg.get("ladeempf_ein"):
         return None
+    if cfg.get("ladeempf_quelle") == "haus":
+        # Gruppe 41 (E8b): Endpreis jetzt aus haus/strompreis - nur bei frischer Quelle (Zaehler live binnen
+        # 120 s); schweigt sie oder kommt '-', entsteht kein Wert (wie bei einem veralteten Thema).
+        if not haus_frisch(horcher.haus, "strompreis", time.time()):
+            melde_gebremst("ladeempf_haus", "Ladeempfehlung: haus/strompreis schweigt (kein Zaehlerwechsel "
+                           "binnen 120 s) - es entsteht kein Wert.", 3600)
+            return None
+        z = zahl(haus_wert(horcher.haus, "strompreis", "haus/strompreis/aktuell"))
+        grenze = zahl(cfg.get("ladeempf_grenze"))
+        if z is None or grenze is None:
+            return None
+        return 1 if (z <= grenze if cfg.get("ladeempf_unter") else z >= grenze) else 0
     thema = str(cfg.get("ladeempf_thema") or "").strip()
     if not thema:
         return None
@@ -2730,53 +2918,760 @@ def ladeempfehlung(horcher: Horcher, cfg: dict):
     return 1 if (z <= grenze if cfg.get("ladeempf_unter") else z >= grenze) else 0
 
 
-def vorklimatisierung(horcher: Horcher, cfg: dict, merker: dict):
-    """Startet die Klimatisierung, wenn der Abfahrtsassistent es nahelegt.
+# ---------------------------------------------------------------------------
+# Gruppe 41 (0.9.30): Hausform im Dienst - Haus-Themen (Regeln/07 Nr. 15),
+# Vorklimatisierung nach MG-Regeln, Ankunft, Ladekosten, Ladeempfehlung aus
+# haus/strompreis, Meldungen an SignalBot. Bauvorschrift
+# Pruefung-Durchgang-2026-09-29/wz_bild/GRUPPE41_BAUVORSCHRIFT.md, G4-G8.
+# Die Entscheidungslogik steht in reinen Funktionen (Uhr als Argument); der
+# Wartetakt des Dienstes ruft sie. Vorlage: MGiSmart 1.1.28 (mg_vorklima_*,
+# mg_ankunft_*, mg_haus_*, mg_ladung_kosten) und Renault NG 2.1.20.
+# ---------------------------------------------------------------------------
+HAUS_FRIST = 120                 # Nr. 15: ein Wert gilt, solange der Zaehler der Quelle binnen 120 s live wechselt
+VORKLIMA_VERSUCHE = 3            # 1 senden, 2 Abruf statt senden, 3 senden - hoechstens zwei "Klima ein"
+VORKLIMA_ABSTAND = 120           # Sekunden zwischen zwei Versuchen
+VORKLIMA_FAHRZEUG_FRISCH = 3600  # Aussentemperatur des Fahrzeugs gilt aus einem Abbild bis 60 min
+AUSSEN_LOXONE_FRISCH = 1800      # G39 E-E4: Aussentemperatur aus Loxone gilt 30 min
+ANKUNFT_ABSTAND = 1800           # hoechstens ein Abruf je 30 min wegen einer Ankunft
+ANKUNFT_STAND_ALT = 300          # nur, wenn der Fahrzeugstand aelter als 5 min ist
+DATEI_AUSSEN = PDATA / "aussentemp.json"   # schreibt die Bruecke (au_aussentemp_merken())
+_BROKER_SENDEN = None            # Nahtstelle fuer Proben: Funktion (thema, nutzlast) -> bool
 
-    Das Plugin Abfahrtsassistent veroeffentlicht unter dem eingestellten
-    Praefix - ab Werk "abfahrt" - die Minuten bis zur Abfahrt als ABFAHRT_IN
-    und einen Zustand OK.
 
-    Rueckgabe: ein Befehlsverzeichnis oder None. Ausgeloest wird hoechstens
-    einmal je Abfahrt; der Merker haelt fest, dass es schon geschehen ist,
-    und wird erst zurueckgesetzt, wenn ABFAHRT_IN wieder ueber dem Vorlauf
-    liegt - also bei der naechsten Abfahrt.
-    """
-    if not cfg.get("abfahrt_ein"):
-        return None
+def haus_quelle(thema: str) -> str:
+    """'haus/abfahrt/in_min' -> 'abfahrt'; haus/tag/<n>/da gehoert zum Anbieter der Anwesenheit (BLE-Scanner)."""
+    teile = str(thema).split("/")
+    if len(teile) < 3 or teile[0] != "haus":
+        return ""
+    return "anwesenheit" if teile[1] == "tag" else teile[1]
+
+
+def haus_merken(stand: dict, thema: str, wert: str, retained: bool, jetzt: float) -> None:
+    """Eine Nachricht unter haus/ einarbeiten (rein bis auf stand).
+
+    B3 (Gruppe 41): ein Wert wird angenommen, auch retained - er gilt aber erst, wenn
+    der Zaehler seiner Quelle LIVE wechselt. Ein retained Zaehler zaehlt nie; ein live
+    gesehener Zaehler mit neuem Wert setzt 'seit' (Form mg_haus_merken())."""
+    q = haus_quelle(thema)
+    if not q:
+        return
+    e = stand.setdefault(q, {"werte": {}, "zaehler": None, "seit": 0})
+    if str(thema).endswith("/zaehler"):
+        if not retained and str(wert) != str(e.get("zaehler")):
+            e["zaehler"] = str(wert)
+            e["seit"] = int(jetzt)
+    else:
+        e.setdefault("werte", {})[thema] = str(wert)
+
+
+def haus_frisch(stand: dict, q: str, jetzt: float) -> bool:
+    """Frisch: 0 <= jetzt - seit <= HAUS_FRIST, seit gesetzt und nicht in der Zukunft (Uhr zurueck -> nicht frisch)."""
+    seit = int((stand.get(q) or {}).get("seit") or 0)
+    return 0 < seit <= int(jetzt) and int(jetzt) - seit <= HAUS_FRIST
+
+
+def haus_wert(stand: dict, q: str, thema: str):
+    return ((stand.get(q) or {}).get("werte") or {}).get(thema)
+
+
+def ankunft_themen(quelle) -> list:
+    """'tag:<name>,person:<name>' -> Themen; dieselbe Pruefung wie au_wert_g41() (reserviert jemand, zaehler)."""
+    import re
+    q = str(quelle or "").strip()
+    if not re.fullmatch(r"(tag|person):[A-Za-z0-9_-]{1,40}(,(tag|person):[A-Za-z0-9_-]{1,40}){0,3}", q):
+        return []
+    if re.search(r"(^|,)person:(jemand|zaehler)(,|$)", q):
+        return []
+    aus = []
+    for teil in q.split(","):
+        art, name = teil.split(":", 1)
+        aus.append("haus/tag/%s/da" % name if art == "tag" else "haus/anwesenheit/%s" % name)
+    return aus
+
+
+def haus_themen(cfg: dict) -> list:
+    """Die Haus-Themen, die der Dienst abonniert - dieselbe Liste wie au_haus_themen() in au_lib.php."""
+    t = []
+    if cfg.get("abfahrt_ein") and cfg.get("haus_abfahrt_ein"):
+        t += ["haus/abfahrt/in_min", "haus/abfahrt/zaehler"]
+    anw = False
+    if cfg.get("abfahrt_ein") and cfg.get("vorklima_anwesend_ein"):
+        t.append("haus/anwesenheit/jemand")
+        anw = True
+    if cfg.get("ankunft_ein"):
+        for x in ankunft_themen(cfg.get("ankunft_quelle")):
+            t.append(x)
+            anw = True
+    if anw:
+        t.append("haus/anwesenheit/zaehler")
+    if cfg.get("haus_strompreis_ein") or (cfg.get("ladeempf_ein") and cfg.get("ladeempf_quelle") == "haus"):
+        t += ["haus/strompreis/" + x for x in ("vorschau", "ab", "raster", "aktuell", "zaehler")]
+    return t
+
+
+def haus_zustand(stand: dict, jetzt: float) -> dict:
+    """Fuer zustand.json (Reiter Test): je Quelle frisch, Alter, seit - nie Werte."""
+    aus = {}
+    for q, e in (stand or {}).items():
+        seit = int((e or {}).get("seit") or 0)
+        aus[q] = {"frisch": 1 if haus_frisch(stand, q, jetzt) else 0, "seit": seit,
+                  "alter": int(jetzt) - seit if seit else -1}
+    return aus
+
+
+# ---- G5: Vorklimatisierung nach MG-Regeln (B1, B2, B4) ----
+def vorklima_kennung(jetzt: float, in_min: int) -> int:
+    """Kennung einer Abfahrt: Abfahrtszeit auf 5 min gerundet (wie PHP round, halbe nach oben)."""
+    return int(math.floor((int(jetzt) + int(in_min) * 60) / 300.0 + 0.5) * 300)
+
+
+def vorklima_neu(k: int) -> dict:
+    return {"kennung": int(k), "versuche": 0, "letzter": 0, "erfolg": 0, "abgerufen": 0,
+            "aufgegeben": 0, "mild": 0}
+
+
+def vorklima_schritt(m: dict, in_min, jetzt: float, vorlauf: int, letztes_ok=None):
+    """Ein Schritt (rein; Abschrift mg_vorklima_schritt()). Rueckgabe (aktion, neuer_merker),
+    aktion nichts | senden | abruf | aufgeben | erledigt.
+    - Ausloesen nur bei 1 <= in_min <= vorlauf (0 = ueberfaellig und -1 nie).
+    - Eine Kennung, die hoechstens 5 min von der gemerkten abweicht, ist dieselbe Abfahrt.
+    - Hoechstens VORKLIMA_VERSUCHE Versuche, Abstand >= VORKLIMA_ABSTAND: 1 senden, 2 Abruf
+      (gesendet wird in diesem Schritt nicht), 3 senden; danach aufgeben. Hoechstens zwei "Klima ein".
+    - B1: erledigt erst nach einem Erfolg (letztes_ok is True), nie vorher."""
+    m = dict(m or {})
+    jetzt = int(jetzt)
+    if letztes_ok is True and "kennung" in m:
+        m["erfolg"] = 1
+    try:
+        n = int(str(in_min).strip())
+    except (TypeError, ValueError):
+        return ("nichts", m)
+    if n < 1 or n > max(1, int(vorlauf)):
+        return ("nichts", m)
+    k = vorklima_kennung(jetzt, n)
+    if "kennung" not in m or abs(k - int(m["kennung"])) > 300:
+        m = vorklima_neu(k)
+    for x, v in vorklima_neu(k).items():
+        m.setdefault(x, v)
+    if m["erfolg"] or m["mild"]:
+        return ("erledigt", m)
+    if m["aufgegeben"]:
+        return ("nichts", m)
+    if int(m["versuche"]) >= VORKLIMA_VERSUCHE:
+        m["aufgegeben"] = 1
+        return ("aufgeben", m)
+    if int(m["versuche"]) >= 1:
+        if jetzt < int(m["letzter"]):
+            m["letzter"] = jetzt          # Uhr zurueck: neu zaehlen, nicht senden
+            return ("nichts", m)
+        if jetzt - int(m["letzter"]) < VORKLIMA_ABSTAND:
+            return ("nichts", m)
+    m["versuche"] = int(m["versuche"]) + 1
+    m["letzter"] = jetzt
+    if m["versuche"] == 2 and not m["abgerufen"]:
+        m["abgerufen"] = 1
+        return ("abruf", m)
+    return ("senden", m)
+
+
+def vorklima_wert(m, jetzt: float) -> int:
+    """Thema fahrzeug<n>/vorklima: 0 nichts/aus, 1 gesendet, 2 mild, 3 wartet auf Wiederholung,
+    4 wartet auf Anwesenheit, -1 gescheitert (rein, wie mg_vorklima_wert())."""
+    if not isinstance(m, dict) or "kennung" not in m:
+        return 0
+    if int(m["kennung"]) + 1800 < int(jetzt):
+        return 0
+    if m.get("aufgegeben"):
+        return -1
+    if m.get("erfolg"):
+        return 1
+    if m.get("mild"):
+        return 2
+    if m.get("warten_anwesend"):
+        return 4
+    if m.get("versuche"):
+        return 3
+    return 0
+
+
+def vorklima_wetter(cfg: dict, aussen_lox, alter_lox, aussen_fz, alter_fz) -> str:
+    """klimatisieren | mild | ohne_aussage (rein). Zuerst Loxone (<= AUSSEN_LOXONE_FRISCH s), sonst das
+    Fahrzeug (Abbild <= VORKLIMA_FAHRZEUG_FRISCH s), sonst ohne_aussage - dann wird klimatisiert
+    (nie "nicht klimatisiert" ohne Aussage). Haken aus -> klimatisieren."""
+    if not cfg.get("vorklima_wetter_ein"):
+        return "klimatisieren"
+    wert = None
+    for w, a, grenze in ((aussen_lox, alter_lox, AUSSEN_LOXONE_FRISCH),
+                         (aussen_fz, alter_fz, VORKLIMA_FAHRZEUG_FRISCH)):
+        z, al = zahl(w), zahl(a)
+        if z is not None and z > -99 and al is not None and 0 <= al <= grenze:
+            wert = z
+            break
+    if wert is None:
+        return "ohne_aussage"
+    kalt = zahl(cfg.get("vorklima_kalt_unter"))
+    heiss = zahl(cfg.get("vorklima_heiss_ueber"))
+    kalt = 5.0 if kalt is None else kalt
+    heiss = 25.0 if heiss is None else heiss
+    return "mild" if kalt <= wert <= heiss else "klimatisieren"
+
+
+def aussentemp_lesen(jetzt: float):
+    """Die Aussentemperatur aus Loxone (Bruecke): (wert, alter_s) oder (None, -1)."""
+    d = json_lesen(DATEI_AUSSEN)
+    w, t = zahl(d.get("wert")), zahl(d.get("t"))
+    if w is None or t is None or t > jetzt:
+        return (None, -1)
+    return (w, int(jetzt - t))
+
+
+def vorklima_minuten(horcher, cfg: dict, jetzt: float):
+    """(in_min oder None, Herkunft). Haus-Thema bei frischer Quelle; sonst das bisherige Thema des
+    Abfahrtsassistenten als Rueckfall (E6, entfaellt mit der naechsten Fassung) mit seinen Fristen."""
+    if cfg.get("haus_abfahrt_ein") and haus_frisch(horcher.haus, "abfahrt", jetzt):
+        v = str(haus_wert(horcher.haus, "abfahrt", "haus/abfahrt/in_min") or "").strip()
+        try:
+            return (int(v), "haus")
+        except ValueError:
+            return (-1, "haus")            # '-' oder leer: keine Abfahrt bekannt
     p = str(cfg.get("abfahrt_praefix") or "abfahrt").strip("/")
     if not p:
-        return None
+        return (None, "aus")
     grenze = ganz(cfg.get("abfahrt_alter"), 300)
     ok_roh, _ = horcher.wert(p + "/OK", grenze)
     ai_roh, _ = horcher.wert(p + "/ABFAHRT_IN", grenze)
-    m = merker.setdefault("abfahrt", {})
     if ai_roh is None:
-        melde_gebremst("abfahrt_still",
-                       "Vorklimatisierung: unter %s/ABFAHRT_IN kommt nichts Frisches an. "
-                       "Laeuft das Plugin Abfahrtsassistent, und stimmt das Praefix?"
-                       % p, 3600)
-        return None
+        return (None, "still")
     if ok_roh is not None and zahl(ok_roh) == 0:
-        return None
+        return (-1, "thema")
     ai = zahl(ai_roh)
-    if ai is None:
+    return (None, "thema") if ai is None else (int(ai), "thema")
+
+
+def vorklima_takt(horcher, cfg: dict, merker: dict, stand: dict, jetzt: float):
+    """Ein Schritt im Wartetakt. Rueckgabe: Auftrag fuer befehl_ausfuehren() oder None."""
+    if not cfg.get("abfahrt_ein"):
+        return None
+    nr = str(max(1, ganz(cfg.get("abfahrt_fahrzeug"), 1)))
+    vk = merker.setdefault("vorklima", {})
+    m = dict(vk.get(nr) or {})
+    in_min, herkunft = vorklima_minuten(horcher, cfg, jetzt)
+    if in_min is None:
+        if herkunft == "still":
+            melde_gebremst("abfahrt_still",
+                           "Vorklimatisierung: es kommt keine frische Abfahrtszeit an (haus/abfahrt schweigt "
+                           "und das bisherige Thema ist still).", 3600)
         return None
     vorlauf = ganz(cfg.get("abfahrt_vorlauf"), 20)
-    if ai > vorlauf or ai < 0:
-        # Noch zu frueh (oder die Abfahrt liegt zurueck). Sobald der Wert
-        # wieder ueber dem Vorlauf liegt, ist die naechste Abfahrt eine neue.
-        if ai > vorlauf:
-            m.pop("ausgeloest", None)
+    if not cfg.get("steuerung_ein"):
+        if 1 <= in_min <= vorlauf:
+            melde_gebremst("vorklima_steuerung", "Vorklimatisierung: die Abfahrt liegt im Vorlauf, aber "
+                           "'Schreibende Befehle zulassen' ist aus - es wird nichts gesendet.", 3600)
         return None
-    if m.get("ausgeloest"):
-        return None
-    m["ausgeloest"] = int(time.time())
+    if 1 <= in_min <= vorlauf:
+        k = vorklima_kennung(jetzt, in_min)
+        if "kennung" not in m or abs(k - int(m["kennung"])) > 300:
+            m = vorklima_neu(k)
+        # E7a: live 0 an haus/anwesenheit/jemand -> warten (kein Versuch verbraucht).
+        if (cfg.get("vorklima_anwesend_ein") and haus_frisch(horcher.haus, "anwesenheit", jetzt)
+                and str(haus_wert(horcher.haus, "anwesenheit", "haus/anwesenheit/jemand")).strip() == "0"
+                and not m.get("erfolg") and not m.get("mild") and not m.get("aufgegeben")):
+            if not m.get("warten_anwesend"):
+                _LOG.info("Vorklimatisierung Fahrzeug %s: niemand zu Hause - sie wartet.", nr)
+            m["warten_anwesend"] = 1
+            vk[nr] = m
+            return None
+        m.pop("warten_anwesend", None)
+    aktion, m = vorklima_schritt(m, in_min, jetzt, vorlauf, None)
+    if aktion in ("senden", "abruf") and int(m.get("versuche", 0)) == 1 and not m.get("wetter"):
+        m["wetter"] = 1
+        aw, al = aussentemp_lesen(jetzt)
+        f = (stand.get("fahrzeuge") or {}).get(nr) or {}
+        fz_alter = int(jetzt - int(stand.get("ts") or 0)) if stand.get("ts") else -1
+        w = vorklima_wetter(cfg, aw, al, f.get("aussentemperatur"), fz_alter)
+        if w == "mild":
+            m.update({"mild": 1, "versuche": 0, "letzter": 0})
+            vk[nr] = m
+            _LOG.info("Vorklimatisierung Fahrzeug %s: mild (%s Grad, Quelle %s) - keine Klimatisierung.",
+                      nr, aw if (aw is not None and 0 <= al <= AUSSEN_LOXONE_FRISCH) else f.get("aussentemperatur"),
+                      "Loxone" if (aw is not None and 0 <= al <= AUSSEN_LOXONE_FRISCH) else "Fahrzeug")
+            return None
+    vk[nr] = m
+    if aktion == "senden":
+        _LOG.info("Vorklimatisierung Fahrzeug %s: Abfahrt in %s min (Quelle %s), Versuch %s, Zieltemperatur %s Grad.",
+                  nr, in_min, herkunft, m["versuche"], cfg.get("abfahrt_temp"))
+        return {"aktion": "klima_start", "fahrzeug": nr, "temp": cfg.get("abfahrt_temp"), "anlass": "vorklima"}
+    if aktion == "abruf":
+        _LOG.info("Vorklimatisierung Fahrzeug %s: Versuch 2 ist ein Abruf (laeuft die Klimatisierung schon?).", nr)
+        return {"aktion": "abruf", "anlass": "vorklima"}
+    if aktion == "aufgeben":
+        text = "Audi Connect: die Vorklimatisierung fuer Fahrzeug %s ist gescheitert (zwei Versuche)." % nr
+        _LOG.warning(text)
+        melden("vorklima_%s" % m.get("kennung"), 4, text)
+        signal_senden(cfg, "vorklima", nr, text)
+    return None
+
+
+def vorklima_ergebnis(merker: dict, auftrag: dict, ok) -> None:
+    """B1: der Merker gilt als erledigt erst nach ok 1 von befehl_ausfuehren()."""
+    if auftrag.get("aktion") != "klima_start":
+        return
+    nr = str(auftrag.get("fahrzeug"))
+    m = (merker.get("vorklima") or {}).get(nr)
+    if isinstance(m, dict) and ok == 1:
+        m["erfolg"] = 1
+
+
+def vorklima_melden(cfg: dict, merker: dict, jetzt: float) -> None:
+    """Das Thema fahrzeug<n>/vorklima bei jedem Wechsel sofort senden (nicht erst mit dem naechsten Abruf)."""
+    if not cfg.get("mqtt_ein") or not cfg.get("abfahrt_ein"):
+        return
     nr = str(max(1, ganz(cfg.get("abfahrt_fahrzeug"), 1)))
-    _LOG.info("Vorklimatisierung: Abfahrt in %s Minuten (Vorlauf %s), Fahrzeug %s, "
-              "Zieltemperatur %d Grad.", ai, vorlauf, nr, cfg["abfahrt_temp"])
-    return {"aktion": "klima_start", "fahrzeug": nr, "temp": cfg["abfahrt_temp"],
-            "anlass": "abfahrt"}
+    w = vorklima_wert((merker.get("vorklima") or {}).get(nr), jetzt)
+    alt = merker.setdefault("vorklima_gesendet", {})
+    if alt.get(nr) != w:
+        alt[nr] = w
+        mqtt_senden({"fahrzeug%s/vorklima" % nr: w}, mqtt_praefix(cfg))
+
+
+def vorklima_nach_abruf(merker: dict, cfg: dict, fahrzeuge: dict) -> None:
+    """Ein Abruf, der 'Klimatisierung laeuft' zeigt, erledigt die laufende Abfahrt."""
+    nr = str(max(1, ganz(cfg.get("abfahrt_fahrzeug"), 1)))
+    m = (merker.get("vorklima") or {}).get(nr)
+    f = fahrzeuge.get(nr) or {}
+    if isinstance(m, dict) and m.get("versuche") and not m.get("erfolg") and f.get("klima_an") == 1:
+        m["erfolg"] = 1
+        _LOG.info("Vorklimatisierung Fahrzeug %s: der Abruf zeigt, die Klimatisierung laeuft.", nr)
+
+
+# ---- G4/E7b: Abruf bei Ankunft ----
+def ankunft_flanke(alt, wert, frisch: bool) -> dict:
+    """Live-Flanke 0 -> 1 zaehlen (rein, wie mg_ankunft_flanke())."""
+    wert = "" if wert is None else str(wert).strip()
+    if not isinstance(alt, dict) or "wert" not in alt:
+        return {"wert": wert, "frisch": bool(frisch), "nr": 0}
+    nr = int(alt.get("nr") or 0)
+    if alt.get("frisch") and frisch and str(alt.get("wert")) == "0" and wert == "1":
+        nr += 1
+    return {"wert": wert, "frisch": bool(frisch), "nr": nr}
+
+
+def ankunft_entscheiden(flanke_nr, ausgefuehrt, letzte_abfrage, jetzt, stand_alter):
+    """(aktion, neue_ausgefuehrt) mit aktion nichts | abfragen | gedrosselt | frisch (rein, wie
+    mg_ankunft_entscheiden(); Alter in Sekunden). Jede Flanke genau einmal."""
+    if int(flanke_nr) <= int(ausgefuehrt):
+        return ("nichts", int(ausgefuehrt))
+    neu = int(flanke_nr)
+    if int(letzte_abfrage) > 0 and int(jetzt) >= int(letzte_abfrage) \
+            and int(jetzt) - int(letzte_abfrage) < ANKUNFT_ABSTAND:
+        return ("gedrosselt", neu)
+    if stand_alter is not None and 0 <= int(stand_alter) <= ANKUNFT_STAND_ALT:
+        return ("frisch", neu)
+    return ("abfragen", neu)
+
+
+def ankunft_takt(horcher, cfg: dict, merker: dict, stand: dict, jetzt: float) -> bool:
+    """True, wenn wegen einer Ankunft abgefragt werden soll (Abruf ist bei Audi kontoweit)."""
+    if not cfg.get("ankunft_ein"):
+        return False
+    a = merker.setdefault("ankunft", {})
+    fl = a.setdefault("flanken", {})
+    frisch = haus_frisch(horcher.haus, "anwesenheit", jetzt)
+    soll = False
+    for t in ankunft_themen(cfg.get("ankunft_quelle")):
+        fl[t] = ankunft_flanke(fl.get(t), haus_wert(horcher.haus, "anwesenheit", t), frisch)
+        stand_alter = int(jetzt - int(stand.get("ts"))) if stand.get("ts") else None
+        aktion, neu = ankunft_entscheiden(fl[t]["nr"], int((a.get("ausgefuehrt") or {}).get(t, 0)),
+                                          int(a.get("letzte") or 0), jetzt, stand_alter)
+        if aktion != "nichts":
+            a.setdefault("ausgefuehrt", {})[t] = neu
+            _LOG.info("Ankunft (%s): %s.", t, {"abfragen": "Abruf", "gedrosselt": "kein Abruf - der letzte "
+                      "liegt keine 30 Minuten zurueck", "frisch": "kein Abruf - der Stand ist juenger als "
+                      "5 Minuten"}[aktion])
+        if aktion == "abfragen":
+            soll = True
+    if soll:
+        a["letzte"] = int(jetzt)
+    return soll
+
+
+# --- LADEKOSTEN-KERN G41 (wortgleich in audi.py, skoda.py, vw.py) ---
+LADUNG_TAKT_S = 60          # eine Probe je Minute; die erste steht fuer 60 s
+LADUNG_LUECKE_S = 120       # ein groesserer Abstand ist eine Luecke ohne Energie
+LADUNG_ABDECKUNG = 0.9      # fehlt der Preis fuer mehr als 10 % der Energie: Kosten -1, nie geschaetzt
+
+
+def _ladung_zahl(w):
+    if w is None or isinstance(w, bool):
+        return None
+    try:
+        return float(str(w).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def preis_zum_zeitpunkt(vorschau, ab, raster, aktuell, frisch, t):
+    """Endpreis in ct/kWh zum Zeitpunkt t (rein, wie mg_preis_zum_zeitpunkt()): vorschau[(t - ab) // raster]
+    bei Raster 900/3600 und ab im Raster; sonst aktuell, aber nur bei frischer Quelle; sonst None."""
+    import re
+    v = vorschau.strip() if isinstance(vorschau, str) else ""
+    if v and len(v) <= 4096 and re.fullmatch(r"-?\d{1,4}(\.\d{1,3})?(;-?\d{1,4}(\.\d{1,3})?)*", v):
+        a, r = _ladung_zahl(ab), _ladung_zahl(raster)
+        if a is not None and r is not None and int(r) in (900, 3600) and int(a) > 0 \
+                and int(a) % int(r) == 0 and int(t) >= int(a):
+            liste = v.split(";")
+            i = (int(t) - int(a)) // int(r)
+            if i < len(liste):
+                return float(liste[i])
+    if frisch:
+        return _ladung_zahl(aktuell)
+    return None
+
+
+def ladung_kosten(proben, kwh_gemeldet=None):
+    """Kosten einer Ladung aus Minutenproben [t, kw, preis] (rein).
+
+    Jede Probe steht fuer die Zeit seit der vorigen (die erste fuer LADUNG_TAKT_S); ein Abstand ueber
+    LADUNG_LUECKE_S ist eine Luecke. Gewicht = gemeldete Ladeleistung x Dauer; meldet keine Probe eine
+    Leistung, wird nach Dauer verteilt (Renault 2.1.20, Abweichung 4b). Energie = kwh_gemeldet (Akkustand-
+    Differenz x Kapazitaet), sonst die Summe der Leistungsgewichte. Abdeckung = Anteil des Gewichts mit
+    Preis; unter LADUNG_ABDECKUNG Kosten und Preis -1 (nie geschaetzt).
+    Rueckgabe (kwh, kosten_eur, preis_ct, abdeckung, grund)."""
+    p = {}
+    for x in proben or []:
+        try:
+            t = int(x[0])
+        except (TypeError, ValueError, IndexError):
+            continue
+        p.setdefault(t, x)
+    mit_kw = any((_ladung_zahl(x[1]) or 0) > 0 for x in p.values() if len(x) > 1)
+    gesamt = mit = cent = 0.0
+    vorher = None
+    for t in sorted(p):
+        x = p[t]
+        dt = LADUNG_TAKT_S if vorher is None else t - vorher
+        vorher = t
+        if dt <= 0 or dt > LADUNG_LUECKE_S:
+            continue
+        kw = _ladung_zahl(x[1]) if len(x) > 1 else None
+        if mit_kw and (kw is None or kw <= 0):
+            continue
+        g = (kw if mit_kw else 1.0) * dt / 3600.0
+        gesamt += g
+        pr = _ladung_zahl(x[2]) if len(x) > 2 else None
+        if pr is not None:
+            mit += g
+            cent += pr * g
+    kwh = _ladung_zahl(kwh_gemeldet)
+    if kwh is None or kwh <= 0:
+        kwh = gesamt if mit_kw else None
+    if gesamt <= 0 or kwh is None or kwh <= 0:
+        return (-1, -1, -1, 0, "leistung_fehlt")
+    abd = mit / gesamt
+    if abd < LADUNG_ABDECKUNG:
+        return (round(kwh, 3), -1, -1, round(abd, 3), "preis_fehlt")
+    preis = cent / mit
+    return (round(kwh, 3), round(kwh * preis / 100.0, 2), round(preis, 1), round(abd, 3), "ok")
+
+
+# Offene Mitschrift ueber einen Neustart retten (Zusatz VW 0.9.33, Hausherr 29.10.; danach wortgleich in
+# audi.py und skoda.py zurueckzutragen). Datei je Linie, Inhalt {"fassung": 1, "t": <unix>, "offen":
+# {<schluessel>: {..., "start": <unix>, "proben": [[t, kw, preis], ...]}}} - der Schluessel ist die
+# Fahrzeugnummer der Linie, der Eintrag gehoert der Linie (nur start und proben prueft der Kern).
+LADUNG_MITSCHRIFT_ALTER = 43200   # eine Mitschrift, deren letzte Probe aelter als 12 h ist, wird verworfen
+
+
+def ladung_mitschrift_speichern(pfad, offen, jetzt) -> bool:
+    """Die offenen Mitschriften atomar schreiben (Nebendatei, 0600, os.replace). False bei Fehler."""
+    import json as _json
+    import os as _os
+    tmp = "%s.tmp.%d" % (pfad, _os.getpid())
+    try:
+        text = _json.dumps({"fassung": 1, "t": int(jetzt), "offen": offen}, ensure_ascii=False, sort_keys=True)
+        fd = _os.open(tmp, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+        with _os.fdopen(fd, "w", encoding="utf-8") as h:
+            h.write(text)
+            h.flush()
+            _os.fsync(h.fileno())
+        _os.replace(tmp, str(pfad))
+        return True
+    except (OSError, TypeError, ValueError):
+        try:
+            _os.unlink(tmp)     # nur die eigene Nebendatei
+        except OSError:
+            pass
+        return False
+
+
+def ladung_mitschrift_laden(pfad, jetzt):
+    """(offen, lage) mit lage keine | ok | teils_verworfen | beschaedigt. Verworfen wird ein Eintrag ohne
+    gueltigen Beginn, mit Proben in der Zukunft (> 300 s, Uhr zurueck) oder dessen letzte Zeit aelter als
+    LADUNG_MITSCHRIFT_ALTER ist; eine unlesbare Datei gilt als leer (beschaedigt - der Aufrufer meldet es)."""
+    import json as _json
+    import os as _os
+    if not _os.path.exists(str(pfad)):
+        return ({}, "keine")
+    try:
+        with open(str(pfad), encoding="utf-8") as h:
+            d = _json.loads(h.read())
+        roh = d["offen"]
+        if not isinstance(roh, dict) or d.get("fassung") != 1:
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        return ({}, "beschaedigt")
+    offen, weg = {}, 0
+    for k, e in roh.items():
+        try:
+            start = int(e["start"])
+            proben = [p for p in e.get("proben") or [] if isinstance(p, list) and len(p) >= 3]
+            zuletzt = max([start] + [int(p[0]) for p in proben])
+        except (TypeError, ValueError, KeyError, AttributeError):
+            weg += 1
+            continue
+        if start <= 0 or zuletzt > int(jetzt) + 300 or int(jetzt) - zuletzt > LADUNG_MITSCHRIFT_ALTER:
+            weg += 1
+            continue
+        e = dict(e)
+        e["proben"] = proben[-2000:]
+        offen[str(k)] = e
+    return (offen, "teils_verworfen" if weg else "ok")
+# --- ENDE LADEKOSTEN-KERN ---
+
+
+# ---- G6-Zusatz (Ruecktragen aus VolkswagenID 0.9.33, 29.10.2026): die offene Mitschrift steht in einer eigenen
+# Datei und uebersteht einen Neustart des Dienstes. Bis dahin hing sie an merker["fz<n>"]["l_proben"] und wurde nur
+# zusammen mit dem Merker geschrieben. Aufrufe: ladung_mitschrift_holen() beim Dienststart, ladung_beginnen() beim
+# Ladebeginn, ladung_probe() je Minute, ladung_abschliessen()/ladung_mitschrift_entfernen() beim Ladeende
+# (abgeleitetes_ergaenzen()). Schreiben und Lesen macht der Kern (ladung_mitschrift_speichern/_laden).
+DATEI_MITSCHRIFT = PDATA / "ladung_mitschrift.json"   # offene Mitschrift - uebersteht einen Neustart
+_MITSCHRIFT: dict = {}           # Fahrzeugnummer (Text) -> {"start", "haus", "proben": [[t, kW, Preis], ...]}
+
+
+def ladung_mitschrift_sichern(jetzt: float) -> None:
+    """Die offenen Mitschriften in DATEI_MITSCHRIFT (Kern: atomar, 0600)."""
+    if not ladung_mitschrift_speichern(DATEI_MITSCHRIFT, _MITSCHRIFT, jetzt):
+        melde_gebremst("mitschrift_schreiben", "Ladekosten: die offene Mitschrift liess sich nicht speichern - "
+                       "ein Neustart waehrend der Ladung verliert sie.", 3600)
+
+
+def ladung_mitschrift_holen(jetzt: float) -> None:
+    """Beim Dienststart: offene Mitschriften zurueckholen (Kern); beschaedigt oder zu alt -> verworfen, gemeldet."""
+    offen, lage = ladung_mitschrift_laden(DATEI_MITSCHRIFT, jetzt)
+    _MITSCHRIFT.clear()
+    _MITSCHRIFT.update(offen)
+    if lage == "beschaedigt":
+        melde_gebremst("mitschrift_kaputt", "Ladekosten: die gespeicherte Mitschrift ist beschaedigt und wird "
+                       "verworfen - eine laufende Ladung bekommt keine Kosten (-1).", 3600)
+    elif lage == "teils_verworfen":
+        _LOG.info("Ladekosten: eine gespeicherte Mitschrift war aelter als 12 h oder ungueltig und wurde verworfen.")
+    elif offen:
+        _LOG.info("Ladekosten: %d offene Mitschrift(en) nach dem Neustart uebernommen.", len(offen))
+
+
+def ladung_beginnen(nummer, haus, jetzt: float) -> None:
+    """Beim Ladebeginn: Mitschrift anlegen und speichern. haus 1 zu Hause, 0 unterwegs, -1 ohne Heimzone, -2 aus."""
+    _MITSCHRIFT[str(nummer)] = {"start": int(jetzt), "haus": haus, "proben": []}
+    ladung_mitschrift_sichern(jetzt)
+
+
+def ladung_abschliessen(nummer, lh, kwh, jetzt: float) -> tuple:
+    """Beim Ladeende: Eintrag entnehmen, Datei speichern, rechnen. (kosten, preis, grund); -1 ohne Aussage,
+    nie geschaetzt. Fehlt die Mitschrift einer Ladung zu Hause (Update mitten in der Ladung, beschaedigte
+    Datei), bleibt es bei -1 mit Grund mitschrift_fehlt."""
+    offen = _MITSCHRIFT.pop(str(nummer), None)
+    if offen is not None:
+        ladung_mitschrift_sichern(jetzt)
+    if lh != 1:
+        return (-1, -1, {0: "unterwegs", -1: "heimzone_fehlt"}.get(lh, "aus"))
+    if offen is None:
+        return (-1, -1, "mitschrift_fehlt")
+    _k, kosten, preis, _abd, grund = ladung_kosten(offen.get("proben") or [], kwh)
+    return (kosten, preis, grund)
+
+
+def ladung_mitschrift_entfernen(nummer, jetzt: float) -> None:
+    """Ladeende ohne Rechnung (Anfangswerte fehlten): einen noch offenen Eintrag verwerfen und speichern."""
+    if _MITSCHRIFT.pop(str(nummer), None) is not None:
+        ladung_mitschrift_sichern(jetzt)
+
+
+def ladung_probe(horcher, cfg: dict, merker: dict, stand: dict, jetzt: float) -> None:
+    """Je Minute einer Ladung zu Hause eine Probe [t, kW, Preis] in die offene Mitschrift (und in die Datei).
+    Audi meldet die Leistung nur je Abruf - jede Probe traegt die zuletzt gemeldete. merker bleibt fuer die
+    Aufrufstelle im Wartetakt in der Liste; die Mitschrift haengt seit dem Ruecktragen nicht mehr daran."""
+    if not cfg.get("haus_strompreis_ein") or not _MITSCHRIFT:
+        return
+    h = horcher.haus
+    frisch = haus_frisch(h, "strompreis", jetzt)
+    fz = {str(k): v for k, v in (stand.get("fahrzeuge") or {}).items()}
+    neu = False
+    for nr, offen in _MITSCHRIFT.items():
+        if not isinstance(offen, dict) or offen.get("haus") != 1:
+            continue
+        l = offen.setdefault("proben", [])
+        if l and int(jetzt) - int(l[-1][0]) < LADUNG_TAKT_S - 5:
+            continue
+        preis = preis_zum_zeitpunkt(haus_wert(h, "strompreis", "haus/strompreis/vorschau"),
+                                    haus_wert(h, "strompreis", "haus/strompreis/ab"),
+                                    haus_wert(h, "strompreis", "haus/strompreis/raster"),
+                                    haus_wert(h, "strompreis", "haus/strompreis/aktuell"), frisch, jetzt)
+        l.append([int(jetzt), (fz.get(nr) or {}).get("ladeleistung_kw"), preis])
+        del l[:-2000]
+        neu = True
+    if neu:
+        ladung_mitschrift_sichern(jetzt)
+
+
+# ---- G8: Meldungen an SignalBot (E9, wie Renault X4) ----
+def signal_nutzlast(text: str, dringend: int = 0) -> str:
+    """JSON {"text", "dringend"} fuer signalbot/befehl/plugin/<ordner> (rein), hoechstens 4000 Byte."""
+    t = str(text or "").replace("\r", " ")
+    while True:
+        s = json.dumps({"text": t, "dringend": 1 if dringend else 0}, ensure_ascii=False)
+        if len(s.encode("utf-8")) <= 4000 or len(t) <= 1:
+            return s
+        t = t[:max(1, len(t) - max(1, len(s.encode("utf-8")) - 4000) - 2)] + "…"
+
+
+def signal_thema(praefix, ordner) -> str:
+    """'<praefix>/befehl/plugin/<ordner>' oder '' (ungueltig)."""
+    import re
+    p, o = str(praefix or ""), str(ordner or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", p) or not re.fullmatch(r"[a-z0-9_]{1,40}", o):
+        return ""
+    return "%s/befehl/plugin/%s" % (p, o)
+
+
+def broker_senden(thema: str, nutzlast: str) -> bool:
+    """Kurze Sitzung direkt am Broker (Regeln/07 Nr. 15 Technik), qos 0, NIE retained."""
+    if _BROKER_SENDEN is not None:
+        return bool(_BROKER_SENDEN(thema, nutzlast))
+    try:
+        import paho.mqtt.publish as pub
+    except ImportError:
+        melde_gebremst("signal_paho", "SignalBot-Meldung nicht gesendet: paho-mqtt fehlt.", 86400)
+        return False
+    b = mqtt_broker()
+    auth = {"username": b["benutzer"], "password": b["passwort"]} if b["benutzer"] else None
+    try:
+        pub.single(thema, nutzlast, qos=0, retain=False, hostname=b["host"], port=b["port"], auth=auth,
+                   client_id="audiconnect-signal-%d" % os.getpid())
+        return True
+    except Exception as err:  # noqa: BLE001
+        melde_gebremst("signal_senden", "SignalBot-Meldung nicht gesendet: %s" % type(err).__name__, 3600)
+        return False
+
+
+SIGNAL_TEXTE = {
+    "laden_fertig": "%s: Die Ladung ist beendet.",
+    "laden_abbruch": "%s: Die Ladung wurde unter der Ladegrenze oder mit einer Stoerung beendet.",
+    "offen": "%s steht offen oder unverriegelt.",
+    "ausfall": "Audi Connect: seit drei Abrufen keine Daten mehr.",
+}
+
+
+def signal_senden(cfg: dict, anlass: str, nr, text: str) -> bool:
+    """Ein Ereignis an SignalBot (ab Werk aus, je Ereignis abwaehlbar, je Ereignis und Fahrzeug 1x je Stunde)."""
+    if not cfg.get("signal_ein") or str(cfg.get("signal_" + anlass)).strip() != "1":
+        return False
+    if _ansage_sperre("signal:%s:%s" % (anlass, nr), int(time.time())):
+        return False
+    thema = signal_thema(cfg.get("signal_praefix"), PNAME)
+    if not thema:
+        melde_gebremst("signal_thema", "SignalBot-Meldung nicht gesendet: Praefix oder Ordnername ungueltig.", 86400)
+        return False
+    ok = broker_senden(thema, signal_nutzlast(text, 0))
+    _LOG.info("SignalBot-Meldung %s (Fahrzeug %s): %s.", anlass, nr, "gesendet" if ok else "NICHT gesendet")
+    return ok
+
+
+# ---- G8-Zusatz (Ruecktragen aus VolkswagenID 0.9.33): Testmeldung an SignalBot (Reiter Einstellungen,
+# audi.py --signal-test). signal_test_thema(), signal_test_auswerten() und signal_test() wie VW; brauchen nur
+# config(), broker_anmeldung() bzw. die Nahtstelle _SIGNAL_TEST_SITZUNG.
+SIGNAL_TEST_TEXT = "Testmeldung von Audi Connect (LoxBerry): der Meldeweg an SignalBot funktioniert."
+SIGNAL_TEST_WARTEN = 5           # Sekunden, die --signal-test auf die Quittung der SignalBot-Bruecke wartet
+_SIGNAL_TEST_SITZUNG = None      # Nahtstelle fuer Proben: Funktion (thema, text, warten) -> Quittungstext oder None
+
+
+def broker_anmeldung() -> dict:
+    """Broker und Anmeldung aus general.json (mqtt_broker()) - nie in einer Befehlszeile."""
+    b = mqtt_broker()
+    return {"host": b["host"], "port": b["port"],
+            "auth": ({"username": b["benutzer"], "password": b["passwort"] or None} if b["benutzer"] else None)}
+
+
+def signal_test_thema(praefix) -> str:
+    """'<praefix>/befehl/senden' (Befehl 'senden' der SignalBot-Bruecke, Text als Nutzlast) oder '' (rein)."""
+    import re
+    p = str(praefix or "")
+    return "%s/befehl/senden" % p if re.fullmatch(r"[A-Za-z0-9_-]{1,40}", p) else ""
+
+
+def signal_test_auswerten(quittung) -> str:
+    """Quittung der Bruecke -> angenommen | abgelehnt | keine_antwort (rein). Die Bruecke 1.0.2 quittiert
+    'angenommen' oder 'abgelehnt: <grund>'; alles andere ist keine verwertbare Antwort."""
+    if quittung is None or str(quittung).strip() == "":
+        return "keine_antwort"
+    q = str(quittung).strip().lower()
+    if q.startswith("angenommen"):
+        return "angenommen"
+    if q.startswith("abgelehnt"):
+        return "abgelehnt"
+    return "keine_antwort"
+
+
+def _signal_test_sitzung(thema: str, text: str, warten: float):
+    """Eine kurze Sitzung: <thema>/quittung abonnieren, Text senden (retain 0), bis 'warten' s auf die Quittung."""
+    import threading
+    import paho.mqtt.client as mqtt
+    b = broker_anmeldung()
+    ergebnis = {"q": None}
+    fertig = threading.Event()
+    try:
+        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="audiconnect-signaltest-%d" % os.getpid())
+    except (AttributeError, TypeError):
+        k = mqtt.Client(client_id="audiconnect-signaltest-%d" % os.getpid())
+    if b["auth"]:
+        k.username_pw_set(b["auth"]["username"], b["auth"]["password"])
+
+    def bei_nachricht(_k, _u, m):
+        if not getattr(m, "retain", False):
+            ergebnis["q"] = m.payload.decode("utf-8", "replace")
+            fertig.set()
+    k.on_message = bei_nachricht
+    k.connect(b["host"], b["port"], 30)
+    k.loop_start()
+    try:
+        k.subscribe(thema + "/quittung", qos=0)
+        time.sleep(0.3)
+        k.publish(thema, text, qos=0, retain=False)
+        fertig.wait(warten)
+    finally:
+        k.loop_stop()
+        k.disconnect()
+    return ergebnis["q"]
+
+
+def signal_test() -> tuple:
+    """(ergebnis, text): aus | nicht_moeglich | angenommen | abgelehnt | keine_antwort. Ab Werk wirkungslos:
+    ist 'Meldungen an SignalBot' aus, wird nichts gesendet."""
+    cfg = config()
+    if not cfg.get("signal_ein"):
+        return ("aus", "Meldungen an SignalBot sind aus - es wurde nichts gesendet.")
+    thema = signal_test_thema(cfg.get("signal_praefix"))
+    if not thema:
+        return ("nicht_moeglich", "Das Praefix des SignalBot-Plugins ist ungueltig.")
+    try:
+        if _SIGNAL_TEST_SITZUNG is not None:
+            q = _SIGNAL_TEST_SITZUNG(thema, SIGNAL_TEST_TEXT, SIGNAL_TEST_WARTEN)
+        else:
+            q = _signal_test_sitzung(thema, SIGNAL_TEST_TEXT, SIGNAL_TEST_WARTEN)
+    except ImportError:
+        return ("nicht_moeglich", "paho-mqtt fehlt in der virtuellen Umgebung.")
+    except Exception as err:  # noqa: BLE001
+        return ("nicht_moeglich", "Broker nicht erreichbar (%s)." % type(err).__name__)
+    e = signal_test_auswerten(q)
+    return (e, mqtt_wert_saeubern(str(q or ""))[:120].replace(";", " "))
 
 
 # ---------------------------------------------------------------------------
@@ -3268,6 +4163,7 @@ def dienst(einmal: bool = False) -> int:
     fehler_folge = 0
     stammdaten: dict = {}
     merker = merker_lesen()
+    ladung_mitschrift_holen(time.time())    # G6-Zusatz: offene Mitschriften ueber einen Neustart retten
     bremse = Bremse()
     horcher = Horcher()
     anmelde_fehl = 0        # C10: abgewiesene Anmeldungen in Folge
@@ -3360,6 +4256,7 @@ def dienst(einmal: bool = False) -> int:
 
             if ok and fahrzeuge:
                 stand = {"ts": int(time.time()), "fahrzeuge": fahrzeuge}
+                vorklima_nach_abruf(merker, cfg, fahrzeuge)
             abbild_schreiben(stand, cfg, ok, fehler, code, fehler_folge, zyklus)
             merker_schreiben(merker)
             zustand_schreiben(ok=ok, fehler=fehler, fehler_code=code, zyklus=zyklus,
@@ -3370,7 +4267,8 @@ def dienst(einmal: bool = False) -> int:
                               probe=1 if cfg.get("probe_ein") else 0,
                               horcher=sorted(horcher.themen),
                               horcher_verbunden=1 if horcher.verbunden else 0,
-                              horcher_fehler=horcher.fehler)
+                              horcher_fehler=horcher.fehler,
+                              haus=haus_zustand(horcher.haus, time.time()))
             rechte_sichern()
             # Nr. 36 b: Ansagen - nach Abbild, MQTT und Zustand, damit eine haengende
             # Ausgabe keinen Meldeweg aufhaelt.
@@ -3395,20 +4293,39 @@ def dienst(einmal: bool = False) -> int:
             while rest > 0 and _LAUF:
                 if rest % 30 == 0:
                     lebenszeichen_schreiben(cfg)       # C12
+                    # Gruppe 41: der Reiter Test sieht die Frische der Haus-Quellen.
+                    zustand_schreiben(haus=haus_zustand(horcher.haus, time.time()))
                 try:
                     if warteschlange(cc, liste, cfg, bremse):
                         break  # Sofortabruf angefordert
-                    # Die Vorklimatisierung wird wie ein Befehl von aussen
-                    # behandelt: derselbe Weg, dieselben Wachen, dieselbe
-                    # Protokollzeile. Ein zweiter Weg an der Warteschlange
-                    # vorbei waere eine zweite Stelle, an der dieselben Regeln
-                    # gelten muessten - und die erste, die man vergisst.
-                    auftrag = vorklimatisierung(horcher, cfg, merker)
-                    if auftrag is not None:
-                        e_ok, e_meldung, _ = befehl_ausfuehren(cc, liste, cfg,
-                                                               auftrag, bremse)
-                        _LOG.info("Vorklimatisierung: ok=%s %s", e_ok, e_meldung)
+                    if rest % 10 == 0:
+                        jetzt_w = time.time()
+                        # Gruppe 41 (G5): die Vorklimatisierung wird wie ein Befehl von aussen
+                        # behandelt: derselbe Weg, dieselben Wachen, dieselbe Protokollzeile
+                        # (befehl_ausfuehren()). B1: erledigt erst nach ok 1.
+                        auftrag = vorklima_takt(horcher, cfg, merker, stand, jetzt_w)
+                        sofort = False
+                        if auftrag is not None:
+                            e_ok, e_meldung, _ = befehl_ausfuehren(cc, liste, cfg,
+                                                                   auftrag, bremse)
+                            _LOG.info("Vorklimatisierung: ok=%s %s", e_ok, e_meldung)
+                            vorklima_ergebnis(merker, auftrag, e_ok)
+                            sofort = auftrag.get("aktion") == "abruf" and e_ok == 1 \
+                                and not cfg.get("probe_ein")
+                        # G4/E7b: Abruf bei Ankunft - derselbe Weg wie ein Sofortabruf von aussen.
+                        if not sofort and ankunft_takt(horcher, cfg, merker, stand, jetzt_w):
+                            e_ok, e_meldung, _ = befehl_ausfuehren(cc, liste, cfg,
+                                                                   {"aktion": "abruf", "anlass": "ankunft"}, bremse)
+                            _LOG.info("Ankunft: ok=%s %s", e_ok, e_meldung)
+                            sofort = e_ok == 1 and not cfg.get("probe_ein")
+                        # G6: je Minute einer Ladung zu Hause eine Preisprobe.
+                        ladung_probe(horcher, cfg, merker, stand, jetzt_w)
+                        # Nachtrag 4: Restminuten je Minute nachfuehren (nur Geaendertes).
+                        restminuten_nachfuehren(cfg, jetzt_w)
+                        vorklima_melden(cfg, merker, jetzt_w)
                         merker_schreiben(merker)
+                        if sofort:
+                            break
                 except Exception as err:  # noqa: BLE001
                     _LOG.error("Warteschlange: %s", fehlertext(err))
                 time.sleep(1)
@@ -3640,7 +4557,7 @@ class AnmeldesperreGilt(Exception):
 # AUFRUFE hiess bis 0.9.23 SCHALTER und ueberschrieb damit das gleichnamige
 # Woerterbuch der Fahrzeugeinstellungen weiter oben - aktion=einstellung
 # antwortete immer "Unbekannte Einstellung" (B-Nachzug 01.10.2026).
-AUFRUFE = ("--einmal", "--selbsttest", "--themen", "--mqtt-leeren")
+AUFRUFE = ("--einmal", "--selbsttest", "--themen", "--mqtt-leeren", "--signal-test")
 _SPERRE = None
 
 
@@ -3676,6 +4593,12 @@ def main() -> int:
         return themen_ausgeben()
     if "--mqtt-leeren" in sys.argv:
         return mqtt_leeren_aufruf()
+    # Gruppe 41 (Ruecktragen aus VW 0.9.33): Testmeldung an SignalBot (Knopf im Reiter Einstellungen). Ohne
+    # Protokoll, ohne Sperre - er laeuft neben dem Dienst; eine Zeile fuer die Oberflaeche (au_signal_test_lesen()).
+    if "--signal-test" in sys.argv:
+        e, text = signal_test()
+        print("SIGNAL_TEST;ERGEBNIS=%s;TEXT=%s" % (e, text))
+        return 0 if e == "angenommen" else 1
     log_einrichten()
     if "--selbsttest" in sys.argv:
         return selbsttest()

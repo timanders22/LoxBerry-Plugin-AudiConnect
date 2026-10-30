@@ -41,7 +41,8 @@ if (!function_exists('au_e')) {
 }
 
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b, seit
- * 0.9.25). Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
+ * 0.9.25; seit 0.9.30 Stamm 1.2.1 mit weiteren Ausgabezielen, au_mit_zielen(), Welle Mehrfach-Ziele).
+ * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
 
@@ -167,7 +168,8 @@ function au_paths()
  *
  * Vier Schluessel gibt es NUR hier: aktionstoken, schalttoken, wartezeit und
  * nur_miniserver. Sie betreffen den Endpunkt und die Oberflaeche; der Dienst
- * liest sie nie.
+ * liest sie nie. Seit 0.9.30 (Gruppe 41) ebenso befehle_mqtt_ein,
+ * befehle_mqtt_steuern (Befehlsbruecke) und endpunkt_ein (Endpunkt).
  */
 function au_vorgaben()
 {
@@ -207,6 +209,30 @@ function au_vorgaben()
         'ladeempf_grenze'   => 0,
         'ladeempf_unter'    => 1,
         'ladeempf_alter'    => 900,
+        // Gruppe 41 (0.9.30): zweite Quelle der Ladeempfehlung - 'thema' (wie bisher) oder 'haus' (haus/strompreis).
+        'ladeempf_quelle'   => 'thema',
+        // Gruppe 41 (0.9.30): Haus-Themen (Regeln/07 Nr. 15), Vorklimatisierung nach MG-Regeln,
+        // Ladekosten, SignalBot - alles ab Werk aus. Dieselben Werte wie VORGABEN in bin/audi.py.
+        'haus_abfahrt_ein'      => 0,
+        'vorklima_anwesend_ein' => 0,
+        'vorklima_wetter_ein'   => 0,
+        'vorklima_kalt_unter'   => 5,
+        'vorklima_heiss_ueber'  => 25,
+        'ankunft_ein'           => 0,
+        'ankunft_quelle'        => '',
+        'haus_strompreis_ein'   => 0,
+        'signal_ein'            => 0,
+        'signal_praefix'        => 'signalbot',
+        'signal_laden_fertig'   => 1,
+        'signal_laden_abbruch'  => 1,
+        'signal_offen'          => 1,
+        'signal_ausfall'        => 1,
+        'signal_vorklima'       => 1,
+        // Gruppe 41 (0.9.30): nur hier, nicht im Dienst. Befehle ueber die Befehlsbruecke (ab Werk und
+        // beim Update aus); der HTTP-Endpunkt ab Werk aus, beim Update an (postinstall.sh, G3).
+        'befehle_mqtt_ein'      => 0,
+        'befehle_mqtt_steuern'  => 0,
+        'endpunkt_ein'          => 0,
         // Nr. 36 b (seit 0.9.25): Ansageanlaesse, je einzeln abwaehlbar - dieselben Werte wie
         // VORGABEN in bin/audi.py. Gesprochen wird erst mit einer Ausgabeart (tts, ab Werk 'aus').
         'ansage_laden_fertig'  => 1,
@@ -1212,6 +1238,54 @@ function au_python_fassung()
     return trim(implode('', $ausgabe));
 }
 
+/* ---------------- G8-Zusatz: Testmeldung an SignalBot (Reiter Einstellungen; Ruecktragen aus VW 0.9.33) ---------------- */
+
+/**
+ * Die Zeile des Dienstes "SIGNAL_TEST;ERGEBNIS=<e>;TEXT=<t>" lesen (Rein). Rueckgabe
+ * array(Ergebnis, Text) mit Ergebnis angenommen|abgelehnt|keine_antwort|aus|nicht_moeglich.
+ * Unbekanntes oder fehlendes Ergebnis zaehlt als nicht_moeglich - nie als angenommen.
+ */
+function au_signal_test_lesen(array $zeilen)
+{
+    foreach ($zeilen as $z) {
+        if (preg_match('/^SIGNAL_TEST;ERGEBNIS=([a-z_]+);TEXT=(.*)$/', trim((string) $z), $m)
+            && in_array($m[1], array('angenommen', 'abgelehnt', 'keine_antwort', 'aus', 'nicht_moeglich'), true)) {
+            return array($m[1], substr($m[2], 0, 200));
+        }
+    }
+    return array('nicht_moeglich', '');
+}
+
+/**
+ * Testmeldung an SignalBot: der Dienst (audi.py --signal-test) sendet einen festen Satz an
+ * <signal_praefix>/befehl/senden und wartet bis 5 s auf die Quittung der SignalBot-Bruecke.
+ * Ab Werk wirkungslos: ist "Meldungen an SignalBot" aus, wird nichts gesendet.
+ * Rueckgabe array(Ergebnis, Satz fuer die Oberflaeche).
+ */
+function au_signal_test($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = au_config(false);
+    }
+    if (empty($cfg['signal_ein'])) {
+        return array('aus', au_t('SIGNAL.T_AUS'));
+    }
+    $p = au_paths();
+    $py = $p['bindir'] . '/venv/bin/python3';
+    $skript = $p['bindir'] . '/audi.py';
+    if (!is_file($py) || !is_file($skript)) {
+        return array('nicht_moeglich', au_t('SIGNAL.T_NICHT_MOEGLICH'));
+    }
+    $aus = array();
+    @exec(escapeshellarg($py) . ' ' . escapeshellarg($skript) . ' --signal-test 2>/dev/null', $aus);
+    list($e, $text) = au_signal_test_lesen($aus);
+    $schl = array('angenommen' => 'SIGNAL.T_ANGENOMMEN', 'abgelehnt' => 'SIGNAL.T_ABGELEHNT',
+                  'keine_antwort' => 'SIGNAL.T_KEINE_ANTWORT', 'aus' => 'SIGNAL.T_AUS',
+                  'nicht_moeglich' => 'SIGNAL.T_NICHT_MOEGLICH');
+    $satz = au_t($schl[$e]);
+    return array($e, $e === 'abgelehnt' ? sprintf($satz, $text) : $satz);
+}
+
 /** Ausgabe von audi.py --selbsttest. */
 function au_selbsttest()
 {
@@ -1608,8 +1682,10 @@ function au_bremse_vergessen($schluessel, $marke = '')
 function au_befehl_absetzen($befehl, $wartezeit = null)
 {
     $p = au_paths();
-    $cfg = au_config();
     if ($wartezeit === null) {
+        // Gruppe 41: die Konfiguration nur fuer die Wartezeit lesen - die Bruecke uebergibt 0
+        // und darf nichts heilen (wie der unangemeldete Endpunkt).
+        $cfg = au_config();
         $wartezeit = au_wartezeit_fuer(isset($befehl['aktion']) ? $befehl['aktion'] : '',
                                        (int) $cfg['wartezeit']);
     }
@@ -1724,6 +1800,9 @@ function au_ladungen_lesen($grenze = 200)
             'soc_ende'  => $c[5] === '' ? null : (float) $c[5],
             'km'        => $c[6] === '' ? null : (float) $c[6],
             'kwh'       => $c[7] === '' ? null : (float) $c[7],
+            // Gruppe 41 (G6): zwei Spalten hinten; Zeilen vor 0.9.30 haben sie nicht (unbekannt).
+            'kosten'    => (isset($c[8]) && $c[8] !== '') ? (float) $c[8] : null,
+            'preis'     => (isset($c[9]) && $c[9] !== '') ? (float) $c[9] : null,
         );
     }
     // Neueste zuerst, und nur so viele, wie die Seite tragen kann.
@@ -1832,12 +1911,17 @@ function au_horcher_themen($cfg = null)
             $t[] = $pfad . '/OK';
         }
     }
-    if (!empty($cfg['ladeempf_ein'])) {
+    if (!empty($cfg['ladeempf_ein']) && (string) $cfg['ladeempf_quelle'] !== 'haus') {
         $th = trim((string) (isset($cfg['ladeempf_thema']) ? $cfg['ladeempf_thema'] : ''));
         if ($th !== '') {
             $t[] = $th;
         }
     }
+    // Gruppe 41 (0.9.30): Haus-Themen nach Regeln/07 Nr. 15 - dieselbe Liste wie horcher_themen() im Dienst.
+    foreach (au_haus_themen($cfg) as $x) {
+        $t[] = $x;
+    }
+    $t = array_values(array_unique($t));
     sort($t);
     return $t;
 }
@@ -2836,7 +2920,12 @@ function au_haken()
                  'gps_ein', 'melden_ein', 'nur_miniserver', 'abfahrt_ein',
                  'ladeempf_ein', 'ladeempf_unter',
                  'ansage_laden_fertig', 'ansage_laden_abbruch', 'ansage_offen', 'ansage_licht',
-                 'ansage_klima', 'ansage_ausfall');
+                 'ansage_klima', 'ansage_ausfall',
+                 // Gruppe 41 (0.9.30)
+                 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'endpunkt_ein', 'haus_abfahrt_ein',
+                 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'ankunft_ein', 'haus_strompreis_ein',
+                 'signal_ein', 'signal_laden_fertig', 'signal_laden_abbruch', 'signal_offen',
+                 'signal_ausfall', 'signal_vorklima');
 }
 
 /**
@@ -2930,6 +3019,13 @@ function au_wert_pruefen($k, $v)
         }
         return '';
     }
+    // Gruppe 41 (0.9.30): dieselben Pruefungen wie das Formular (au_wert_g41()).
+    if (in_array($k, array('vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle',
+                           'ladeempf_quelle', 'signal_praefix'), true)) {
+        return au_wert_g41($k, (string) $v) === null
+            ? sprintf(au_t($k === 'ankunft_quelle' || $k === 'signal_praefix' || $k === 'ladeempf_quelle'
+                ? 'EINST.SICH_WERT_THEMA' : 'EINST.SICH_WERT_ZAHL'), au_e((string) $k)) : '';
+    }
     if ($k === 'heim_breite' || $k === 'heim_laenge' || $k === 'ladeempf_grenze') {
         // Duerfen negativ und gebrochen sein, auch mit Komma.
         if ((string) $v !== '' && preg_match('/^-?[0-9]{1,7}([.,][0-9]{1,8})?$/', (string) $v) !== 1) {
@@ -2948,10 +3044,63 @@ function au_wert_pruefen($k, $v)
  * gemeinsamen Sprachausgabe (sprachausgabe.php). Ab Werk ist die Ausgabe aus.
  * ================================================================== */
 
-/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (die Linie gibt keinen Text an Loxone). */
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (die Linie gibt keinen Text an Loxone). Weitere
+ *  Ausgabeziele (Tabelle, 'ziele') seit 0.9.30 mit Stamm 1.2.1 - au_mit_zielen() unten; ohne Tabelle wie bisher. */
 function au_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    /* Gruppe 41 (0.9.30, Sprachmodul 1.2.0/1.2.1, E10): aus ansage_modi() abgeleitet statt abgeschrieben -
+     * damit kommen sonos4lox und (ab Modul 1.1.4) sonox dazu. Bis 0.9.29 stand hier eine feste
+     * Liste, und Sonos4Lox liess sich nicht waehlen. */
+    $m = function_exists('ansage_modi') ? ansage_modi()
+        : array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    $aus = array();
+    foreach ($m as $x) {
+        if ($x === 'audioserver') {
+            continue;
+        }
+        if ($x === 'sonox' && (!defined('ANSAGE_FASSUNG') || version_compare(ANSAGE_FASSUNG, '1.1.4', '<'))) {
+            continue;
+        }
+        $aus[] = $x;
+    }
+    return $aus;
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function au_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). au_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), au_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function au_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function au_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (0.9.30): die Felder der Tabelle in der Einmalmeldung (X-2), flach name.N fuer N = 2..6 -
+ *  nur, wenn die geladene Abschrift die Tabelle kann. */
+function au_ziele_x2_felder()
+{
+    $f = array();
+    if (au_mit_zielen()) {
+        for ($i = 2; $i <= 6; $i++) {
+            foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein',
+                           'tts_ziel_loeschen') as $n) {
+                $f[] = $n . '.' . $i;
+            }
+        }
+    }
+    return $f;
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen. */
@@ -3014,6 +3163,10 @@ function au_ansage_k()
         'kopf'   => array('User-Agent: LoxBerry AudiConnect'),
         'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
         't'      => function ($s) { return au_t($s); },
+        /* B7 (Gruppe 41): Sprechfrist an das Modul 20 s = Frist des Dienstes (ANSAGE_FRIST_S 25 s in
+         * bin/audi.py) minus 5 s. Modul 1.2.1 wendet sie in jedem Weg an (ansage_frist()), auch bei
+         * Sonos4Lox/SonoX ohne Ziele; 1.2.0 tat es nur im Mehrziel-Weg. */
+        'frist'  => 20,
         /* K_TTS_EINTRAG: den Satz bringt das Modul seit 1.1.2 selbst mit; die Umlenkung auf
          * EINST.SICH_TTS_EINTRAG ist seit 0.9.27 gestrichen (X-10). Ab Werk aus - kein 'werk'. */
     );
@@ -3145,7 +3298,8 @@ function au_rueckspiel_altwerte()
  *
  * Grundlage ist der uebergebene Bestand, nicht die Werkseinstellung.
  * Rueckgabe: array(Konfiguration|null, Zugang|null, Beanstandungen[],
- *                  uebernommen, nicht enthalten, behaltene Token[]).
+ *                  uebernommen, nicht enthalten, behaltene Token[],
+ *                  behaltene Spaetschluessel[] - seit 0.9.30, Welle Mehrfach-Ziele: tts.ziele).
  */
 function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
 {
@@ -3153,9 +3307,10 @@ function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
     $namen = array();     // X-3: die Namen der beanstandeten Einstellungen, nie Werte
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, null, array(au_t('EINST.SICH_KEIN_JSON')), 0, 0, array());
+        return array(null, null, array(au_t('EINST.SICH_KEIN_JSON')), 0, 0, array(), array());
     }
     $behalten = array();    // U4: leere Token - das geltende bleibt
+    $spaet = array();       // Welle Mehrfach-Ziele (0.9.30): Spaetliste - fehlte in der Sicherung, gilt weiter
     if ($bestand === null) {
         $bestand = au_config();
     }
@@ -3233,7 +3388,20 @@ function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
                 continue;
             }
             $au_tj = au_tts();
-            list($au_tv) = ansage_vervollstaendigen($au_tp + $au_tj, 'aus');
+            /* Welle Mehrfach-Ziele (0.9.30): "$au_tp + $au_tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
+             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
+            $au_tneu = array('tts' => $au_tp);
+            $au_tjetzt = array('tts' => $au_tj);
+            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+             * heisst "keine weiteren Ziele" und wird so uebernommen. */
+            $au_spaete = array();
+            if (is_array($au_tneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                list($au_tneu['tts'], $au_spaete) = ansage_sicherung_spaet($au_tneu['tts'],
+                    (isset($au_tjetzt['tts']) && is_array($au_tjetzt['tts'])) ? $au_tjetzt['tts'] : null);
+            }
+            foreach ($au_spaete as $au_sn) { $spaet[] = $au_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+            list($au_tv) = ansage_vervollstaendigen($au_tneu['tts'] + $au_tj, 'aus');
             $neu['tts'] = ansage_sicherung_tokens_behalten($au_tv, $au_tj);
             $anzahl++;
             continue;
@@ -3292,7 +3460,9 @@ function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
             /* Nr. 36 b: eine Sicherung von 0.9.24 oder frueher kennt die Sprachausgabe noch
              * nicht. Sie bleibt zurueckspielbar; die neuen Schluessel behalten den Wert dieser
              * Anlage ($neu geht vom Bestand aus), und die Seite sagt es. */
-            if (in_array($k, au_ansage_neue_schluessel(), true)) {
+            if (in_array($k, au_ansage_neue_schluessel(), true)
+                || in_array($k, au_neue_schluessel_0930(), true)) {
+                // Gruppe 41: ebenso die Schluessel von 0.9.30 (endpunkt_ein behaelt den Wert der Anlage).
                 continue;
             }
             $fehlend[] = $k;
@@ -3306,7 +3476,865 @@ function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
         }
     }
     if ($mangel) {
-        return array(null, null, $mangel, $anzahl, $fehlend, $behalten);
+        return array(null, null, $mangel, $anzahl, $fehlend, $behalten, $spaet);
     }
-    return array($neu, $zugang, $mangel, $anzahl, $fehlend, $behalten);
+    return array($neu, $zugang, $mangel, $anzahl, $fehlend, $behalten, $spaet);
+}
+
+/* ==================================================================
+ * Gruppe 41 (0.9.30): Hausform - Gateway V2, Befehlsbruecke 1.0.2,
+ * endpunkt_ein, Haus-Themen. Bauvorschrift
+ * Pruefung-Durchgang-2026-09-29/wz_bild/GRUPPE41_BAUVORSCHRIFT.md (G1-G3, 2.1),
+ * Vorlage MGiSmart 1.1.28 (mg_v2_*, mg_bruecke_*) und Renault NG 2.1.20.
+ * ================================================================== */
+
+/** Die Schluessel, die mit 0.9.30 dazukamen - eine aeltere Sicherung kennt sie nicht; die Anlage behaelt ihren Wert. */
+function au_neue_schluessel_0930()
+{
+    return array('befehle_mqtt_ein', 'befehle_mqtt_steuern', 'endpunkt_ein', 'haus_abfahrt_ein',
+                 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'vorklima_kalt_unter', 'vorklima_heiss_ueber',
+                 'ankunft_ein', 'ankunft_quelle', 'haus_strompreis_ein', 'ladeempf_quelle', 'signal_ein',
+                 'signal_praefix', 'signal_laden_fertig', 'signal_laden_abbruch', 'signal_offen',
+                 'signal_ausfall', 'signal_vorklima');
+}
+
+/** Sind Zugangsdaten eingetragen? (E-Mail und Passwort; die S-PIN ist fuer das Lesen nicht noetig.) */
+function au_zugang_da()
+{
+    $z = au_zugang();
+    return $z['email'] !== '' && $z['laenge'] > 0;
+}
+
+/* ---------------- G1: MQTT-Gateway V2 ---------------- */
+
+/** Der Name, den das MQTT-Gateway vergibt: '/', '%' und Leerzeichen werden '_' (Regeln/07 :69). Rein. */
+function au_gateway_name($thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $thema);
+}
+
+/** Die Themen-Tabelle bin/au_themen.json je Ebene: array('dienst' => [...], 'fahrzeug' => [...]) oder array(). */
+function au_themen_roh()
+{
+    $f = au_themen_datei();
+    $d = $f !== '' ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($d)) {
+        return array();
+    }
+    $aus = array('dienst' => array(), 'fahrzeug' => array());
+    foreach (array_keys($aus) as $ebene) {
+        if (!isset($d[$ebene]) || !is_array($d[$ebene])) {
+            continue;
+        }
+        foreach ($d[$ebene] as $e) {
+            if (!is_array($e) || !isset($e['thema']) || !is_string($e['thema'])) {
+                continue;
+            }
+            $aus[$ebene][] = array('thema' => $e['thema'],
+                'art' => (isset($e['art']) && $e['art'] === 'text') ? 'text' : 'zahl',
+                'bez' => isset($e['bez']) && is_string($e['bez']) ? $e['bez'] : '');
+        }
+    }
+    return $aus;
+}
+
+/** Die Fahrzeugnummern fuer die Hakenliste: aus dem Abbild, ohne Abbild Fahrzeug 1. */
+function au_v2_fahrzeugnummern()
+{
+    $n = array();
+    foreach (array_keys(au_fahrzeuge()) as $k) {
+        if (preg_match('/^[0-9]{1,2}$/', (string) $k) && (int) $k >= 1) {
+            $n[] = (int) $k;
+        }
+    }
+    sort($n);
+    return $n ? array_values(array_unique($n)) : array(1);
+}
+
+/**
+ * Namenstabelle und V2-Hakenliste - EINE Quelle fuer Reiter MQTT, Reiter Test,
+ * Linienpruefer und Messskript (G1). Aus der Themen-Tabelle, nach der der Dienst
+ * sendet: alle Zahlenthemen (keine Textthemen - das Musterprojekt hat keinen
+ * Texteingang, nie vin/adresse), nicht status/ts (sekuendlich wechselnd, Regeln/07
+ * :267), dazu status/befehle der Bruecke. Noncached genau: ok, status/zaehler,
+ * fahrzeug<n>/ok, status/befehle. Rueckgabe Liste von array(thema, name, noncached, bez).
+ */
+function au_v2_haken($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = au_config(false);
+    }
+    $pf = trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''), '/ ');
+    if ($pf === '') {
+        $pf = 'audi';
+    }
+    $d = au_themen_roh();
+    $aus = array();
+    if (!$d || !$d['fahrzeug']) {
+        return $aus;   // leer -> "nicht feststellbar", nie "0 von 0"
+    }
+    foreach ($d['dienst'] as $e) {
+        if ($e['art'] === 'text' || $e['thema'] === 'status/ts') {
+            continue;
+        }
+        $t = $pf . '/' . $e['thema'];
+        $aus[] = array('thema' => $t, 'name' => au_gateway_name($t),
+                       'noncached' => in_array($e['thema'], array('ok', 'status/zaehler'), true), 'bez' => $e['bez']);
+    }
+    foreach (au_v2_fahrzeugnummern() as $nr) {
+        foreach ($d['fahrzeug'] as $e) {
+            if ($e['art'] === 'text') {
+                continue;
+            }
+            $t = $pf . '/fahrzeug' . $nr . '/' . $e['thema'];
+            $aus[] = array('thema' => $t, 'name' => au_gateway_name($t), 'noncached' => $e['thema'] === 'ok',
+                           'bez' => $e['bez']);
+        }
+    }
+    $t = $pf . '/status/befehle';
+    $aus[] = array('thema' => $t, 'name' => au_gateway_name($t), 'noncached' => true, 'bez' => 'AU_MQTT.STATUS_BEFEHLE');
+    return $aus;
+}
+
+/** Die angehakten Datenpunkte aus subscriptions.json (Rein): Id => noncached. null = unlesbar. Abschrift mg_v2_abos(). */
+function au_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/** Soll gegen Ist (Rein): array(1|0, fehlt[], noncached_falsch[], da, soll). Abschrift mg_v2_haken_abgleich(). */
+function au_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ((bool) $abo[$e['thema']] !== (bool) $e['noncached']) {
+            $nc[] = $e['name'] . ($e['noncached'] ? ' (Noncached fehlt)' : ' (Noncached zu viel)');
+        }
+    }
+    return array(($fehlt || $nc) ? 0 : 1, $fehlt, $nc, $da, count($soll));
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: alle Datenpunkte angehakt?" (einheitliche Pruefzeile, Nachtwelle 29.10.):
+ * array(1|0|2, Text) - 2 = grau (nicht feststellbar, Gateway V1, noch nicht eingerichtet). Liest nur.
+ * Die Argumente nach $cfg nur fuer Proben; sonst aus Tabelle, general.json und subscriptions.json.
+ */
+function au_v2_haken_lage($cfg = null, $soll = null, $abo = false, $fassung = null, $eingerichtet = null)
+{
+    if ($cfg === null) {
+        $cfg = au_config(false);
+    }
+    if ($fassung === null) {
+        $m = au_mqtt_zustand();
+        $fassung = !empty($m['gefunden']) ? (int) $m['fassung'] : 0;
+    }
+    if ((int) $fassung <= 0) {
+        return array(2, au_t('PRUEF.V2_UNKLAR'));
+    }
+    if ((int) $fassung < 2) {
+        return array(2, au_t('PRUEF.V2_V1'));
+    }
+    if ($soll === null) {
+        $soll = au_v2_haken($cfg);
+    }
+    if (!$soll) {
+        return array(2, au_t('PRUEF.V2_LEER'));
+    }
+    if ($eingerichtet === null) {
+        $eingerichtet = au_zugang_da();
+    }
+    if (!$eingerichtet) {
+        return array(2, au_t('PRUEF.V2_NICHT_EINGERICHTET'));
+    }
+    if ($abo === false) {
+        $p = au_paths();
+        $f = $p['home'] !== '' ? $p['home'] . '/config/system/subscriptions.json' : '';
+        $abo = ($f !== '' && is_file($f)) ? au_v2_abos(json_decode((string) @file_get_contents($f), true)) : null;
+    }
+    if ($abo === null) {
+        return array(2, au_t('PRUEF.V2_UNKLAR'));
+    }
+    list($ok, $fehlt, $nc, $da, $zahl) = au_v2_haken_abgleich($soll, $abo);
+    $txt = sprintf(au_t('PRUEF.V2_ZAHL'), $da, $zahl);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(au_t('PRUEF.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' ...' : ''));
+    }
+    if ($nc) {
+        $txt .= ' ' . sprintf(au_t('PRUEF.V2_NC'), implode(', ', $nc));
+    }
+    return array($ok, $txt);
+}
+
+/* ---------------- G2: eine Annahmefunktion fuer HTTP und MQTT ---------------- */
+
+/** Fahrzeug zur laufenden Nummer oder VIN, wie au_waehlen() im Endpunkt. null = unbekannt. */
+function au_fahrzeug_suchen(array $alle, $schluessel)
+{
+    if (isset($alle[$schluessel])) {
+        return $alle[$schluessel];
+    }
+    foreach ($alle as $f) {
+        if (isset($f['vin']) && strcasecmp((string) $f['vin'], (string) $schluessel) === 0) {
+            return $f;
+        }
+    }
+    return null;
+}
+
+/** Die Muster der Zusatzwerte - dieselben wie au_param() im Endpunkt (abweisen, nie zurechtbiegen). */
+function au_befehl_muster()
+{
+    return array('fahrzeug' => '/^([0-9]{1,2}|[A-Za-z0-9]{17})$/', 'temp' => '/^[0-9]{1,2}([.,][05])?$/',
+                 'prozent' => '/^[0-9]{1,3}$/', 'ampere' => '/^[0-9]{1,2}$/', 'dauer' => '/^[0-9]{1,2}$/',
+                 'name' => '/^[a-z_]{1,32}$/', 'wert' => '/^[01]$/', 'probe' => '/^[01]$/');
+}
+
+/**
+ * Einen schaltenden Befehl annehmen - DIESELBE Funktion fuer den HTTP-Endpunkt und
+ * die Befehlsbruecke (Bauvorschrift G41 G2, Regeln/07 Abschnitt 3a). Pruefreihenfolge
+ * wie der Endpunkt bis 0.9.29 (dort inline): Aktion bekannt -> [MQTT: spin_pruefen nie]
+ * -> Fahrzeug im Abbild -> Steuerung -> Eingriff -> Dienst laeuft -> Zusatzwerte ->
+ * X-7-Gleichwertbremse -> Einreihen. HTTP wartet auf den Dienst wie bisher; MQTT wartet
+ * nie (Quittung "uebergeben": eingereiht = angenommen, E3). Der Dienst prueft danach
+ * ein zweites Mal (Steuerung, Gefahr, S-PIN-Sperre, Stundenbremse fuer alle Wege).
+ *
+ * $param: temp, prozent, ampere, dauer, name, wert, probe (Zeichenketten wie aus der Adresse).
+ * Rueckgabe array('ok' => 0|1|2, 'grund', 'http' => Code, 'text' => Satz,
+ *                 'art' => abgewiesen|unveraendert|gesetzt, ['kopf' => Zeile bei FAHRZEUG_UNBEKANNT]).
+ */
+function au_befehl_annehmen($aktion, array $param, $fahrzeug, $quelle)
+{
+    $mqtt = ($quelle === 'mqtt');
+    $aktion = is_string($aktion) ? $aktion : '';
+    // $melden: eine Protokollzeile wie bisher im Endpunkt (nicht fuer fehlende Zusatzwerte und unbekannte Fahrzeuge).
+    $raus = function ($grund, $http, $text, $melden = true) use ($aktion, $mqtt) {
+        if (!$mqtt && $melden) {
+            au_endpunkt_abweisung($grund, $aktion);
+        }
+        return array('ok' => 0, 'grund' => $grund, 'http' => $http, 'text' => $text, 'art' => 'abgewiesen');
+    };
+    $alle_befehle = au_befehle();
+    if (!isset($alle_befehle[$aktion])) {
+        return $raus('UNBEKANNTE_AKTION', 400, 'Erlaubt sind: ' . implode(', ', array_keys($alle_befehle)));
+    }
+    $eig = $alle_befehle[$aktion];
+    if ($mqtt && $aktion === 'spin_pruefen') {
+        // E5: die S-PIN-Pruefung geht nie ueber MQTT (UDP 11884 ist im Heimnetz ohne Anmeldung erreichbar).
+        return $raus('NICHT_UEBER_MQTT', 403, 'Die S-PIN-Pruefung geht nur ueber die Oberflaeche oder das Schalttoken.');
+    }
+    $muster = au_befehl_muster();
+    $fahrzeug = is_scalar($fahrzeug) ? (string) $fahrzeug : '';
+    if ($fahrzeug === '') {
+        $fahrzeug = '1';
+    }
+    if (!preg_match($muster['fahrzeug'], $fahrzeug)) {
+        return $raus('PARAMETER', 400, 'Der Wert von fahrzeug passt nicht ins erlaubte Muster.');
+    }
+    $alle = au_fahrzeuge();
+    $f = au_fahrzeug_suchen($alle, $fahrzeug);
+    if ($f === null && empty($eig['ohne_fz'])) {
+        // Nie auf Fahrzeug 1 zurueckfallen (0.9.12: eine vertippte VIN entriegelte das falsche Auto).
+        $r = $raus('FAHRZEUG_UNBEKANNT', 404, '', false);
+        $r['kopf'] = sprintf('%s;OK=0;GRUND=FAHRZEUG_UNBEKANNT;N=%d;ALTER=%d', strtoupper($aktion), count($alle), au_alter());
+        return $r;
+    }
+    $cfg = au_config(false);
+    if ($aktion !== 'abruf' && empty($cfg['steuerung_ein'])) {
+        return $raus('STEUERUNG_AUS', 403, "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.");
+    }
+    if ($eig['gefahr'] && empty($cfg['gefahr_ein'])) {
+        /* Der ZWEITE Haken. Ver- und Entriegeln, Hupe und Lichthupe wirken auf ein Fahrzeug, das im
+         * oeffentlichen Raum steht - ein versehentliches Entriegeln laesst es offen stehen. */
+        return $raus('EINGRIFF_GESPERRT', 403, "Dieser Befehl greift in ein Fahrzeug ein, das im oeffentlichen Raum steht. "
+            . "Reiter Einstellungen, zweiter Haken 'Eingreifende Befehle zulassen'.");
+    }
+    if (au_dienst_pid() === 0) {
+        // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts.
+        return $raus('DIENST_LAEUFT_NICHT', 503, "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.");
+    }
+    $w = function ($k) use ($param) {
+        return (isset($param[$k]) && is_scalar($param[$k])) ? (string) $param[$k] : '';
+    };
+    foreach (array('temp', 'prozent', 'ampere', 'dauer', 'name', 'wert', 'probe') as $k) {
+        if ($w($k) !== '' && !preg_match($muster[$k], $w($k))) {
+            return $raus('PARAMETER', 400, 'Der Wert von ' . $k . ' passt nicht ins erlaubte Muster.');
+        }
+    }
+    $befehl = array('aktion' => $aktion);
+    if (empty($eig['ohne_fz'])) {
+        $befehl['fahrzeug'] = $fahrzeug;
+    }
+    if ($w('probe') === '1') {
+        $befehl['probe'] = 1;
+    }
+    if ($eig['zusatz'] === 'temp') {
+        if ($w('temp') === '') {
+            return $raus('TEMP_FEHLT', 400, 'Der Parameter temp fehlt (Zieltemperatur in Grad Celsius).', false);
+        }
+        $befehl['temp'] = str_replace(',', '.', $w('temp'));
+    } elseif ($eig['zusatz'] === 'prozent') {
+        if ($w('prozent') === '') {
+            return $raus('PROZENT_FEHLT', 400, 'Der Parameter prozent fehlt (Ladegrenze, 10 bis 100).', false);
+        }
+        $befehl['prozent'] = (int) $w('prozent');
+    } elseif ($eig['zusatz'] === 'ampere') {
+        if ($w('ampere') === '') {
+            return $raus('AMPERE_FEHLT', 400, 'Der Parameter ampere fehlt (zulaessig: 5, 6, 10, 13, 16 oder 32).', false);
+        }
+        $befehl['ampere'] = (int) $w('ampere');
+    } elseif ($eig['zusatz'] === 'dauer') {
+        if ($w('dauer') !== '') {
+            $befehl['dauer'] = (int) $w('dauer');
+        }
+    } elseif ($eig['zusatz'] === 'einstellung') {
+        $bekannt = au_einstellungen();
+        if ($w('name') === '' || !isset($bekannt[$w('name')])) {
+            return $raus('NAME_FEHLT', 400, 'Der Parameter name fehlt oder ist unbekannt. Bekannt sind: '
+                . implode(', ', array_keys($bekannt)), false);
+        }
+        if ($w('wert') === '') {
+            return $raus('WERT_FEHLT', 400, 'Der Parameter wert fehlt (0 oder 1).', false);
+        }
+        $befehl['name'] = $w('name');
+        $befehl['wert'] = $w('wert');
+    }
+    /* X-7: Befehlsbremse fuer Sollwerte - erst hinter allen Wachen und Pruefungen. */
+    $bgr = au_bremse_gruppe($aktion, $befehl);
+    $bschl = '';
+    $bmarke = '';
+    if ($bgr !== null) {
+        $trocken = ($w('probe') === '1' || !empty($cfg['probe_ein']));
+        $bschl = au_bremse_fz($f, $fahrzeug) . '|' . $bgr[0];
+        list($burteil, $bseit, $bmarke) = au_bremse_pruefen($bschl, $bgr[1], $trocken);
+        if ($burteil === 'MERKER') {
+            return $raus('BREMSE_MERKER', 503, 'Die Merkerdatei der Befehlsbremse laesst sich nicht oeffnen oder schreiben - '
+                . 'Sollwert-Befehle werden abgewiesen, bis das behoben ist. Pruefen: Platz und '
+                . 'Eigentuemer (loxberry) des Datenordners des Plugins.');
+        }
+        if ($burteil === 'UNVERAENDERT') {
+            return array('ok' => 1, 'grund' => 'UNVERAENDERT', 'http' => 200, 'art' => 'unveraendert',
+                'text' => 'Derselbe Befehl ging vor ' . (int) $bseit . ' s hinaus - es wurde '
+                    . 'nichts gesendet. Gleiche Sollwerte innerhalb von ' . AU_BREMSE_GLEICH_S
+                    . ' s gehen nur einmal an Audi.');
+        }
+    }
+    // MQTT wartet nie (E3, Quittung "uebergeben"); HTTP wie bisher (au_wartezeit_fuer()).
+    list($erg, $meldung) = au_befehl_absetzen($befehl, $mqtt ? 0 : null);
+    if ($mqtt && (int) $erg === 2) {
+        $meldung = 'Eingereiht - der Dienst arbeitet den Befehl ab; das Ergebnis steht im Protokoll und im Reiter Test.';
+    }
+    if ($bmarke !== '' && (int) $erg === 0) {
+        // Abgelehnt: nicht gemerkt, der naechste gleiche Befehl geht hinaus.
+        au_bremse_vergessen($bschl, $bmarke);
+    }
+    return array('ok' => (int) $erg, 'grund' => (int) $erg === 0 ? 'ABGELEHNT' : '', 'http' => (int) $erg === 0 ? 500 : 200,
+                 'text' => (string) $meldung, 'art' => 'gesetzt');
+}
+
+/** Quittung der Bruecke: array(true, '') bei ok >= 1 (eingereiht oder UNVERAENDERT), sonst array(false, Grund). */
+function au_befehl_quittung($erg)
+{
+    if (is_array($erg) && isset($erg['ok']) && (int) $erg['ok'] >= 1) {
+        return array(true, '');
+    }
+    return array(false, (is_array($erg) && isset($erg['grund']) && $erg['grund'] !== '') ? (string) $erg['grund'] : 'FEHLER');
+}
+
+/** G5/E-E4: die Aussentemperatur aus Loxone merken (Bruecke <p>/befehl/aussentemp). Datei 0600, atomar. */
+function au_aussentemp_merken($wert)
+{
+    $p = au_paths();
+    if (!is_numeric($wert) || (float) $wert < -40 || (float) $wert > 60) {
+        return array('ok' => 0, 'grund' => 'WERT', 'http' => 400, 'text' => '', 'art' => 'abgewiesen');
+    }
+    if (!is_dir($p['datadir'])) {
+        return array('ok' => 0, 'grund' => 'DATENORDNER_FEHLT', 'http' => 503, 'text' => '', 'art' => 'abgewiesen');
+    }
+    $js = json_encode(array('wert' => round((float) $wert, 1), 't' => time()));
+    if ($js === false || !au_datei_schreiben($p['datadir'] . '/aussentemp.json', $js, 0600)) {
+        return array('ok' => 0, 'grund' => 'MERKER', 'http' => 503, 'text' => '', 'art' => 'abgewiesen');
+    }
+    return array('ok' => 1, 'grund' => '', 'http' => 200, 'text' => 'gemerkt', 'art' => 'gesetzt');
+}
+
+/* ---------------- G2: Befehlsbruecke fuer die Oberflaeche (Abschrift mg_bruecke_*) ---------------- */
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN). Rueckgabe true, wenn bb_waechter() danach da ist. */
+function au_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $p = au_paths();
+    $kand = array();
+    if ($p['home'] !== '') {
+        $kand[] = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php';
+    }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) {
+            if (!defined('BB_NUR_LADEN')) {
+                define('BB_NUR_LADEN', true);
+            }
+            require_once $k;
+            return function_exists('bb_waechter');
+        }
+    }
+    return false;
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste()). array(Liste oder null, Fehlertext). */
+function au_bruecke_liste()
+{
+    if (!au_bruecke_laden()) {
+        return array(null, au_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) {
+        return array(null, $fehler);
+    }
+    $GLOBALS['bb_zuordnung'] = $z;
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) {
+        return array(null, $fehl[0]);
+    }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/** Nach dem Speichern im Reiter MQTT: start (Haken an) bzw. stop. array(rc|null, start|stop|'', Ausgabe). */
+function au_bruecke_schalten($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = au_config();
+    }
+    if (!au_bruecke_laden()) {
+        return array(1, '', au_t('BEFEHL.T_NICHT_DA'));
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array(1, '', 'keine LoxBerry-Installation erkannt');
+    }
+    if (!empty($cfg['befehle_mqtt_ein'])) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, 'start', $aus);
+    }
+    if (!bb_dienste()) {
+        return array(null, '', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array($rc, 'stop', $aus);
+}
+
+/** Lage der Bruecke (Reiter Test, Reiter MQTT): array(true|false|null, Text); null = aus (Haken). */
+function au_bruecke_lage()
+{
+    if (!au_bruecke_laden()) {
+        return array(false, au_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) {
+        return array(null, au_t('BEFEHL.T_AUS'));
+    }
+    if ($soll !== 0) {
+        return array(false, sprintf(au_t('BEFEHL.T_DEFEKT'), $grund));
+    }
+    $zu = bb_zustand_lesen();
+    $pids = bb_dienste();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if ($pids && $alter !== null && $alter <= BB_WACHE_GRENZE && !empty($zu['abo'])) {
+        $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+        $txt = sprintf(au_t('BEFEHL.T_LAEUFT'), count($pids),
+            isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0);
+        $lz = isset($zu['letzter']) && is_array($zu['letzter']) ? $zu['letzter'] : null;
+        if ($lz !== null && isset($lz['name'])) {
+            $txt .= ' ' . sprintf(au_t('BEFEHL.T_LETZTER'), (string) $lz['name'],
+                isset($lz['ergebnis']) ? (string) $lz['ergebnis'] : '-',
+                isset($lz['zeit']) ? max(0, time() - (int) $lz['zeit']) : 0);
+        } else {
+            $txt .= ' ' . au_t('BEFEHL.T_KEINER');
+        }
+        return array(true, $txt);
+    }
+    $wie = !$pids ? 'kein Dienst' : ($alter === null ? 'kein Zustand' : ($alter > BB_WACHE_GRENZE
+        ? 'Zustand ' . $alter . ' s alt' : 'ohne Abo'));
+    return array(false, sprintf(au_t('BEFEHL.T_STEHT'), $wie));
+}
+
+/** befehlsbruecke.php --pruefen: array(rc, Zeilen). */
+function au_bruecke_pruefen()
+{
+    if (!au_bruecke_laden()) {
+        return array(1, array(au_t('BEFEHL.T_NICHT_DA')));
+    }
+    $p = bb_pfade();
+    $skript = $p ? $p['bin'] . '/befehlsbruecke.php' : dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '') ? PHP_BINARY : 'php';
+    $aus = array();
+    $rc = 1;
+    @exec(escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --pruefen 2>&1', $aus, $rc);
+    return array((int) $rc, $aus);
+}
+
+/** Der Rechnername fuer UDP-Adressen: nie die Rueckschleife (Regeln/07). */
+function au_rechnername()
+{
+    $h = au_host();
+    if (substr_count($h, ':') === 1) {
+        $h = substr($h, 0, strpos($h, ':'));
+    }
+    if (in_array(strtolower($h), array('', '127.0.0.1', 'localhost', '::1', '[::1]'), true)) {
+        $g = gethostname();
+        $h = ($g !== false && $g !== '') ? $g : 'loxberry';
+    }
+    return $h;
+}
+
+/** Die Vorlage "Audi MQTT-Befehle" aus bb_vorlage() (CRLF, /dev/udp/<rechner>/<Udpinport>). array(Name, Inhalt|''). */
+function au_vorlage_befehle()
+{
+    list($l) = au_bruecke_liste();
+    if ($l === null) {
+        return array('VQ_audiconnect_mqtt.xml', '');
+    }
+    $bp = bb_pfade();
+    $port = $bp ? bb_broker($bp)['udpin'] : 11884;
+    return array('VQ_audiconnect_mqtt.xml', bb_vorlage($l, au_rechnername(), $port));
+}
+
+/* ---------------- G4/G5: Haus-Quellen fuer den Reiter Test ---------------- */
+
+/** Thema fahrzeug<n>/vorklima aus einem Merker (wie vorklima_wert() in bin/audi.py): 0 nichts/aus, 1 gesendet,
+ *  2 mild, 3 wartet auf Wiederholung, 4 wartet auf Anwesenheit, -1 gescheitert. Rein. */
+function au_vorklima_wert($m, $jetzt)
+{
+    if (!is_array($m) || !isset($m['kennung'])) {
+        return 0;
+    }
+    if ((int) $m['kennung'] + 1800 < (int) $jetzt) {
+        return 0;
+    }
+    if (!empty($m['aufgegeben'])) {
+        return -1;
+    }
+    if (!empty($m['erfolg'])) {
+        return 1;
+    }
+    if (!empty($m['mild'])) {
+        return 2;
+    }
+    if (!empty($m['warten_anwesend'])) {
+        return 4;
+    }
+    return !empty($m['versuche']) ? 3 : 0;
+}
+
+/** Welche Haus-Quellen liest der Dienst bei dieser Konfiguration? Name => Satz des Rueckfalls. */
+function au_haus_quellen($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = au_config(false);
+    }
+    $q = array();
+    if (!empty($cfg['abfahrt_ein']) && !empty($cfg['haus_abfahrt_ein'])) {
+        $q['abfahrt'] = 'HAUS.RUECK_ABFAHRT';
+    }
+    if ((!empty($cfg['abfahrt_ein']) && !empty($cfg['vorklima_anwesend_ein']))
+        || (!empty($cfg['ankunft_ein']) && trim((string) $cfg['ankunft_quelle']) !== '')) {
+        $q['anwesenheit'] = 'HAUS.RUECK_ANWESENHEIT';
+    }
+    if (!empty($cfg['haus_strompreis_ein']) || (!empty($cfg['ladeempf_ein']) && $cfg['ladeempf_quelle'] === 'haus')) {
+        $q['strompreis'] = 'HAUS.RUECK_STROMPREIS';
+    }
+    return $q;
+}
+
+/**
+ * Die Zeilen der Haus-Quellen aus dem Zustand des Dienstes (zustand.json 'haus'):
+ * Liste von array(Bezeichnung, 1|0, Text). Die Oberflaeche liest nur, was der Dienst
+ * gesehen hat (dieselbe Regel wie beim Horcher).
+ */
+function au_haus_pruefzeilen($cfg = null)
+{
+    $z = au_zustand();
+    $h = isset($z['haus']) && is_array($z['haus']) ? $z['haus'] : array();
+    $aus = array();
+    foreach (au_haus_quellen($cfg) as $q => $rueck) {
+        $e = isset($h[$q]) && is_array($h[$q]) ? $h[$q] : array();
+        $bez = sprintf(au_t('HAUS.ZEILE'), 'haus/' . $q);
+        if (!empty($e['frisch'])) {
+            $aus[] = array($bez, 1, sprintf(au_t('HAUS.FRISCH'), isset($e['alter']) ? (int) $e['alter'] : 0));
+        } elseif (isset($e['seit']) && (int) $e['seit'] > 0) {
+            $aus[] = array($bez, 0, sprintf(au_t('HAUS.SCHWEIGT'), max(0, (int) round((time() - (int) $e['seit']) / 60)))
+                . ' ' . au_t($rueck));
+        } else {
+            $aus[] = array($bez, 0, au_t('HAUS.NIE') . ' ' . au_t($rueck));
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Die Haus-Themen, die der Dienst bei dieser Konfiguration abonniert - dieselbe Liste wie
+ * haus_themen() in bin/audi.py (der Reiter Test legt beide nebeneinander).
+ */
+function au_haus_themen($cfg)
+{
+    $t = array();
+    if (!empty($cfg['abfahrt_ein']) && !empty($cfg['haus_abfahrt_ein'])) {
+        $t[] = 'haus/abfahrt/in_min';
+        $t[] = 'haus/abfahrt/zaehler';
+    }
+    $anw = false;
+    if (!empty($cfg['abfahrt_ein']) && !empty($cfg['vorklima_anwesend_ein'])) {
+        $t[] = 'haus/anwesenheit/jemand';
+        $anw = true;
+    }
+    if (!empty($cfg['ankunft_ein'])) {
+        foreach (au_ankunft_themen(isset($cfg['ankunft_quelle']) ? $cfg['ankunft_quelle'] : '') as $x) {
+            $t[] = $x;
+            $anw = true;
+        }
+    }
+    if ($anw) {
+        $t[] = 'haus/anwesenheit/zaehler';
+    }
+    if (!empty($cfg['haus_strompreis_ein']) || (!empty($cfg['ladeempf_ein']) && (string) $cfg['ladeempf_quelle'] === 'haus')) {
+        foreach (array('vorschau', 'ab', 'raster', 'aktuell', 'zaehler') as $x) {
+            $t[] = 'haus/strompreis/' . $x;
+        }
+    }
+    return $t;
+}
+
+/** 'tag:<name>,person:<name>' -> Liste der Themen (haus/tag/<name>/da, haus/anwesenheit/<name>). Rein. */
+function au_ankunft_themen($quelle)
+{
+    $t = array();
+    if (!is_string($quelle) || au_wert_g41('ankunft_quelle', $quelle) === null) {
+        return $t;
+    }
+    foreach (array_filter(explode(',', $quelle), 'strlen') as $q) {
+        list($art, $name) = explode(':', $q, 2);
+        $t[] = $art === 'tag' ? 'haus/tag/' . $name . '/da' : 'haus/anwesenheit/' . $name;
+    }
+    return $t;
+}
+
+/**
+ * Die neuen Werte von 0.9.30 pruefen (Formular und Zurueckspielen): normierter Wert oder null.
+ * vorklima_kalt_unter/heiss_ueber ganze Grad -30..45; ankunft_quelle bis vier Eintraege tag:/person:
+ * (reserviert jemand und zaehler); ladeempf_quelle thema|haus; signal_praefix wie SignalBot.
+ */
+function au_wert_g41($k, $v)
+{
+    $v = trim((string) $v);
+    if ($k === 'vorklima_kalt_unter' || $k === 'vorklima_heiss_ueber') {
+        return (preg_match('/^-?[0-9]{1,2}$/', $v) && (int) $v >= -30 && (int) $v <= 45) ? (string) (int) $v : null;
+    }
+    if ($k === 'ankunft_quelle') {
+        if ($v === '') {
+            return '';
+        }
+        if (!preg_match('/^(tag|person):[A-Za-z0-9_-]{1,40}(,(tag|person):[A-Za-z0-9_-]{1,40}){0,3}$/', $v)) {
+            return null;
+        }
+        if (preg_match('/(^|,)person:(jemand|zaehler)(,|$)/', $v)) {
+            return null;
+        }
+        return $v;
+    }
+    if ($k === 'ladeempf_quelle') {
+        return in_array($v, array('thema', 'haus'), true) ? $v : null;
+    }
+    if ($k === 'signal_praefix') {
+        return preg_match('/^[A-Za-z0-9_-]{1,40}$/', $v) ? $v : null;
+    }
+    return $v;
+}
+
+
+/* ---------------- Healthcheck (Nachtrag 29.10.2026, bin/healthcheck) ---------------- */
+
+/**
+ * Das Urteil des LoxBerry-Healthchecks (bin/healthcheck), rein - Form von Renault NG 2.1.20
+ * (rn_gesund_urteil/rn_gesund_fakten). Regeln/03 :73 (Skala 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis),
+ * Regeln/04 :809 (nie auf einen einzelnen Abruf: geurteilt wird ueber das ALTER von Lebenszeichen und letztem
+ * gelungenem Abruf), Regeln/04 :826 (ein Text nennt nur Zustaende, die in derselben Verzweigung gemessen sind).
+ * $f: eingerichtet (bool), soll (bool, Sollmerker), pid (int; 0 = kein Prozess des Plugins - gefunden ueber
+ * /proc/<pid>/cmdline, die PID-Datei allein genuegt nicht), start_alter_s (int, -1 = unbekannt),
+ * leben_alter_s (int, -1 = keins), takt_s (int), erfolg_alter_s (int, -1 = noch nie), fehler_folge (int),
+ * fahrzeuge (int), mqtt_ein (bool), gateway (array gefunden/autostart/udpport), broker_fehler (bool|null,
+ * null = keine Aussage), v2 (array(lage, Text)), bruecke_soll (bool), bruecke_laeuft (bool|null).
+ * Rueckgabe array(status, Text); der Text traegt keine Zugangsdaten, VIN, Kennzeichen oder Fahrzeugnamen.
+ */
+function au_gesund_urteil(array $f)
+{
+    $f += array('eingerichtet' => false, 'soll' => false, 'pid' => 0, 'start_alter_s' => -1, 'leben_alter_s' => -1,
+                'takt_s' => 300, 'erfolg_alter_s' => -1, 'fehler_folge' => 0, 'fahrzeuge' => 0, 'mqtt_ein' => false,
+                'gateway' => array(), 'broker_fehler' => null, 'v2' => array(null, ''), 'bruecke_soll' => false,
+                'bruecke_laeuft' => null);
+    if (!$f['eingerichtet']) {
+        return array(6, 'nicht eingerichtet - Zugangsdaten im Reiter Einstellungen eintragen');
+    }
+    $pid = (int) $f['pid'];
+    if (!$f['soll'] && $pid <= 0) {
+        return array(6, 'Abrufdienst angehalten (so eingestellt, kein Fehler) - Start im Reiter Einstellungen');
+    }
+    $befunde = array();
+    $status = 5;
+    $setze = function ($s, $t) use (&$status, &$befunde) {
+        if ($s < $status) {
+            $status = $s;
+        }
+        $befunde[] = $t;
+    };
+    $takt = max(60, (int) $f['takt_s']);
+    if ($pid <= 0) {
+        $setze(3, 'Abrufdienst soll laufen, es laeuft aber keiner');
+    } else {
+        $a = (int) $f['leben_alter_s'];
+        $g = max(600, 3 * $takt);
+        if ($a < 0) {
+            $setze(4, 'Abrufdienst laeuft, hat aber noch kein Lebenszeichen geschrieben');
+        } elseif ($a > $g) {
+            $setze(3, sprintf('Abrufdienst laeuft, meldet sich aber seit %d min nicht mehr (erwartet hoechstens %d min)',
+                (int) round($a / 60), (int) round($g / 60)));
+        }
+    }
+    /* Nach einem Neustart (auch cron.reboot) zaehlt die Zeit SEIT DEM START: ein Erfolg von vor dem Herunterfahren
+     * ist kein Befund ueber den laufenden Dienst. */
+    $e = (int) $f['erfolg_alter_s'];
+    $s0 = (int) $f['start_alter_s'];
+    $seit_start = $pid > 0 && $s0 >= 0 && ($e < 0 || $e > $s0);
+    $e_eff = $seit_start ? $s0 : $e;
+    $folge = (int) $f['fehler_folge'] > 0 ? sprintf(' (%d Fehlversuche in Folge)', (int) $f['fehler_folge']) : '';
+    $satz = $seit_start ? 'seit dem Start vor %d min kein gelungener Abruf' : 'letzter gelungener Abruf vor %d min';
+    if ($e_eff < 0) {
+        $setze(4, 'noch kein gelungener Abruf' . $folge);
+    } elseif ($e_eff > max(3600, 6 * $takt)) {
+        $setze(3, sprintf($satz, (int) round($e_eff / 60)) . $folge);
+    } elseif ($e_eff > max(900, 3 * $takt)) {
+        $setze(4, sprintf($satz, (int) round($e_eff / 60)) . $folge);
+    }
+    if ($f['mqtt_ein']) {
+        $gw = is_array($f['gateway']) ? $f['gateway'] : array();
+        if (empty($gw['gefunden']) || empty($gw['udpport'])) {
+            $setze(4, 'MQTT eingeschaltet, aber kein MQTT-Gateway mit UDP-Eingang eingerichtet - es wird nichts gesendet');
+        } elseif (empty($gw['autostart'])) {
+            $setze(4, 'MQTT eingeschaltet, aber das MQTT-Gateway steht nicht auf Autostart');
+        }
+    }
+    if ($f['broker_fehler'] === true) {
+        $setze(4, 'keine Verbindung zum MQTT-Broker - Haus-Themen (Abfahrt, Anwesenheit, Strompreis) kommen nicht an');
+    }
+    if (is_array($f['v2']) && isset($f['v2'][0]) && $f['v2'][0] === 0) {
+        $setze(4, 'Gateway V2: ' . (isset($f['v2'][1]) ? (string) $f['v2'][1] : ''));
+    }
+    if ($f['bruecke_soll'] && $f['bruecke_laeuft'] === false) {
+        $setze(4, 'Befehle ueber MQTT eingeschaltet, aber die Befehlsbruecke steht');
+    }
+    if (!$befunde) {
+        if ($seit_start) {
+            return array(5, sprintf('in Ordnung - Abrufdienst laeuft seit %d min, %d Fahrzeug(e), seit dem Start noch '
+                . 'kein gelungener Abruf', (int) round($s0 / 60), (int) $f['fahrzeuge']));
+        }
+        return array(5, sprintf('in Ordnung - Abrufdienst laeuft, %d Fahrzeug(e), letzter gelungener Abruf vor %d min',
+            (int) $f['fahrzeuge'], (int) round($e / 60)));
+    }
+    return array($status, implode('; ', $befunde));
+}
+
+/** Die Fakten des Healthchecks - nur lesend: kein Netz, kein Broker, keine Anmeldung, keine Datei, kein Protokoll. */
+function au_gesund_fakten(array $cfg)
+{
+    clearstatcache();
+    $p = au_paths();
+    $jetzt = time();
+    $f = array();
+    $f['eingerichtet'] = (bool) au_zugang_da();
+    $f['soll'] = (int) au_dienst_soll() === 1;
+    $f['pid'] = (int) au_dienst_pid();
+    /* Der Start des laufenden Dienstes: die PID-Datei, wenn sie genau diesen Prozess nennt. */
+    $start = 0;
+    $pf = $p['datadir'] . '/dienst.pid';
+    if ($f['pid'] > 0 && is_file($pf) && (int) trim((string) @file_get_contents($pf)) === $f['pid']) {
+        $start = (int) @filemtime($pf);
+    }
+    $f['start_alter_s'] = $start > 0 ? max(0, $jetzt - $start) : -1;
+    $zu = json_decode((string) @file_get_contents($p['datadir'] . '/zustand.json'), true);
+    $zu = is_array($zu) ? $zu : array();
+    $zts = isset($zu['ts']) && is_numeric($zu['ts']) ? (int) $zu['ts'] : 0;
+    $zu_frisch = $zts > 0 && $zts >= $start;          // vom laufenden Dienst geschrieben, nicht von einem frueheren
+    $lox = json_decode((string) @file_get_contents($p['datadir'] . '/loxone.json'), true);
+    $lox = is_array($lox) ? $lox : array();
+    $f['takt_s'] = isset($cfg['intervall']) && is_numeric($cfg['intervall']) ? (int) $cfg['intervall'] : 300;
+    $lz = preg_split('/\s+/', trim((string) @file_get_contents($p['datadir'] . '/lebenszeichen')));
+    $lts = (isset($lz[0]) && preg_match('/^[0-9]+$/', $lz[0])) ? (int) $lz[0] : 0;
+    if (isset($lz[1]) && preg_match('/^[0-9]+$/', $lz[1])) {
+        $f['takt_s'] = (int) $lz[1];
+    }
+    $lts = max($lts, $start);
+    $f['leben_alter_s'] = $lts > 0 ? max(0, $jetzt - $lts) : -1;
+    $ts = isset($lox['ts']) && is_numeric($lox['ts']) ? (int) $lox['ts'] : 0;
+    $f['erfolg_alter_s'] = $ts > 0 ? max(0, $jetzt - $ts) : -1;
+    $f['fahrzeuge'] = isset($lox['fahrzeuge']) && is_array($lox['fahrzeuge']) ? count($lox['fahrzeuge']) : 0;
+    $f['fehler_folge'] = ($zu_frisch && isset($zu['fehler_folge']) && is_numeric($zu['fehler_folge']))
+        ? (int) $zu['fehler_folge'] : 0;
+    $f['mqtt_ein'] = !empty($cfg['mqtt_ein']);
+    $f['gateway'] = au_mqtt_zustand();
+    $f['broker_fehler'] = null;
+    if ($f['pid'] > 0 && $zu_frisch) {
+        $fe = isset($zu['horcher_fehler']) ? trim((string) $zu['horcher_fehler']) : '';
+        $th = (isset($zu['horcher']) && is_array($zu['horcher'])) ? $zu['horcher'] : array();
+        $f['broker_fehler'] = $fe !== '' || ($th && empty($zu['horcher_verbunden']));
+    }
+    $f['v2'] = au_v2_haken_lage($cfg);
+    $f['bruecke_soll'] = !empty($cfg['befehle_mqtt_ein']);
+    $f['bruecke_laeuft'] = null;
+    if ($f['bruecke_soll'] && au_bruecke_laden()) {
+        $l = au_bruecke_lage();
+        $f['bruecke_laeuft'] = $l[0] === true;
+    }
+    return $f;
 }

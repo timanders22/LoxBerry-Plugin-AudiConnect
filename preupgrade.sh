@@ -93,6 +93,20 @@ else
     exit 2
 fi
 
+# Gruppe 41 (0.9.30, Bauvorschrift G2): die Befehlsbruecke anhalten, bevor der bin-Ordner ersetzt wird.
+# Ihr Waechter in cron.01min startet sie nach dem Update wieder - nur mit dem Haken "Befehle ueber MQTT
+# annehmen", und nicht, solange die Marke oben liegt (sie liest dieselbe Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    if bash "$BBSH" stop >/dev/null 2>&1; then
+        echo "<INFO> Befehlsbruecke angehalten (der Waechter startet sie nach dem Update, wenn der Haken gesetzt ist)."
+    else
+        echo "<INFO> Befehlsbruecke: stop meldete einen Fehler - sie lief vermutlich nicht."
+    fi
+else
+    echo "<INFO> Keine Befehlsbruecke installiert (Fassung vor 0.9.30) - nichts anzuhalten."
+fi
+
 # ---------------------------------------------------------------------------
 # WAS EIN UPGRADE UEBERLEBT - und was nicht
 #
@@ -345,8 +359,25 @@ chmod 600 "$BASE/config/plugins/$PFOLDER.backup.audi.json" 2>/dev/null || true
 #   token.json      Anmeldemarken der Bibliothek; ohne sie ist eine neue
 #                   Anmeldung noetig, und die kann bei Konten mit
 #                   Zwei-Faktor-Bestaetigung nicht von selbst gelingen
+#   ladung_mitschrift.json  die offene Mitschrift einer laufenden Ladung (Ladekosten, Gruppe 41).
+#                   Ohne sie bekam eine Ladung, ueber die ein Update lief, -1
+#                   "mitschrift_fehlt" (Nachtrag 29.10.2026). Der Vorklima-Merker steht
+#                   in merker.json.
+#   pin_sperre.json  Fehlschlaege der S-PIN und Ende der Sperre (C1) - ohne sie begaenne nach
+#                   jedem Update die Zaehlung neu, und das Fahrzeug sperrt die S-PIN selbst
+#   anmeldesperre.json  die Anmeldesperre nach abgewiesenen Anmeldungen (C10) - ohne sie meldete
+#                   sich der Dienst nach dem Update mit denselben falschen Zugangsdaten wieder an,
+#                   bis Audi das Konto sperrt
+#   ansage_sperre.json  die Wiederholsperre der Ansagen und Signal-Nachrichten (einmal je Stunde
+#                   und Anlass) - sie soll einen Neustart ueberstehen, ein Update ist einer
+#                   (alle drei: Nachtrag 3, 29.10.2026, Bestandsaufnahme aller Laufzeitdateien)
 # Nicht gerettet werden loxone.json, zustand.json, cache.json und
 # bibliothek_cache.json: die entstehen beim naechsten Abruf ohnehin neu.
+# Ebenso bewusst nicht: lebenszeichen, dienst.pid, .verlauf_ts_* (Laufzeit des alten
+# Prozesses), soll_laufen (dafuer der Merker .lief_vorher), befehle/ und antworten/
+# (ein Befehl von vor dem Update soll danach nicht mehr ausgefuehrt werden), aussentemp.json
+# (kommt mit dem naechsten Wert ueber die Bruecke), befehlsbremse.json (60 s),
+# einmalmeldung.json (120 s), *_letzte.json (Ergebnis der letzten Ansage fuer den Reiter).
 # I3 (Durchgang 29.09.2026): angelegt wird die Rettung nur, wenn es etwas zu
 # retten gibt. Bis 0.9.21 entstand sie bei jeder nie eingerichteten Anlage
 # leer, und postinstall.sh meldete "es kam nichts an" (gemessen, Fall C3;
@@ -356,9 +387,12 @@ if [ -d "$PDATA" ]; then
     rm -rf "${RETTUNG:?}"
 fi
 if [ -d "$PDATA" ] && { [ -f "$PDATA/merker.json" ] || [ -f "$PDATA/token.json" ] \
-                        || [ -d "$PDATA/verlauf" ]; }; then
+                        || [ -d "$PDATA/verlauf" ] || [ -f "$PDATA/ladung_mitschrift.json" ] \
+                        || [ -f "$PDATA/pin_sperre.json" ] || [ -f "$PDATA/anmeldesperre.json" ] \
+                        || [ -f "$PDATA/ansage_sperre.json" ]; }; then
     if mkdir -p "$RETTUNG"; then
-        for f in merker.json token.json; do
+        for f in merker.json token.json ladung_mitschrift.json pin_sperre.json anmeldesperre.json \
+                 ansage_sperre.json; do
             if [ -f "$PDATA/$f" ]; then
                 if cp -p "$PDATA/$f" "$RETTUNG/$f"; then
                     echo "<OK> $f gerettet."

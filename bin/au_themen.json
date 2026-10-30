@@ -1,5 +1,5 @@
 {
- "_hinweis": "Die EINE Themen- und Retain-Tabelle von Audi Connect (M1/M7, Durchgang 29.09.2026). bin/audi.py sendet danach, die Oberflaeche zeigt sie im Reiter MQTT samt Spalte retained, und der Reiter Test haelt beide gegeneinander. retain 1 = Zustand des Fahrzeugs; 0 = Dienstaussage, Messwert mit Zeitbezug, Position, Fertigzeitpunkt oder Lebenszeichen (ENTSCHEIDUNGEN_2026-09-29 Nr. 3). Ein retained Zustand ohne Wert geht als - hinaus, ein Messwert ohne Wert gar nicht.",
+ "_hinweis": "Die EINE Themen- und Retain-Tabelle von Audi Connect (M1/M7, Durchgang 29.09.2026). bin/audi.py sendet danach, die Oberflaeche zeigt sie im Reiter MQTT samt Spalte retained, und der Reiter Test haelt beide gegeneinander. retain 1 = Zustand des Fahrzeugs; 0 = Dienstaussage, Messwert mit Zeitbezug, Position, Fertigzeitpunkt oder Lebenszeichen (ENTSCHEIDUNGEN_2026-09-29 Nr. 3). Ein retained Zustand ohne Wert geht als - hinaus, ein Messwert ohne Aussage als -1 (Temperaturen -999; Breite, Laenge und Wartungstage gar nicht - dort ist -1 ein echter Wert; Nachtrag 4 29.10.2026). restzeit_min und klima_restzeit_min: Minuten bis zur Endzeit, 0 nach dem Ende, -1 ohne Aussage.",
  "dienst": [
   {
    "thema": "ok",
@@ -345,6 +345,36 @@
    "retain": 0,
    "art": "zahl",
    "bez": "AU_MQTT.KLIMAFERTIG"
+  },
+  {
+   "thema": "vorklima",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_MQTT.VORKLIMA"
+  },
+  {
+   "thema": "ladung_kosten",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_MQTT.LADUNG_KOSTEN"
+  },
+  {
+   "thema": "ladung_preis",
+   "retain": 1,
+   "art": "zahl",
+   "bez": "AU_MQTT.LADUNG_PREIS"
+  },
+  {
+   "thema": "restzeit_min",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_MQTT.RESTZEIT"
+  },
+  {
+   "thema": "klima_restzeit_min",
+   "retain": 0,
+   "art": "zahl",
+   "bez": "AU_MQTT.KLIMARESTZEIT"
   },
   {
    "thema": "zustand_text",

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.29 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.30 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,61 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.30
+
+Gruppe 41 – AudiConnect auf Hausform (Vorlage MGiSmart 1.1.28 und Renault NG 2.1.20). Alles Neue ist **ab Werk
+aus**; wer die HTTP-Vorlagen nutzt, ändert nichts – der Endpunkt bleibt beim Update eingeschaltet, eine
+Neuinstallation hat ihn aus.
+
+* **MQTT-Gateway V2:** Reiter MQTT mit der Tabelle „Gateway V2: diese Datenpunkte anhaken“ (Thema, Name in
+  Loxone, Noncached) aus der Themen-Tabelle `bin/au_themen.json`; Reiter Test prüft, ob alles angehakt ist
+  (leere Liste „nicht feststellbar“, Noncached zu viel oder zu wenig rot mit Namen). Texte (VIN, Adresse,
+  Klartexte) stehen nicht darin. Kopfkachel MQTT zeigt zusätzlich die Gateway-Fassung.
+* **Befehle über MQTT (Befehlsbrücke 1.0.2):** `audi/befehl/<name>` bzw. `audi/befehl/<n>/<name>` für Fahrzeug
+  2–9, Quittung unter `…/quittung` („übergeben“: der Befehl liegt in der Warteschlange des Dienstes). Haken
+  „Befehle über MQTT annehmen“ (schaltend zusätzlich nur mit „Schreibende Befehle zulassen“) und „Eingreifende
+  Befehle auch über MQTT annehmen“ (Ver-/Entriegeln, Hupe, Lichthupe; nur mit „Eingreifende Befehle zulassen“).
+  Die S-PIN-Prüfung geht nie über MQTT. Vorlage „Befehle über MQTT“ im Reiter MQTT. HTTP und MQTT laufen durch
+  **eine** Annahmefunktion; die Antworten des Endpunkts sind unverändert.
+* **HTTP-Endpunkt abschaltbar** (`endpunkt_ein`): neu ab Werk aus, beim Update an.
+* **Haus-Themen** (Regeln/07 Nr. 15) über die Dauerverbindung des Dienstes: Minuten bis zur Abfahrt aus
+  `haus/abfahrt`, „nur wenn jemand zu Hause ist“, Abruf bei Ankunft (`haus/tag/<name>/da` oder
+  `haus/anwesenheit/<person>`, höchstens einmal je 30 Minuten), Strompreis aus `haus/strompreis`. Ein Wert gilt
+  nur, solange der Zähler seiner Quelle live wechselt; retained Werte werden angenommen, zählen aber erst dann.
+* **Vorklimatisierung nach den Regeln von MGiSmart:** auslösen bei 1 bis Vorlauf Minuten, höchstens zweimal
+  „Klima ein“ je Abfahrt (Senden – Abruf – Senden), erledigt erst nach einem angenommenen Befehl (bis 0.9.29
+  wurde ein Fehlschlag nie wiederholt), wahlweise nur bei Kälte oder Hitze (Außentemperatur aus Loxone über
+  `audi/befehl/aussentemp`, sonst vom Fahrzeug). Neues Thema `fahrzeug<n>/vorklima`. Das bisherige Thema des
+  Abfahrts-Assistenten gilt in dieser Fassung noch als Rückfall.
+* **Ladekosten je Ladung zu Hause** aus `haus/strompreis` (Spalten im Reiter Ladungen, Themen
+  `fahrzeug<n>/ladung_kosten` und `ladung_preis`); fehlt der Preis für mehr als 10 % der Energie: −1, nie
+  geschätzt. Die Mitschrift einer laufenden Ladung übersteht einen Neustart des Dienstes. Die Ladeempfehlung
+  kann den Strompreis jetzt direkt nehmen.
+* **Meldungen an SignalBot** (Ladung beendet/abgebrochen, Fahrzeug offen, keine Daten, Vorklimatisierung
+  gescheitert), je Ereignis abwählbar, mit Knopf „Testmeldung an SignalBot“ im Reiter Einstellungen.
+* **Sprachmodul 1.2.1** mit Sonos4Lox und SonoX; die Sprechfrist von 20 s gilt jetzt in jedem Weg.
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 20 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  0.9.29. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 0.9.29 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+* **LoxBerry-Healthcheck** (`bin/healthcheck`): läuft der Dienst, sind Lebenszeichen und letzter gelungener
+  Abruf frisch, stehen MQTT-Gateway, Broker-Verbindung, Datenpunkte V2 und Befehlsbrücke; ohne Zugangsdaten
+  „nicht eingerichtet“ (Hinweis, kein Fehler). Keine Zugangsdaten, VIN oder Kennzeichen in der Ausgabe.
+* **Update mitten in einer Ladung:** die offene Mitschrift der Ladekosten wird mitgerettet, ebenso
+  Anmeldesperre, S-PIN-Sperre und die Wiederholsperre der Ansagen.
+* **Restminuten über MQTT:** `fahrzeug<n>/restzeit_min` (bis Ladeende) und `klima_restzeit_min` (bis Klima-Ende),
+  ganze Minuten, je Minute nachgeführt; 0 nach dem Ende, −1 ohne Aussage – keine Formel mit Zeitzone mehr in Loxone.
+* **−1-Regel:** ein Messwert ohne Aussage geht über MQTT als −1 hinaus statt gar nicht (Temperaturen −999;
+  Breite/Länge und Wartungstage weiter gar nicht). Die HTTP-Antworten bleiben unverändert. Schaltsignale sind
+  ausgenommen: die Ladeempfehlung `ladeempf` geht ohne Aussage als 0 hinaus (nie −1 – das hieße in Loxone
+  „laden“).
+* Herstellerseitig nur mit Attrappen geprüft – das Plugin bleibt BETA.
 
 ## Neu in 0.9.29
 
