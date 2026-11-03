@@ -101,13 +101,14 @@ function au_eingabe_felder($formular)
         'automatik' => array('kapazitaet', 'heim_breite', 'heim_laenge', 'heim_radius',
                              'abfahrt_ein', 'abfahrt_praefix', 'abfahrt_vorlauf', 'abfahrt_temp',
                              'abfahrt_fahrzeug', 'abfahrt_alter', 'ladeempf_ein', 'ladeempf_thema',
-                             'ladeempf_grenze', 'ladeempf_unter', 'ladeempf_alter'),
-        'mqtt'      => array('mqtt_ein', 'mqtt_topic'),
+                             'ladeempf_grenze', 'ladeempf_unter', 'ladeempf_alter',
+                             'signal_kabel', 'vorklima_nur_kabel', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc'),
+        'mqtt'      => array('mqtt_ein', 'mqtt_topic', 'haus_fahrzeug_ein'),
     );
     /* Nr. 36 b: die Sprachausgabe und die Anlass-Haken - nie die Sprechtoken (ansage_x2_felder()). */
-    $f['einst'] = array_merge($f['einst'], ansage_x2_felder(au_ansage_opt()),
+    $f['einst'] = array_merge($f['einst'], ansage_x2_felder(au_ansage_opt()), ansage_regeln_x2_felder(),
         array('ansage_laden_fertig', 'ansage_laden_abbruch', 'ansage_offen', 'ansage_licht',
-              'ansage_klima', 'ansage_ausfall'),
+              'ansage_klima', 'ansage_ausfall', 'ansage_kabel_vergessen'),
         au_ziele_x2_felder());     // Welle Mehrfach-Ziele (0.9.30): die Tabelle flach als name.N
     return isset($f[$formular]) ? $f[$formular] : array();
 }
@@ -431,7 +432,8 @@ if ($au_post && isset($_POST['speichern'])) {
     $au_tbean = array();
     $au_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $au_cfg['tts'] = ansage_formular_lesen($_POST, au_tts(), $au_tmangel, $au_tbean,
-        array('modi' => au_ansage_modi(), 'ziele' => au_mit_zielen()), au_ansage_k(), $au_thinw);
+        array('modi' => au_ansage_modi(), 'ziele' => au_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), au_ansage_k(), $au_thinw);
+    list($au_cfg['ansage_regeln']) = ansage_regeln_formular($_POST, au_ansage_regeln($au_cfg), array(), $au_tmangel, $au_tbean, au_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($au_tmangel as $au_tm) {
         $au_fehler[] = au_e($au_tm['text']);
     }
@@ -476,11 +478,11 @@ if ($au_post && isset($_POST['save_automatik'])) {
     // Gruppe 41 (0.9.30): Haus-Themen, Vorklimatisierung, Ankunft, Strompreis, SignalBot.
     foreach (array('haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'ankunft_ein',
                    'haus_strompreis_ein', 'signal_ein', 'signal_laden_fertig', 'signal_laden_abbruch',
-                   'signal_offen', 'signal_ausfall', 'signal_vorklima') as $au_feld) {
+                   'signal_offen', 'signal_ausfall', 'signal_vorklima', 'signal_kabel', 'vorklima_nur_kabel') as $au_feld) {
         $au_acfg[$au_feld] = isset($_POST[$au_feld]) ? 1 : 0;
     }
     foreach (array('vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle', 'ladeempf_quelle',
-                   'signal_praefix') as $au_feld) {
+                   'signal_praefix', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc') as $au_feld) {
         $au_roh = (isset($_POST[$au_feld]) && is_string($_POST[$au_feld])) ? $_POST[$au_feld] : '';
         $au_neu = au_wert_g41($au_feld, $au_roh);
         if ($au_neu === null) {
@@ -488,7 +490,7 @@ if ($au_post && isset($_POST['save_automatik'])) {
             au_bean($au_feld);     // X-2
             continue;
         }
-        $au_acfg[$au_feld] = in_array($au_feld, array('vorklima_kalt_unter', 'vorklima_heiss_ueber'), true)
+        $au_acfg[$au_feld] = in_array($au_feld, array('vorklima_kalt_unter', 'vorklima_heiss_ueber', 'kabel_soc', 'kabel_abfahrt_min', 'vorklima_min_soc'), true)
             ? (int) $au_neu : $au_neu;
     }
     if ((int) $au_acfg['vorklima_kalt_unter'] >= (int) $au_acfg['vorklima_heiss_ueber']) {
@@ -603,6 +605,7 @@ if ($au_post && isset($_POST['save_automatik'])) {
 if ($au_post && isset($_POST['save_mqtt'])) {
     $au_mcfg = au_config();
     $au_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $au_mcfg['haus_fahrzeug_ein'] = isset($_POST['haus_fahrzeug_ein']) ? 1 : 0;
     /* M11/U9 (Durchgang 29.09.2026): beanstanden statt still zurechtbiegen.
      * Bis 0.9.21 wurden au"di und /audi/ mit gruener Meldung als audi
      * gespeichert, und a//b wurde angenommen (gemessen, praefix_probe.php). */
@@ -783,9 +786,9 @@ if ($au_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
     if (isset($_POST['ansage_test_ziel']) && $au_tnur === 0) {
         $au_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($au_tnur >= 1) {
-        $au_tr = ansage_testansage(au_tts(), $au_tk, $au_tnur);
+        $au_tr = ansage_testansage(au_ansage_vor_ort(), $au_tk, $au_tnur);
     } else {
-        $au_tr = ansage_testansage(au_tts(), $au_tk);
+        $au_tr = ansage_testansage(au_ansage_vor_ort(), $au_tk);
     }
     au_log('Testansage' . ($au_tnur >= 1 ? ' an Ziel ' . $au_tnur : '') . ': ' . ansage_kurz($au_tr));
     if ($au_tr['stand'] === 1) {
@@ -1016,6 +1019,8 @@ if ($au_rahmen) {
 .sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -1387,6 +1392,11 @@ if ($au_rahmen) {
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
 'ziele' => au_mit_zielen(),
 'ziele_post' => au_eingabe_aktiv('tts_ziel_art.2') ? au_ziele_x2_post(au_eingaben()['werte']) : null), au_ansage_k()); ?>
+<?= ansage_regeln_html(au_ansage_regeln($au_cfg), array(), array(), array(
+    'w' => function ($n, $g) { return au_ein_w($n, $g); },
+    'm' => function ($n) { return au_ein_m(au_ziele_x2_name($n)); },
+    'c' => function ($n, $g) { return au_ein_h($n, $g); },
+    'token_vor_ort' => true), au_ansage_k()) ?>
 <h3><?= au_e(au_t('EINST.H_ANSAGE_ANLAESSE')) ?></h3>
 <?php foreach (au_ansage_anlaesse() as $au_a) { ?>
 <div class="sm-feld">
@@ -1504,7 +1514,40 @@ if ($au_rahmen) {
   <label for="vorklima_heiss_ueber"><?= au_e(au_t('EINST.L_VORKLIMA_HEISS_UEBER')) ?></label>
   <input data-role="none" type="number" id="vorklima_heiss_ueber" name="vorklima_heiss_ueber" value="<?= au_e(au_ein_w('vorklima_heiss_ueber', (int) $au_cfg['vorklima_heiss_ueber'])) ?>"<?= au_ein_m('vorklima_heiss_ueber') ?> min="-30" max="45">
 </div>
+<div class="sm-feld">
+  <label for="vorklima_min_soc"><?= au_e(au_t('EINST.L_VORKLIMA_MIN_SOC')) ?></label>
+  <input data-role="none" type="number" id="vorklima_min_soc" name="vorklima_min_soc" value="<?= au_e(au_ein_w('vorklima_min_soc', (string) $au_cfg['vorklima_min_soc'])) ?>"<?= au_ein_m('vorklima_min_soc') ?> min="0" max="100">
+  <div class="sm-hilfe"><?= au_t('EINST.H_VORKLIMA_MIN_SOC') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="vorklima_nur_kabel" value="1" <?= au_ein_h('vorklima_nur_kabel', !empty($au_cfg['vorklima_nur_kabel'])) ? 'checked' : '' ?><?= au_ein_m('vorklima_nur_kabel') ?>>
+    <?= au_e(au_t('EINST.L_VORKLIMA_NUR_KABEL')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_VORKLIMA_NUR_KABEL') ?></div>
+</div>
 
+<h2><?= au_e(au_t('EINST.H_SAMMEL_KABEL')) ?></h2>
+<p class="sm-hilfe"><?= au_t('EINST.SAMMEL_KABEL_HILFE') ?></p>
+<div class="sm-feld">
+  <label for="kabel_soc"><?= au_e(au_t('EINST.L_KABEL_SOC')) ?></label>
+  <input data-role="none" type="number" id="kabel_soc" name="kabel_soc" value="<?= au_e(au_ein_w('kabel_soc', (string) $au_cfg['kabel_soc'])) ?>"<?= au_ein_m('kabel_soc') ?> min="1" max="100">
+</div>
+<div class="sm-feld">
+  <label for="kabel_uhr"><?= au_e(au_t('EINST.L_KABEL_UHR')) ?></label>
+  <input data-role="none" type="time" id="kabel_uhr" name="kabel_uhr" value="<?= au_e(au_ein_w('kabel_uhr', (string) $au_cfg['kabel_uhr'])) ?>"<?= au_ein_m('kabel_uhr') ?>>
+</div>
+<div class="sm-feld">
+  <label for="kabel_abfahrt_min"><?= au_e(au_t('EINST.L_KABEL_ABFAHRT_MIN')) ?></label>
+  <input data-role="none" type="number" id="kabel_abfahrt_min" name="kabel_abfahrt_min" value="<?= au_e(au_ein_w('kabel_abfahrt_min', (string) $au_cfg['kabel_abfahrt_min'])) ?>"<?= au_ein_m('kabel_abfahrt_min') ?> min="0" max="720">
+  <div class="sm-hilfe"><?= au_t('EINST.H_KABEL_ABFAHRT_MIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_kabel" value="1" <?= au_ein_h('signal_kabel', !empty($au_cfg['signal_kabel'])) ? 'checked' : '' ?><?= au_ein_m('signal_kabel') ?>>
+    <?= au_e(au_t('EINST.L_SIGNAL_KABEL')) ?>
+  </label>
+</div>
 <h2><?= au_e(au_t('EINST.H_ANKUNFT')) ?></h2>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
@@ -1713,6 +1756,13 @@ if ($au_sich_warn) { ?>
   <label for="mqtt_topic"><?= au_e(au_t('EINST.L_MQTT_TOPIC')) ?></label>
   <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= au_e(au_ein_w('mqtt_topic', $au_cfg['mqtt_topic'])) ?>"<?= au_ein_m('mqtt_topic') ?> placeholder="audi">
   <div class="sm-hilfe"><?= au_t('EINST.H_MQTT_TOPIC') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="haus_fahrzeug_ein" value="1" <?= au_ein_h('haus_fahrzeug_ein', !empty($au_cfg['haus_fahrzeug_ein'])) ? 'checked' : '' ?>>
+    <?= au_e(au_t('EINST.L_HAUS_FAHRZEUG_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= au_t('EINST.H_HAUS_FAHRZEUG_EIN') ?></div>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= au_e(au_t('ALLG.SPEICHERN')) ?></button>
@@ -2390,6 +2440,7 @@ if ($au_fahrzeuge) {
    ohne weitere Ziele nichts. */
 if (au_mit_zielen()) { echo ansage_testknoepfe_html(au_tts(), au_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
+<?= au_ansage_lage_html() ?>
 </div>
 
 <h3><?= au_e(au_t('TEST.H_SCHALTEN')) ?></h3>

@@ -195,7 +195,7 @@ rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
 PYV="$PBIN/venv/bin/python3"
 if [ -x "$PYV" ] && [ -f "$PBIN/audi.py" ]; then
     if command -v timeout >/dev/null 2>&1; then
-        LBHOMEDIR="$BASE" LBPPLUGINDIR="$PDIR" timeout 60 "$PYV" "$PBIN/audi.py" --mqtt-leeren 2>&1
+        LBHOMEDIR="$BASE" LBPPLUGINDIR="$PDIR" timeout 120 "$PYV" "$PBIN/audi.py" --mqtt-leeren 2>&1
         MQ_RC=$?
     else
         LBHOMEDIR="$BASE" LBPPLUGINDIR="$PDIR" "$PYV" "$PBIN/audi.py" --mqtt-leeren 2>&1

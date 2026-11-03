@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.31 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.32 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,23 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.32
+
+**Ab dieser Fassung sind die Sprachansagen ab Werk an, auch nach einem Update, wenn Sie die Ausgabeart nie gespeichert haben.** Eine gespeicherte Einstellung bleibt, wie sie ist, auch „aus“. **Ausschalten:** Reiter *Einstellungen*, Abschnitt Sprachausgabe, Ausgabeart **„aus“** wählen und speichern; das bleibt auch nach jedem weiteren Update aus.
+
+* **Was angesagt wird:** Ladung beendet, Ladung abgebrochen, offen, Licht, Klimatisierung beendet, keine Daten mehr und Kabel vergessen, jeder Anlass mit eigenem Haken. Bisher galt „höchstens eine je Stunde“, jetzt einstellbar, ab Werk 30 Minuten.
+* **Wohin:** ab Werk zugleich Loxone Music Server (braucht seine Adresse), Google-Lautsprecher über Chromecast4lox (braucht dort ein Standardgerät oder hier den Namen) und Amazon Echo über Alexa-NG. Ein Ziel, das nicht bereitsteht, wird ohne Fehler übergangen; der Reiter *Test* sagt, was ihm fehlt. Das Sprechtoken der beiden Plugins müssen Sie nicht abschreiben: Es wird übernommen, in der Konfiguration gespeichert und nachgezogen; ein von Hand eingetragenes bleibt.
+* **Wann nicht:** Nachtruhe 22 bis 7 Uhr (einstellbar, wird nicht nachgeholt; Dringendes spricht trotzdem), dieselbe Ansage höchstens einmal in 30 Minuten (einstellbar) und solange Loxone das retained MQTT-Thema `haus/ansage/ruhe` auf 1 setzt (das gilt auch für Dringendes). Die Testansage im Reiter *Test* spricht immer.
+* **Der Minutenlauf wartet nicht auf Lautsprecher:** Gesprochen wird in einem eigenen Vorgang.
+
+Neu sind drei Dinge, keines davon braucht Loxone:
+
+* **Sammelthemen, ab Werk an:** `haus/fahrzeug/<name>/soc`, `reichweite_km`, `kabel`, `laedt`, `zuhause` (retained, ohne Aussage `-`) und `zaehler` (je Minute, nie retained), damit andere Plugins und Loxone ein Fahrzeug lesen können, gleich welcher Marke. Kein Standort, keine Fahrgestellnummer. Ein Stand, der älter als 6 Stunden ist, gilt als „keine Aussage“. Ausschalten: Reiter *MQTT*; das räumt die Themen ab. Die Deinstallation räumt sie ebenfalls ab. Sendet unter demselben Namen noch eine andere Linie (fremder Zähler), warnt der Reiter *Test*, und die Themen dort bleiben stehen.
+* **Kabel vergessen:** Steht das Auto zu Hause ohne Kabel und liegt der Akku unter 30 %, meldet es sich ab 20 Uhr, am Morgen nach der Nachtruhe oder vor einer Abfahrt über Ansage und (wenn eingeschaltet) SignalBot. In der Nachtruhe wartet es. Höchstens einmal je Standzeit und Tag. Unbekannte Werte warnen nie.
+* **Vorklimatisierung mit Mindest-Akku:** Unter 20 % (einstellbar) unterbleibt sie, ohne einen Versuch zu verbrauchen; das Thema `vorklima` zeigt 5. Wahlweise nur mit gestecktem Kabel (ab Werk aus, Stand 6). Ist der Stand unbekannt, klimatisiert das Plugin wie bisher.
+
+Geprüft ohne Fahrzeug und ohne Konto (der Hausherr hat kein Audi), mit einem Prüfbroker und der echten paho-Bibliothek; am Gerät nicht gemessen. Bei einem Verbrenner bleiben `kabel` und `laedt` ein Strich, wenn das Fahrzeug nichts dazu liefert. Die Warnung geht zusätzlich in den Benachrichtigungsbereich, wenn „Meldungen“ eingeschaltet ist.
 
 ## Neu in 0.9.31
 

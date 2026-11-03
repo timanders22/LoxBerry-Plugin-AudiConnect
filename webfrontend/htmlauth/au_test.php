@@ -264,6 +264,8 @@ function au_pruefungen($oberflaeche = array())
     foreach (au_haus_pruefzeilen($cfg) as $au_hz) {
         $zeilen[] = au_pruefzeile((int) $au_hz[1], au_e($au_hz[0]), au_e($au_hz[2]));
     }
+    list($au_sfs, $au_sft) = au_sammel_lage($cfg);
+    $zeilen[] = au_pruefzeile($au_sfs, au_t('EINST.F_HAUS_FAHRZEUG'), au_e($au_sft));
     if (!empty($cfg['abfahrt_ein'])) {
         $au_mk = au_json_lesen($p['datadir'] . '/merker.json');
         $au_vnr = (string) max(1, (int) $cfg['abfahrt_fahrzeug']);
@@ -561,7 +563,7 @@ function au_pruef_vorlagen()
 function au_ansage_zeile($offen)
 {
     $cfg = au_config();
-    list($st, $html) = ansage_pruefzeile(au_tts(), (bool) $offen, au_ansage_k());
+    list($st, $html) = ansage_pruefzeile(au_ansage_pruefblock(), (bool) $offen, au_ansage_k());
     $an = array();
     foreach (au_ansage_anlaesse() as $a) {
         if ((string) (isset($cfg[$a[0]]) ? $cfg[$a[0]] : '') === '1') {
