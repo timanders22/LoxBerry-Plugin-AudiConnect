@@ -284,6 +284,7 @@ if ($au_post && isset($_POST['vorlage'])) {
         $au_art = 'status';
     }
     list($au_name, $au_inhalt) = au_vorlage($au_nr, $au_art);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $au_name . '"');
     echo $au_inhalt;
@@ -292,6 +293,7 @@ if ($au_post && isset($_POST['vorlage'])) {
 if ($au_post && isset($_POST['vorlage_vo'])) {
     $au_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['vorlage_vo']) ? (int) $_POST['vorlage_vo'] : 1;
     list($au_name, $au_inhalt) = au_vorlage_vo($au_nr);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $au_name . '"');
     echo $au_inhalt;
@@ -301,6 +303,7 @@ if ($au_post && isset($_POST['vorlage_vo'])) {
 if ($au_post && isset($_POST['vorlage_befehle'])) {
     list($au_name, $au_inhalt) = au_vorlage_befehle();
     if ($au_inhalt !== '') {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/xml; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $au_name . '"');
         echo $au_inhalt;
@@ -309,6 +312,7 @@ if ($au_post && isset($_POST['vorlage_befehle'])) {
 }
 if ($au_post && isset($_POST['verlauf_csv'])) {
     $au_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['verlauf_csv']) ? (int) $_POST['verlauf_csv'] : 1;
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="audi_verlauf_' . $au_nr . '.csv"');
     echo au_verlauf_csv($au_nr);
@@ -983,6 +987,7 @@ if ($au_post && isset($_POST['au_sichern'])) {
     $au_js = json_encode(au_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($au_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="audiconnect_einstellungen_'
                . date('Ymd_His') . '.json"');
