@@ -107,6 +107,7 @@ function au_eingabe_felder($formular)
     );
     /* Nr. 36 b: die Sprachausgabe und die Anlass-Haken - nie die Sprechtoken (ansage_x2_felder()). */
     $f['einst'] = array_merge($f['einst'], ansage_x2_felder(au_ansage_opt()), ansage_regeln_x2_felder(),
+        array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'),     // 0.9.35: Tafel und HomePod dazu: ansage_regeln_formular() beanstandet sie, ohne Eintrag hier ging die Beanstandung samt Eingaben verloren.
         array('ansage_laden_fertig', 'ansage_laden_abbruch', 'ansage_offen', 'ansage_licht',
               'ansage_klima', 'ansage_ausfall', 'ansage_kabel_vergessen'),
         au_ziele_x2_felder());     // Welle Mehrfach-Ziele (0.9.30): die Tabelle flach als name.N
@@ -438,6 +439,8 @@ if ($au_post && isset($_POST['speichern'])) {
     $au_cfg['tts'] = ansage_formular_lesen($_POST, au_tts(), $au_tmangel, $au_tbean,
         array('modi' => au_ansage_modi(), 'ziele' => au_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), au_ansage_k(), $au_thinw);
     list($au_cfg['ansage_regeln']) = ansage_regeln_formular($_POST, au_ansage_regeln($au_cfg), array(), $au_tmangel, $au_tbean, au_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 0.9.35: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.34 ueberschrieb es der naechste Abgleich.
+    $au_cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($au_cfg['ansage_token_herkunft']) ? $au_cfg['ansage_token_herkunft'] : array());
     foreach ($au_tmangel as $au_tm) {
         $au_fehler[] = au_e($au_tm['text']);
     }

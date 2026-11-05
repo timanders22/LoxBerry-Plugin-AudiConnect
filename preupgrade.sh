@@ -8,6 +8,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-audiconnect}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
 # BASE fail-closed. postinstall.sh und uninstall/uninstall haben diese
@@ -45,7 +49,7 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     echo "<FAIL> LBHOMEDIR='$LBHOMEDIR'). Es wurde NICHTS gesichert und nichts"
     echo "<FAIL> angehalten - lieber ein sichtbarer Abbruch als eine stille"
     echo "<FAIL> Sicherung ins Leere."
-    exit 1
+    exit 2
 fi
 
 PDATA="$BASE/data/plugins/$PFOLDER"
@@ -92,6 +96,21 @@ else
     echo "<FAIL> legte Einstellungen und Zugangsdaten beiseite. Das Upgrade wird abgebrochen."
     exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
 
 # Gruppe 41 (0.9.30, Bauvorschrift G2): die Befehlsbruecke anhalten, bevor der bin-Ordner ersetzt wird.
 # Ihr Waechter in cron.01min startet sie nach dem Update wieder - nur mit dem Haken "Befehle ueber MQTT
@@ -339,7 +358,7 @@ for f in audi.json zugang.json; do
             echo "<INFO> bleibt unveraendert, sie ist der einzige Rueckweg."
             continue
         fi
-        if cp -p "$CFGDIR/$f" "$ZIEL"; then
+        if zs_hinlegen "$CFGDIR/$f" "$ZIEL"; then
             echo "<OK> $f gesichert."
         else
             echo "<FAIL> $f liess sich nicht sichern ($CFGDIR/$f)."
@@ -394,7 +413,7 @@ if [ -d "$PDATA" ] && { [ -f "$PDATA/merker.json" ] || [ -f "$PDATA/token.json" 
         for f in merker.json token.json ladung_mitschrift.json pin_sperre.json anmeldesperre.json \
                  ansage_sperre.json; do
             if [ -f "$PDATA/$f" ]; then
-                if cp -p "$PDATA/$f" "$RETTUNG/$f"; then
+                if zs_hinlegen "$PDATA/$f" "$RETTUNG/$f"; then
                     echo "<OK> $f gerettet."
                 else
                     echo "<FAIL> $f liess sich nicht retten."
@@ -403,7 +422,7 @@ if [ -d "$PDATA" ] && { [ -f "$PDATA/merker.json" ] || [ -f "$PDATA/token.json" 
             fi
         done
         if [ -d "$PDATA/verlauf" ]; then
-            if cp -rp "$PDATA/verlauf" "$RETTUNG/verlauf"; then
+            if cp -rp "$PDATA/verlauf" "$RETTUNG/verlauf" && diff -rq "$PDATA/verlauf" "$RETTUNG/verlauf" >/dev/null 2>&1; then
                 echo "<OK> Verlauf und Ladeprotokoll gerettet."
             else
                 echo "<FAIL> Der Verlauf liess sich nicht retten."
@@ -421,7 +440,9 @@ fi
 if [ "$FEHLER" -ne 0 ]; then
     echo "<FAIL> preupgrade NICHT vollstaendig - siehe die Zeilen darueber."
     echo "<FAIL> Das Upgrade wird abgebrochen, damit nichts verlorengeht."
-    exit 1
+    # 05.11.2026: bis hierher exit 1 - fuer plugininstall.pl nur eine Fehlerzeile, der Purge lief weiter.
+    rm -f "$MARKE" 2>/dev/null
+    exit 2
 fi
 echo "<OK> preupgrade abgeschlossen."
 exit 0

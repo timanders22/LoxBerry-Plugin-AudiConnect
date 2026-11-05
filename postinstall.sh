@@ -328,12 +328,12 @@ if [ ! -x "$VENV/bin/python3" ]; then
     exit 1
 fi
 
-"$VENV/bin/python3" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || \
+timeout 900 "$VENV/bin/python3" -m pip install --disable-pip-version-check --upgrade pip setuptools wheel >/dev/null 2>&1 || \
     echo "<INFO> pip liess sich nicht aktualisieren - wird mit der vorhandenen Fassung versucht."
 
 echo "<INFO> Installiere carconnectivity $KERN und den Audi-Connector $CONNECTOR"
 echo "<INFO> (benoetigt eine Internetverbindung) ..."
-if ! "$VENV/bin/python3" -m pip install --no-cache-dir \
+if ! timeout 2400 "$VENV/bin/python3" -m pip install --disable-pip-version-check --no-cache-dir \
         "carconnectivity==$KERN" "carconnectivity-connector-audi==$CONNECTOR"; then
     echo "<INFO> Feste Fassungen nicht installierbar - versuche die neuesten."
     # BEIDE Pakete nennen, nicht nur den Connector.
@@ -343,7 +343,7 @@ if ! "$VENV/bin/python3" -m pip install --no-cache-dir \
     # carconnectivity mitgezogen - genau das Geruest, dessen Fassung oben mit
     # KERN festgenagelt wird. Der Ersatzweg haette die Festlegung also
     # ausgehebelt, ohne dass es jemand merkt.
-    if ! "$VENV/bin/python3" -m pip install --no-cache-dir --prefer-binary \
+    if ! timeout 2400 "$VENV/bin/python3" -m pip install --disable-pip-version-check --no-cache-dir --prefer-binary \
             "carconnectivity" "carconnectivity-connector-audi"; then
         echo "<FAIL> carconnectivity konnte nicht installiert werden."
         echo "<FAIL> Haeufigste Ursachen: keine Internetverbindung, oder PyPI war"
@@ -378,7 +378,7 @@ if "$VENV/bin/python3" -c 'import paho.mqtt.client' 2>/dev/null; then
 # erreichbar, kein passendes Rad fuer die Architektur, ein Proxy. Die vier
 # INFO-Zeilen nannten die Folge und nie die Ursache. Der Hauptaufruf weiter
 # oben macht es richtig: dort ist die Ausgabe sichtbar.
-elif PAHO_AUSGABE=$("$VENV/bin/python3" -m pip install --no-cache-dir \
+elif PAHO_AUSGABE=$(timeout 900 "$VENV/bin/python3" -m pip install --disable-pip-version-check --no-cache-dir \
         --prefer-binary "paho-mqtt" 2>&1) \
      && "$VENV/bin/python3" -c 'import paho.mqtt.client' 2>/dev/null; then
     echo "<OK> paho-mqtt installiert (fuer Vorklimatisierung und Ladeempfehlung)."
