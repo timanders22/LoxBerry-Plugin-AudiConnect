@@ -570,6 +570,15 @@ if ($au_post && isset($_POST['save_automatik'])) {
         au_bean('ladeempf_thema');     // X-2
     }
 
+    // 0.9.36: beide Zahlen aus der Karte zusammen ins Feld Breitengrad kopiert ("50.123, 8.456") - hier aufteilen,
+    // wenn Laengengrad leer ist oder schon die zweite Zahl traegt. Eine Kommazahl allein ("51,3") bleibt eine Zahl.
+    if (isset($_POST['heim_breite']) && is_string($_POST['heim_breite'])
+        && !preg_match('/^\s*-?\d+,\d+\s*\z/', $_POST['heim_breite'])
+        && preg_match('/^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;\/ ]\s*(-?\d{1,3}(?:\.\d+)?)\s*\z/', $_POST['heim_breite'], $au_pm)
+        && (!isset($_POST['heim_laenge']) || !is_string($_POST['heim_laenge']) || trim($_POST['heim_laenge']) === ''
+            || str_replace(',', '.', trim($_POST['heim_laenge'])) === $au_pm[2])) {
+        $_POST['heim_breite'] = $au_pm[1]; $_POST['heim_laenge'] = $au_pm[2];
+    }
     // Heimatposition: entweder beide oder keine. Eine halbe Koordinate ergibt
     // keinen Punkt, und ZUHAUSE bliebe stumm leer.
     foreach (array('heim_breite' => array(-90, 90), 'heim_laenge' => array(-180, 180))
@@ -1448,6 +1457,7 @@ if ($au_rahmen) {
 <div class="sm-feld">
   <label for="heim_breite"><?= au_e(au_t('EINST.L_HEIM_BREITE')) ?></label>
   <input data-role="none" type="text" id="heim_breite" name="heim_breite" value="<?= au_e(au_ein_w('heim_breite', $au_cfg['heim_breite'])) ?>"<?= au_ein_m('heim_breite') ?> placeholder="51.318">
+  <div class="sm-hilfe"><a href="<?= au_e('https://mapatlas.eu/' . (au_sprache() === 'de' ? 'de' : 'en') . '/tools/coordinates') ?>" target="_blank" rel="noopener"><?= au_e(au_t('EINST.KARTE')) ?></a>. <?= au_e(au_t('EINST.KARTE_ZUSAMMEN')) ?></div>
 </div>
 <div class="sm-feld">
   <label for="heim_laenge"><?= au_e(au_t('EINST.L_HEIM_LAENGE')) ?></label>
