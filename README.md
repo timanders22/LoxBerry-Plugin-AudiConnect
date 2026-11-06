@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.37 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.38 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,10 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.38
+
+- Sprachdateien: Die Texte stehen jetzt in der Reihenfolge, in der der Spracherzeuger sie schreibt. Schlüssel und Texte sind unverändert; an der Oberfläche ändert sich nichts.
 
 ## Neu in 0.9.37
 
