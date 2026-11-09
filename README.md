@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.38 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.39 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,10 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.39
+
+- Reiter Automatik: Wird das Formular beanstandet, stehen danach alle eingetippten Werte und gesetzten Haken wieder im Formular – auch die der Haus-Themen, der Vorklimatisierung, der Ankunft und der SignalBot-Nachrichten. Bisher kamen dort die gespeicherten Werte zurück, und ein beanstandetes Feld wie „Kalt unter (°C)“ oder „Quelle der Ankunft“ war nicht rot umrandet. Gespeichert wurde in beiden Fällen nichts.
 
 ## Neu in 0.9.38
 

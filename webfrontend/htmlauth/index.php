@@ -102,7 +102,15 @@ function au_eingabe_felder($formular)
                              'abfahrt_ein', 'abfahrt_praefix', 'abfahrt_vorlauf', 'abfahrt_temp',
                              'abfahrt_fahrzeug', 'abfahrt_alter', 'ladeempf_ein', 'ladeempf_thema',
                              'ladeempf_grenze', 'ladeempf_unter', 'ladeempf_alter',
-                             'signal_kabel', 'vorklima_nur_kabel', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc'),
+                             'signal_kabel', 'vorklima_nur_kabel', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc',
+                             // 0.9.39 (Bestandspruefung 09.11.2026): die Felder der Gruppe 41, die der Handler
+                             // save_automatik liest, fehlten hier - nach einer Beanstandung standen die gespeicherten
+                             // Werte da, und vorklima_kalt_unter / ankunft_quelle verloren auch ihre Markierung.
+                             'haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'ankunft_ein',
+                             'haus_strompreis_ein', 'signal_ein', 'signal_laden_fertig', 'signal_laden_abbruch',
+                             'signal_offen', 'signal_ausfall', 'signal_vorklima',
+                             'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle', 'ladeempf_quelle',
+                             'signal_praefix'),
         'mqtt'      => array('mqtt_ein', 'mqtt_topic', 'haus_fahrzeug_ein'),
     );
     /* Nr. 36 b: die Sprachausgabe und die Anlass-Haken - nie die Sprechtoken (ansage_x2_felder()). */
