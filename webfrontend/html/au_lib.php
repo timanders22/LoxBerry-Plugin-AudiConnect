@@ -546,6 +546,15 @@ function au_config_speichern($cfg)
     if (!is_dir($p['configdir'])) {
         @mkdir($p['configdir'], 0775, true);
     }
+    /* Leere Objekte bleiben leere Objekte, in JEDEM Speicherweg (seit 0.9.42, Entscheidung des Hausherrn
+     * 11.11.2026). au_config() liest mit json_decode(..., true), dabei wird {} zu einem leeren Feld, und
+     * json_encode() schrieb es als [] zurueck. Fuer tts hiess das im Dienst "an" statt "aus": _ansage_aus()
+     * in audi.py nimmt nur ein Objekt als "aus". Die Gestalt kommt aus dem bisherigen Rohtext der Datei; was
+     * dort kein leeres Objekt war, bleibt so, wie es uebergeben wurde. */
+    $au_roh = @file_get_contents($p['config']);
+    if (is_array($cfg) && $cfg !== array() && is_string($au_roh) && $au_roh !== '') {
+        $cfg = au_json_leere_objekte($cfg, json_decode($au_roh));
+    }
     $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
     // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
@@ -564,7 +573,8 @@ function au_config_speichern($cfg)
 
 /** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026),
  *  damit json_encode() sie als {} und nicht als [] schreibt - oben wie verschachtelt, auch unter fremden
- *  Schluesseln. Nur fuer au_config_vervollstaendigen(); das Speichern im Formular bleibt, wie es ist.
+ *  Schluesseln. Seit 0.9.42 ruft au_config_speichern() sie fuer jeden Speicherweg auf; der Aufruf in
+ *  au_config_vervollstaendigen() bleibt stehen und aendert dort nichts mehr.
  *  Bauart Bewaesserung 0.9.56 (bw_json_leere_objekte()). */
 function au_json_leere_objekte($a, $o)
 {

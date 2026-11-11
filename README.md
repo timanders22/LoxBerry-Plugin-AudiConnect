@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.41 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.42 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -23,11 +23,15 @@ Plugin beide Antriebe getrennt.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
 
+## Neu in 0.9.42
+
+- **Leere Objekte bleiben auch beim Speichern erhalten:** Bisher wurde ein leeres Objekt (`{}`) in `audi.json` bei jedem Speichern außerhalb des Vervollständigens zu einer leeren Liste (`[]`), etwa beim Erzeugen eines Tokens, beim Übernehmen des Sprechtokens oder beim Speichern einzelner Reiter. Für die Sprachausgabe war das ein Unterschied: `"tts": {}` gilt im Dienst als „aus“, `"tts": []` als „an“. Jetzt behält `au_config_speichern()` die leeren Objekte der bisherigen Datei bei, gleich auf welchem Weg gespeichert wird. Was in der Datei schon `[]` ist, bleibt `[]`. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, am Gerät noch nicht.
+
 ## Neu in 0.9.41
 
 - **Konfiguration wird nach einem Update vervollständigt:** Fehlen in `audi.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Dienst sie beim Start jetzt einmal in die Datei ein, bevor er die Konfiguration liest (neu: `bin/au_vervollstaendigen.php`, geschrieben wird über `au_lib.php`). Das Protokoll `audi.log` nennt die ergänzten Namen, keine Werte. Bisher ergänzten Oberfläche und Dienst fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern in der Oberfläche. Eingetragen wird jeweils die Vorgabe – genau der Wert, mit dem Oberfläche und Dienst bisher gearbeitet haben; am Verhalten ändert sich dadurch nichts. `endpunkt_ein` trägt wie bisher `postinstall.sh` beim Update ein; das Vervollständigen trägt es nicht ein, ein festgeschriebenes „aus“ könnte eine spätere Aktualisierung nicht mehr berichtigen.
 - Geschrieben werden die Werte aus der Datei, wie sie dort stehen, plus die fehlenden Vorgaben; Schlüssel, die das Plugin nicht kennt, bleiben stehen, die Zweitschrift zieht mit. Nicht angefasst werden eine fehlende, leere oder unlesbare Datei, eine, der eines der drei Geheimnisse fehlt (Lesetoken, Schalttoken, Formulargeheimnis – die erzeugt weiterhin die Oberfläche beim Öffnen), und jede Datei, solange eine Aktualisierung läuft. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, dazu ein echter Lauf des Dienststarts (der Abruf bei Audi durch eine Attrappe ersetzt); am Gerät ist es noch nicht gemessen.
-- Leere Objekte (`{}`) in der Datei bleiben beim Vervollständigen erhalten, auch verschachtelte und solche unter unbekannten Schlüsseln; sie werden dabei nicht mehr zu leeren Listen (`[]`). Das Speichern im Formular bleibt, wie es war.
+- Leere Objekte (`{}`) in der Datei bleiben beim Vervollständigen erhalten, auch verschachtelte und solche unter unbekannten Schlüsseln; sie werden dabei nicht mehr zu leeren Listen (`[]`). Das übrige Speichern blieb in 0.9.41 noch, wie es war; seit 0.9.42 gilt es dort auch.
 
 ## Neu in 0.9.40
 
