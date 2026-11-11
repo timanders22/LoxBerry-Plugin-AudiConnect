@@ -548,8 +548,8 @@ function au_config_speichern($cfg)
     }
     /* Leere Objekte bleiben leere Objekte, in JEDEM Speicherweg (seit 0.9.42, Entscheidung des Hausherrn
      * 11.11.2026). au_config() liest mit json_decode(..., true), dabei wird {} zu einem leeren Feld, und
-     * json_encode() schrieb es als [] zurueck. Fuer tts hiess das im Dienst "an" statt "aus": _ansage_aus()
-     * in audi.py nimmt nur ein Objekt als "aus". Die Gestalt kommt aus dem bisherigen Rohtext der Datei; was
+     * json_encode() schrieb es als [] zurueck. Fuer tts hielt die Vorpruefung _ansage_aus() in audi.py bis
+     * 0.9.42 ein [] fuer "an"; die Bruecke liest {} und [] beide als "aus" (gemessen 11.11.2026). Die Gestalt kommt aus dem bisherigen Rohtext der Datei; was
      * dort kein leeres Objekt war, bleibt so, wie es uebergeben wurde. */
     $au_roh = @file_get_contents($p['config']);
     if (is_array($cfg) && $cfg !== array() && is_string($au_roh) && $au_roh !== '') {

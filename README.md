@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.42 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.43 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -23,9 +23,13 @@ Plugin beide Antriebe getrennt.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
 
+## Neu in 0.9.43
+
+- **Vorprüfung der Sprachausgabe wie die Brücke:** Steht die Sprachausgabe in der Konfiguration als Liste (etwa `"tts": []`, so schrieb das Speichern ein leeres Objekt bis 0.9.41), nimmt die Vorprüfung im Dienst sie jetzt wie die Brücke als „aus“. Bisher hielt der Dienst sie für „an“ und rief die Brücke auf, die dann mit „aus“ ablehnte. Gesprochen wurde in beiden Fassungen nichts; es entfallen nur der vergebliche Aufruf und seine Protokollzeile. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, am Gerät noch nicht.
+
 ## Neu in 0.9.42
 
-- **Leere Objekte bleiben auch beim Speichern erhalten:** Bisher wurde ein leeres Objekt (`{}`) in `audi.json` bei jedem Speichern außerhalb des Vervollständigens zu einer leeren Liste (`[]`), etwa beim Erzeugen eines Tokens, beim Übernehmen des Sprechtokens oder beim Speichern einzelner Reiter. Für die Sprachausgabe war das ein Unterschied: `"tts": {}` gilt im Dienst als „aus“, `"tts": []` als „an“. Jetzt behält `au_config_speichern()` die leeren Objekte der bisherigen Datei bei, gleich auf welchem Weg gespeichert wird. Was in der Datei schon `[]` ist, bleibt `[]`. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, am Gerät noch nicht.
+- **Leere Objekte bleiben auch beim Speichern erhalten:** Bisher wurde ein leeres Objekt (`{}`) in `audi.json` bei jedem Speichern außerhalb des Vervollständigens zu einer leeren Liste (`[]`), etwa beim Erzeugen eines Tokens, beim Übernehmen des Sprechtokens oder beim Speichern einzelner Reiter. Hörbar war das nicht: Die Brücke `bin/au_ansage.php` liest `{}` und `[]` beide als „aus“. Nur die Vorprüfung im Dienst nahm `[]` als „an“ und rief die Brücke dann vergeblich auf (berichtigt 11.11.2026; bis dahin stand hier, die Ansage sei „an“ gewesen). Jetzt behält `au_config_speichern()` die leeren Objekte der bisherigen Datei bei, gleich auf welchem Weg gespeichert wird. Was in der Datei schon `[]` ist, bleibt `[]`. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, am Gerät noch nicht.
 
 ## Neu in 0.9.41
 
