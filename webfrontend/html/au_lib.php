@@ -562,6 +562,101 @@ function au_config_speichern($cfg)
     return true;
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026),
+ *  damit json_encode() sie als {} und nicht als [] schreibt - oben wie verschachtelt, auch unter fremden
+ *  Schluesseln. Nur fuer au_config_vervollstaendigen(); das Speichern im Formular bleibt, wie es ist.
+ *  Bauart Bewaesserung 0.9.56 (bw_json_leere_objekte()). */
+function au_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = au_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = au_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Konfiguration vervollstaendigen (seit 0.9.41, Regeln/05 "Die Konfiguration
+ * wird vervollstaendigt, nicht nur ergaenzt"; Bauform Docker NG 1.3.7).
+ *
+ * Bis 0.9.40 ergaenzten au_config() und config() im Dienst fehlende
+ * Schluessel bei jedem Lesen nur im Speicher; in audi.json kamen sie erst mit
+ * dem naechsten Speichern in der Oberflaeche. Aufgerufen ueber
+ * bin/au_vervollstaendigen.php beim Dienststart (audi.py main(), vor dem
+ * ersten Lesen der Konfiguration in dienst()). Beim Update entfernt
+ * postinstall.sh die Marke erst nach dem Nachtragen von endpunkt_ein und
+ * startet den Dienst danach - die Reihenfolge haelt also. Weil nur bei
+ * FEHLENDEN Schluesseln geschrieben wird, bleibt es bei einem Schreibvorgang.
+ *
+ * - Nur mit Wurzel, nicht waehrend einer Aktualisierung (au_marke(), gilt),
+ *   und nur wenn audi.json ein lesbares Objekt ist, das alle drei Geheimnisse
+ *   traegt (au_config_hat_inhalt(), das Merkwort der Selbstheilung) und dessen
+ *   Aktionstoken taugt (au_token_taugt()). Fehlt ein Geheimnis, ist das Sache
+ *   von au_config()/au_token() beim Oeffnen der Oberflaeche - ein leer
+ *   nachgetragenes Geheimnis waere nur eine Annahme.
+ * - Geschrieben werden die WERTE AUS DER DATEI, nicht die von au_config() bzw.
+ *   config() im Dienst aufbereiteten; fremde Schluessel bleiben stehen.
+ *   Nachgetragen werden nur Schluessel aus au_vorgaben(), mit deren Wert:
+ *   au_config() kennt keine Lese-Regel fuer Bestandsdateien (endpunkt_ein
+ *   traegt postinstall.sh beim Update fest ein), und die Vorgaben des Dienstes
+ *   (VORGABEN in audi.py) stimmen in allen gemeinsamen Schluesseln ueberein.
+ * - Geschrieben ueber au_config_speichern() (0600, Zweitschrift).
+ * - Genau eine Protokollzeile mit den Namen, nie mit Werten.
+ *
+ * Rueckgabe: array('stand' => ruht|ohne_datei|ohne_merkwort|vollstaendig
+ *                  |ergaenzt|fehler, 'schluessel' => array(...))
+ */
+function au_config_vervollstaendigen()
+{
+    $p = au_paths();
+    $m = au_marke();
+    if ($p['home'] === '' || ($m !== null && !empty($m['gilt']))) {
+        return array('stand' => 'ruht', 'schluessel' => array());
+    }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config'])) {
+        return array('stand' => 'ohne_datei', 'schluessel' => array());
+    }
+    $datei = au_inhalt_oder_null($p['config']);
+    if (!au_config_hat_inhalt($datei) || !au_token_taugt($datei['aktionstoken'])) {
+        return array('stand' => 'ohne_merkwort', 'schluessel' => array());
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim
+    // Schreiben als [] zurueck - der Rohwert wird erhalten, bevor ergaenzt wird (11.11.2026).
+    $datei = au_json_leere_objekte($datei, json_decode((string) @file_get_contents($p['config'])));
+    $fehlend = array();
+    foreach (au_vorgaben() as $k => $w) {
+        /* endpunkt_ein bleibt aussen vor (11.11.2026): den Uebergang fuer Bestandsanlagen setzt das
+         * Update; ein hier festgeschriebenes "aus" koennte ein spaeteres Update nicht mehr berichtigen. */
+        if ($k === 'endpunkt_ein') {
+            continue;
+        }
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $w;
+            $fehlend[] = $k;
+        }
+    }
+    if (!$fehlend) {
+        return array('stand' => 'vollstaendig', 'schluessel' => array());
+    }
+    if (!au_config_speichern($datei)) {
+        au_log('Konfiguration NICHT vervollstaendigt: audi.json liess sich nicht schreiben ('
+            . count($fehlend) . ' fehlende Schluessel).');
+        return array('stand' => 'fehler', 'schluessel' => $fehlend);
+    }
+    au_log('Konfiguration vervollstaendigt - ' . count($fehlend)
+        . ' fehlende Vorgaben in audi.json geschrieben: ' . implode(', ', $fehlend));
+    return array('stand' => 'ergaenzt', 'schluessel' => $fehlend);
+}
+
 /**
  * Welche Geheimnisse wuerde die Zweitschrift verlieren, wenn sie durch
  * $neu ersetzt wird?

@@ -5025,6 +5025,32 @@ def dienst_sperre():
     return griff
 
 
+VERVOLLSTAENDIGEN_PHP = "php"     # die Pruefstaende setzen hier eine Attrappe ein
+
+
+def konfiguration_vervollstaendigen() -> str:
+    """Seit 0.9.41 (Regeln/05): fehlende Vorgaben einmal in die Datei schreiben - beim Dienststart.
+
+    Geschrieben wird ueber bin/au_vervollstaendigen.php und damit ueber au_lib.php, nicht von hier:
+    ein Schreiber fuer ein Format (Bauart BLE-Scanner 1.3.40). Die Zeile mit den Namen schreibt
+    au_config_vervollstaendigen() selbst ins Protokoll; hier steht nur eine Zeile, wenn der Aufruf
+    scheiterte - nie ein Wert. Waehrend einer Aktualisierung (Marke) schreibt die PHP-Seite nichts;
+    postinstall.sh entfernt sie vor dem Dienststart. Rueckgabe: die Ausgabezeile des Skripts oder "" (fuer die Pruefung)."""
+    skript = Path(__file__).resolve().parent / "au_vervollstaendigen.php"
+    try:
+        r = subprocess.run([VERVOLLSTAENDIGEN_PHP, str(skript), PNAME], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError) as err:
+        _LOG.warning("Konfiguration nicht vervollstaendigt: Aufruf von %s scheiterte (%s)", skript.name,
+                     type(err).__name__)
+        return ""
+    zeilen = (r.stdout or b"").decode("utf-8", "replace").strip().splitlines()
+    zeile = zeilen[-1] if zeilen else ""
+    if r.returncode != 0 or not zeile.startswith("VERVOLLSTAENDIGEN;"):
+        _LOG.warning("Konfiguration nicht vervollstaendigt: Rueckgabe %s, Ausgabe %r", r.returncode, zeile[:200])
+    return zeile
+
+
 def main() -> int:
     global _SPERRE
     fremd = [a for a in sys.argv[1:] if a not in AUFRUFE]
@@ -5053,6 +5079,8 @@ def main() -> int:
         sys.stderr.write("FEHLER: " + text + "\n")
         _LOG.warning(text)
         return 3
+    # 0.9.41 (Regeln/05): fehlende Vorgaben einmal in die Datei - vor dem ersten Lesen in dienst().
+    konfiguration_vervollstaendigen()
     signal.signal(signal.SIGTERM, signal_behandeln)
     signal.signal(signal.SIGINT, signal_behandeln)
     try:
