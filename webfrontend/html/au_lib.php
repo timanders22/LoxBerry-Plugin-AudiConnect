@@ -44,6 +44,10 @@ if (!function_exists('au_e')) {
  * 0.9.25; seit 0.9.30 Stamm 1.2.1 mit weiteren Ausgabezielen, au_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; sie schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 0.9.44: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
+ * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
+ * anderen Linien. Die Beschreibung dieser Linie steht in au_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -3512,284 +3516,219 @@ function au_ansage_satz($anlass, $nr, $name, $soc = null, $grenze = null)
  * S-PIN. Wer damit auf einen zweiten LoxBerry umzog, hatte alle Felder
  * richtig und kam trotzdem nicht an die Anlage.
  *
- * Das Formulargeheimnis bleibt draussen (au_nicht_sichern()).
+ * 0.9.44: Kopf und Inhalt baut das gemeinsame Sicherungsmodul
+ * (sicherung_bauen(), Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag
+ * des Hausherrn 12.11.2026) nach der Beschreibung au_sicherung_beschreibung():
+ * _hinweis, _plugin = 'audiconnect' (wie seit 0.9.12), neu _fassung, _stand;
+ * dahinter alle Einstellungen in der Reihenfolge der Vorgaben samt beiden
+ * Token und der Teil "zugang". Das Formulargeheimnis, der Vermerk
+ * ansage_token_herkunft und die Sprechtoken bleiben draussen. X-3 wie bisher:
+ * wuerde das eigene Zurueckspielen die Datei abweisen, sagt es der Kopf
+ * (_warnung, nur Namen). $pruefen bleibt der Form halber; das Modul prueft
+ * immer.
  */
 function au_sicherung_bauen($pruefen = true)
 {
-    $cfg = au_config();
-    $aus = array(
-        '_hinweis' => au_t('EINST.SICH_KOPF'),
-        '_plugin'  => 'audiconnect',
-        '_stand'   => date('Y-m-d H:i:s'),
-    );
-    foreach ($cfg as $k => $v) {
-        if (in_array($k, au_nicht_sichern(), true)) {
-            continue;
-        }
-        $aus[$k] = $v;
-    }
-    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung (Entwurf 5). */
-    if (isset($aus['tts']) && is_array($aus['tts'])) {
-        $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']);
-    }
-    unset($aus['ansage_token_herkunft']);     // Stamm 1.3.2: der Vermerk geht nie in eine Sicherung
+    return sicherung_bauen(au_sicherung_beschreibung(), au_config(),
+                           array('zugang' => au_sicherung_zugang_jetzt()));
+}
+
+/** 0.9.44: Die Zugangsdaten fuer die Sicherung, ungekuerzt aus zugang.json (au_zugang() gibt nur Laengen). */
+function au_sicherung_zugang_jetzt()
+{
     $z = au_json_lesen(au_paths()['zugang']);
-    $aus['zugang'] = array(
+    return array(
         'email'    => isset($z['email']) ? (string) $z['email'] : '',
         'passwort' => isset($z['passwort']) ? (string) $z['passwort'] : '',
         'spin'     => isset($z['spin']) ? (string) $z['spin'] : '',
     );
-    /* X-3 (B-Nachzug 01.10.2026): wuerde das eigene Zurueckspielen diese
-     * Datei abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert
-     * wird sie trotzdem vollstaendig. */
-    if ($pruefen) {
-        $namen = au_rueckspiel_altwerte();
-        if ($namen) {
-            $aus = array('_warnung' => sprintf(au_t('EINST.SICH_WARN_KOPF'), implode(', ', $namen)))
-                 + $aus;
-        }
-    }
-    return $aus;
 }
 
 /**
  * X-3 (B-Nachzug 01.10.2026): Welche Einstellungen wuerden beim Zurueckspielen
  * der EIGENEN Sicherung abgewiesen? Gebaut wird genau die Datei, die
  * "Einstellungen sichern" liefert, und durch dieselbe Pruefung geschickt wie
- * beim Zurueckspielen (au_sicherung_lesen). Rueckgabe: Namen (nie Werte),
- * leer heisst "wuerde angenommen".
- *
- * Die Faelle, die hier anschlagen: ein Wert in audi.json, den das Formular
- * nie gespeichert haette (von Hand, aus einer anderen Fassung, eine Grenze,
- * die sich geaendert hat), oder ein unbekannter Schluessel. au_config()
- * setzt solche Werte beim Lesen nicht zurueck - sie stehen in der Sicherung,
- * und das Zurueckspielen weist die ganze Datei ab.
+ * beim Zurueckspielen - seit 0.9.44 die des Sicherungsmoduls
+ * (sicherung_selbstpruefung()). Rueckgabe: Namen (nie Werte), leer heisst
+ * "wuerde angenommen".
  */
 function au_rueckspiel_altwerte()
 {
-    $js = json_encode(au_sicherung_bauen(false),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false) {
-        return array();     // Sichern meldet dann selbst SICH_SCHREIBFEHLER
-    }
+    $b = au_sicherung_beschreibung();
+    $cfg = au_config();
+    $daten = sicherung_bauen($b, $cfg, array('zugang' => au_sicherung_zugang_jetzt()));
+    unset($daten['_warnung']);
     $namen = array();
-    list($neu) = au_sicherung_lesen($js, null, $namen);
+    foreach (sicherung_selbstpruefung($b, $daten, $cfg) as $n) {
+        $namen[] = ($n === '-') ? au_t('EINST.SICH_GANZE_DATEI') : $n;
+    }
     $namen = array_values(array_unique($namen));
     sort($namen);
-    if ($neu === null && !$namen) {
-        $namen[] = au_t('EINST.SICH_GANZE_DATEI');
-    }
     return $namen;
 }
 
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * BERICHTIGT IN 0.9.12, an drei Stellen. Bis 0.9.11 stand hier zwar dieser
- * Anspruch, geprueft wurden aber nur die SCHLUESSELNAMEN:
- *
- *   1. Jeder Wert wird jetzt geprueft, gegen dieselbe Liste wie das Formular
- *      (au_wert_pruefen). Gemessen an 0.9.11 wurde eine Datei mit
- *      intervall = "abc" angenommen und geschrieben.
- *   2. Fehlende Schluessel behalten ihren BISHERIGEN Wert. Bis 0.9.11 fing
- *      die Funktion mit au_vorgaben() an - eine Sicherung aus einer aelteren
- *      Fassung loeschte damit beide Token und setzte 32 Einstellungen auf
- *      Werk zurueck, bei gruener Meldung "2 Werte uebernommen".
- *   3. Der lesbare Kopf (Schluessel mit _ am Anfang) wird UEBERGANGEN, nicht
- *      beanstandet.
- *
- * Grundlage ist der uebergebene Bestand, nicht die Werkseinstellung.
- * Rueckgabe: array(Konfiguration|null, Zugang|null, Beanstandungen[],
- *                  uebernommen, nicht enthalten, behaltene Token[],
- *                  behaltene Spaetschluessel[] - seit 0.9.30, Welle Mehrfach-Ziele: tts.ziele).
- */
-function au_sicherung_lesen($roh, $bestand = null, &$namen = null)
+/** 0.9.44: die Unterschluessel des Blocks tts - die der Sprachausgabe, ihre Sprechtoken und (mit Zieltabelle) ziele. */
+function au_sicherung_tts_schluessel()
 {
+    $s = array_merge(array_keys(ansage_vorgaben()), ansage_geheim());
+    if (au_mit_zielen()) { $s[] = 'ziele'; }
+    return $s;
+}
+
+/**
+ * 0.9.44: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
+ *
+ * Was bis 0.9.43 au_sicherung_lesen() selbst tat, steht hier als Beschreibung;
+ * die Regeln des Moduls (Entscheidungen des Hausherrn 12.11.2026) kommen dazu:
+ *   - Kennzeichen 'audiconnect' (seit 0.9.12 in jeder Sicherung dieser Linie,
+ *     gemessen an allen Fassungen 0.9.12 bis 0.9.43). Ein Uebersetzer fuer
+ *     aeltere Sicherungen ist nicht noetig: 0.9.10 und 0.9.11 schrieben gar
+ *     keinen Kopf und werden als Datei ohne Kennzeichen abgewiesen.
+ *   - Unbekannte Schluessel oben, in tts, ansage_regeln und im Teil zugang
+ *     werden verworfen und mit Namen gemeldet (bis 0.9.43: oben, in tts und
+ *     in ansage_regeln wies einer die ganze Datei ab, im Teil zugang fiel er
+ *     still weg).
+ *   - Ein leerer Wert ueberschreibt keinen bestehenden (bis 0.9.43 nur fuer
+ *     die beiden Token und die E-Mail).
+ * Wie bisher: jeder Wert durch au_wert_pruefen(), tts durch
+ * ansage_wert_pruefen() (eine Datei mit Sprechtoken wird abgewiesen),
+ * ansage_regeln durch ansage_regeln_wert(), temp_min <= temp_max, die
+ * Schluessel seit 0.9.25 und 0.9.30/0.9.32 duerfen fehlen und behalten den
+ * Wert dieser Anlage, alle uebrigen muessen da sein; eine halb gueltige Datei
+ * aendert nichts. Das Formulargeheimnis (au_nicht_sichern()) und der Vermerk
+ * ansage_token_herkunft kommen nie aus einer Datei.
+ */
+function au_sicherung_beschreibung()
+{
+    $p = au_paths();
+    $tts_knoten = au_mit_zielen() ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
+    $schluessel = array(
+        'tts' => sicherung_block(au_sicherung_tts_schluessel(), $tts_knoten) + array(
+            'sichern' => 'ansage_sicherung_bereinigen',
+            'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                /* Nr. 36 b (seit 0.9.25): eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die
+                 * Datei eines (auch als Liste, Zahl oder null), stammt sie nicht aus "Einstellungen sichern" und
+                 * wird abgewiesen; die geltenden Sprechtoken bleiben. Gemessen am Block der DATEI, denn Regel 3
+                 * setzt ein leeres Feld vorher auf den geltenden Wert. */
+                $tm = ansage_sicherung_mangel($roh);
+                if ($tm) { return sprintf(au_t('EINST.SICH_TTS_TOKEN'), au_e(implode(', ', $tm))); }
+                $g = '';
+                if (ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, au_ansage_modi()) === null) {
+                    return sprintf(au_t('EINST.SICH_TTS'), au_e(ansage_kennung_text($g, au_ansage_k())));
+                }
+                return '';
+            },
+            'wandeln' => function ($w) {
+                $g = '';
+                return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, au_ansage_modi());
+            }),
+        /* S2: ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+            'pruefen' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g) === null ? au_t('EINST.SICH_REGELN') : ''; },
+            'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); }),
+        'zugang' => sicherung_block(array('email', 'passwort', 'spin')),
+    );
+    /* Nr. 36 b und Gruppe 41: eine Sicherung von 0.9.24 bzw. 0.9.29 oder frueher kennt diese Schluessel nicht; sie
+     * behalten den Wert dieser Anlage (bis 0.9.43 ging $neu dafuer vom Bestand aus), und die Meldung nennt sie. */
+    foreach (array_merge(au_ansage_neue_schluessel(), au_neue_schluessel_0930()) as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
+    }
+    /* Zahlen der Grenzliste werden als Zahl gespeichert, auch wenn die Datei sie als Text traegt (wie bisher). */
+    foreach (array_keys(au_grenzen()) as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['wandeln'] = function ($w) { return is_string($w) ? (int) $w : $w; };
+    }
+    return array(
+        'kennzeichen' => 'audiconnect',
+        'hinweis' => au_t('EINST.SICH_KOPF'),
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg - keine fuenfte Stelle neben den
+         * vier, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => (string) $p['home'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => au_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array_merge(au_nicht_sichern(), array('ansage_token_herkunft')),
+        'teile' => array('zugang' => 'au_sicherung_zugang_lesen'),
+        'teile_jetzt' => array('zugang' => 'au_sicherung_zugang_jetzt'),
+        'pruefen' => function ($k, $w) { return au_wert_pruefen($k, $w); },
+        'quer' => function ($neu) {
+            if (isset($neu['temp_min'], $neu['temp_max']) && (int) $neu['temp_min'] > (int) $neu['temp_max']) {
+                return array(array('temp_min', au_t('EINST.FEHLER_TEMP_TAUSCH')));
+            }
+            return array();
+        },
+        'jetzt' => function () { return au_config(); },
+        't' => 'au_t',
+        'e' => 'au_e',
+    );
+}
+
+/**
+ * Der Teil "zugang" einer Sicherung. Er gehoert NICHT in die Konfiguration,
+ * sondern in zugang.json (0600). Rueckgabe fuer das Sicherungsmodul:
+ * array(Zugangsdaten|null, Beanstandungen[]). Unbekannte Felder hat das Modul
+ * schon verworfen und genannt; ein leeres Feld traegt den geltenden Wert
+ * (Regel 3).
+ *
+ * U5 (Durchgang 29.09.2026), wie bisher: eine Liste oder {} wird abgewiesen,
+ * und ein fehlender Unterschluessel ist eine Beanstandung. Bis 0.9.21 liess
+ * is_array() beides durch, fehlende Schluessel wurden zu '', und die E-Mail
+ * des Kontos war still geloescht, bei gruener Meldung (gemessen, p3c Fall 3).
+ */
+function au_sicherung_zugang_lesen($w)
+{
+    if (!is_array($w) || $w === array() || array_keys($w) === range(0, count($w) - 1)) {
+        return array(null, array(sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang')));
+    }
     $mangel = array();
-    $namen = array();     // X-3: die Namen der beanstandeten Einstellungen, nie Werte
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, null, array(au_t('EINST.SICH_KEIN_JSON')), 0, 0, array(), array());
-    }
-    $behalten = array();    // U4: leere Token - das geltende bleibt
-    $spaet = array();       // Welle Mehrfach-Ziele (0.9.30): Spaetliste - fehlte in der Sicherung, gilt weiter
-    if ($bestand === null) {
-        $bestand = au_config();
-    }
-    $neu = array_merge(au_vorgaben(), $bestand);
-    $bekannt = array_keys(au_vorgaben());
-    $zugang = null;
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
-        if ((string) $k !== '' && substr((string) $k, 0, 1) === '_') {
+    $z = array();
+    foreach (array('email', 'passwort', 'spin') as $zk) {
+        if (!array_key_exists($zk, $w)) {
+            $mangel[] = sprintf(au_t('EINST.SICH_ZUGANG_FEHLT'), 'zugang.' . $zk);
             continue;
         }
-        if ((string) $k === 'zugang') {
-            /* U5 (Durchgang 29.09.2026): eine Liste oder {} wird abgewiesen,
-             * und ein fehlender Unterschluessel ist eine Beanstandung. Bis
-             * 0.9.21 liess is_array() beides durch, fehlende Schluessel wurden
-             * zu '', und die E-Mail des Kontos war still geloescht, bei
-             * gruener Meldung (gemessen, p3c Fall 3). */
-            if (!is_array($w) || $w === array() || array_keys($w) === range(0, count($w) - 1)) {
-                $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang');
-                $namen[] = 'zugang';
-                continue;
-            }
-            $z = array();
-            foreach (array('email', 'passwort', 'spin') as $zk) {
-                if (!array_key_exists($zk, $w)) {
-                    $mangel[] = sprintf(au_t('EINST.SICH_ZUGANG_FEHLT'), 'zugang.' . $zk);
-                    $namen[] = 'zugang.' . $zk;
-                    continue 2;
-                }
-                $zw = $w[$zk];
-                if (!is_string($zw) || !au_wert_taugt($zw)) {
-                    $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang.' . $zk);
-                    $namen[] = 'zugang.' . $zk;
-                    continue 2;
-                }
-                $z[$zk] = $zw;
-            }
-            if ($z['email'] !== '' && !filter_var($z['email'], FILTER_VALIDATE_EMAIL)) {
-                $mangel[] = au_t('EINST.FEHLER_EMAIL');
-                $namen[] = 'zugang.email';
-                continue;
-            }
-            if ($z['spin'] !== '' && !preg_match('/^[0-9]{4}$/', $z['spin'])) {
-                $mangel[] = au_t('EINST.FEHLER_SPIN');
-                $namen[] = 'zugang.spin';
-                continue;
-            }
-            $zugang = $z;
-            $anzahl++;
+        if (!is_string($w[$zk]) || !au_wert_taugt($w[$zk])) {
+            $mangel[] = sprintf(au_t('EINST.SICH_WERT_FORM'), 'zugang.' . $zk);
             continue;
         }
-        if (in_array($k, au_nicht_sichern(), true)) {
-            // Kein Fehler des Anwenders: eine aeltere Sicherung kann es
-            // enthalten. Es wird uebergangen, damit das Merkmal dieser
-            // Anlage nicht durch ein fremdes ersetzt wird.
-            continue;
-        }
-        if ((string) $k === 'tts') {
-            /* Nr. 36 b (seit 0.9.25): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
-             * traegt die Datei eines (auch als Liste, Zahl oder null), stammt sie nicht aus
-             * "Einstellungen sichern" und wird abgewiesen; die geltenden Sprechtoken bleiben.
-             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). */
-            $au_tm = ansage_sicherung_mangel($w);
-            if ($au_tm) {
-                $mangel[] = sprintf(au_t('EINST.SICH_TTS_TOKEN'), au_e(implode(', ', $au_tm)));
-                $namen[] = 'tts';
-                continue;
-            }
-            $au_tg = '';
-            $au_tp = ansage_wert_pruefen($w, $au_tg, au_ansage_modi());
-            if ($au_tp === null) {
-                $mangel[] = sprintf(au_t('EINST.SICH_TTS'), au_e(ansage_kennung_text($au_tg, au_ansage_k())));
-                $namen[] = 'tts';
-                continue;
-            }
-            $au_tj = au_tts();
-            /* Welle Mehrfach-Ziele (0.9.30): "$au_tp + $au_tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
-             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
-            $au_tneu = array('tts' => $au_tp);
-            $au_tjetzt = array('tts' => $au_tj);
-            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-             * heisst "keine weiteren Ziele" und wird so uebernommen. */
-            $au_spaete = array();
-            if (is_array($au_tneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                list($au_tneu['tts'], $au_spaete) = ansage_sicherung_spaet($au_tneu['tts'],
-                    (isset($au_tjetzt['tts']) && is_array($au_tjetzt['tts'])) ? $au_tjetzt['tts'] : null);
-            }
-            foreach ($au_spaete as $au_sn) { $spaet[] = $au_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-            list($au_tv) = ansage_vervollstaendigen($au_tneu['tts'] + $au_tj, 'aus');
-            $neu['tts'] = ansage_sicherung_tokens_behalten($au_tv, $au_tj);
-            $anzahl++;
-            continue;
-        }
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) { $mangel[] = au_t('EINST.SICH_REGELN'); $namen[] = 'ansage_regeln'; continue; }
-            $neu['ansage_regeln'] = $s2_r;
-            $anzahl++;
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(au_t('EINST.SICH_FREMD'), au_e((string) $k));
-            $namen[] = (string) $k;
-            continue;
-        }
-        if (($k === 'aktionstoken' || $k === 'schalttoken') && $w === '') {
-            /* U4 (Durchgang 29.09.2026): ein leeres Token heisst "nicht
-             * gesichert" (Regeln/05) - das geltende bleibt, und die Meldung
-             * sagt es. Bis 0.9.21 wurde '' geschrieben; die Zweitschrift blieb
-             * deshalb stehen, und der naechste au_config() im selben
-             * Seitenaufbau heilte den GANZEN zurueckgespielten Stand wieder
-             * weg - bei gruener Meldung (gemessen, p3c Fall 2). */
-            $behalten[] = $k;
-            continue;
-        }
-        $grund = au_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            $mangel[] = $grund;
-            $namen[] = (string) $k;
-            continue;
-        }
-        $neu[$k] = is_string($w) && isset(au_grenzen()[$k]) ? (int) $w : $w;
-        $anzahl++;
+        $z[$zk] = $w[$zk];
     }
-    if ($anzahl === 0) {
-        $mangel[] = au_t('EINST.SICH_LEER');
+    if ($mangel) { return array(null, $mangel); }
+    if ($z['email'] !== '' && !filter_var($z['email'], FILTER_VALIDATE_EMAIL)) {
+        $mangel[] = au_t('EINST.FEHLER_EMAIL');
     }
-    if (isset($neu['temp_min'], $neu['temp_max']) && $neu['temp_min'] > $neu['temp_max']) {
-        $mangel[] = au_t('EINST.FEHLER_TEMP_TAUSCH');
-        $namen[] = 'temp_min';
-        $namen[] = 'temp_max';
+    if ($z['spin'] !== '' && !preg_match('/^[0-9]{4}$/', $z['spin'])) {
+        $mangel[] = au_t('EINST.FEHLER_SPIN');
     }
-    /* Fehlende Schluessel sind eine Beanstandung, kein stiller Rueckfall -
-     * ueber den Bestand ausgerollt am 07.09.2026. Der Hausstandard sagt:
-     * eine halb gueltige Datei aendert gar nichts.
-     *
-     * Bei DIESER Linie faellt nichts auf die Werkseinstellung zurueck: $neu
-     * geht vom BESTAND aus (array_merge(au_vorgaben(), $bestand)), damit
-     * 'formgeheimnis' den Wert DIESER Anlage behaelt. Eine unvollstaendige
-     * Datei ergaebe aber einen halb zurueckgespielten Stand, in dem sich
-     * Werte aus der Datei mit denen dieser Anlage mischen - ohne dass an der
-     * Oberflaeche etwas davon zu sehen waere. Der Text sagt genau das; der
-     * Satz von der Werkseinstellung waere hier eine Falschaussage.
-     *
-     * Verglichen wird gegen die VORGABEN. Was ausserhalb der
-     * Konfigurationsdatei liegt, darf fehlen: die Zugangsdaten ('zugang',
-     * eigene Datei mit 0600) stehen nicht in au_vorgaben(), und was diese
-     * Anlage kennzeichnet, nennt au_nicht_sichern(). */
-    $fehlend = array();
-    foreach ($bekannt as $k) {
-        if (!array_key_exists($k, $daten) && !in_array($k, au_nicht_sichern(), true)) {
-            /* Nr. 36 b: eine Sicherung von 0.9.24 oder frueher kennt die Sprachausgabe noch
-             * nicht. Sie bleibt zurueckspielbar; die neuen Schluessel behalten den Wert dieser
-             * Anlage ($neu geht vom Bestand aus), und die Seite sagt es. */
-            if (in_array($k, au_ansage_neue_schluessel(), true)
-                || in_array($k, au_neue_schluessel_0930(), true)) {
-                // Gruppe 41: ebenso die Schluessel von 0.9.30 (endpunkt_ein behaelt den Wert der Anlage).
-                continue;
-            }
-            $fehlend[] = $k;
+    return $mangel ? array(null, $mangel) : array($z, array());
+}
+
+/**
+ * 0.9.44: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Das Modul
+ * beginnt bei den Vorgaben; was nie aus einer Datei kommt, nimmt hier den
+ * Wert dieser Anlage an (Formulargeheimnis, Vermerk ansage_token_herkunft).
+ * Der Block tts wird wie bis 0.9.43 vervollstaendigt: fehlt die Liste der
+ * weiteren Ziele (Datei einer aelteren Fassung), gelten die jetzigen
+ * (Spaetliste, genannt); fehlende Felder nehmen den geltenden Wert; die
+ * geltenden Sprechtoken bleiben. Rueckgabe: array(Konfiguration, Spaetliste).
+ */
+function au_sicherung_vorbereiten(array $neu, array $jetzt, array $r)
+{
+    foreach (array_merge(au_nicht_sichern(), array('ansage_token_herkunft')) as $s) {
+        if (array_key_exists($s, $jetzt)) { $neu[$s] = $jetzt[$s]; }
+    }
+    $spaet = array();
+    $tj = au_tts();
+    if (!in_array('tts', $r['fehlt_behalten'], true) && is_array($neu['tts'])) {
+        $t = $neu['tts'];
+        if (function_exists('ansage_sicherung_spaet')) {
+            list($t, $spaet) = ansage_sicherung_spaet($t, is_array($tj) ? $tj : null);
         }
+        list($t) = ansage_vervollstaendigen($t + (is_array($tj) ? $tj : array()), 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($t, $tj);
     }
-    if ($fehlend) {
-        $mangel[] = sprintf(au_t('EINST.SICH_FEHLEND'), count($fehlend),
-            au_e(implode(', ', $fehlend)));
-        foreach ($fehlend as $k) {
-            $namen[] = (string) $k;
-        }
-    }
-    if ($mangel) {
-        return array(null, null, $mangel, $anzahl, $fehlend, $behalten, $spaet);
-    }
-    return array($neu, $zugang, $mangel, $anzahl, $fehlend, $behalten, $spaet);
+    return array($neu, $spaet);
 }
 
 /* ==================================================================

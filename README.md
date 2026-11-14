@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.43 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.44 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,20 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.44
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - Die Sicherungsdatei trägt im Kopf wie bisher das Kennzeichen des Plugins (`_plugin` = `audiconnect`) und neu die Fassung (`_fassung`). Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen; es ändert sich dann nichts. Sicherungen dieses Plugins von 0.9.12 bis 0.9.43 tragen das Kennzeichen schon und werden weiter angenommen. Sicherungen von 0.9.10 und 0.9.11 hatten gar keinen Kopf; sie lassen sich von einer fremden Datei nicht sicher unterscheiden und werden seit dieser Fassung abgewiesen (bis 0.9.43 wurden sie angenommen).
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei, in der Sprachausgabe (`tts`), in den Regeln der Sprachausgabe (`ansage_regeln`) und bei den Zugangsdaten (`zugang`). Die übrigen Einstellungen werden zurückgespielt. Bis 0.9.43 wies ein unbekannter Name oben, in der Sprachausgabe und in den Regeln die ganze Datei ab, während einer bei den Zugangsdaten still wegfiel.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für die beiden Token und die E-Mail.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt; eine Datei, die ein Sprechtoken trägt, wird abgewiesen. Beide Token und die Zugangsdaten des myAudi-Kontos gehören in die Datei, die Sprechtoken und das Merkmal gegen fremde Formulare nicht. Einstellungen, die eine Sicherung einer älteren Fassung noch nicht kennt (Sprachausgabe seit 0.9.25, Haus-Themen und Kabel-Warnung seit 0.9.30/0.9.32), behalten ihren Wert, und die Meldung nennt sie; jede andere fehlende Einstellung ist eine Beanstandung. Nach dem Zurückspielen zieht die Zweitschrift mit, der Dienst wird nachgezogen, und die Meldung sagt, was mit ihm geschah.
+- **Klartexte über MQTT:** Die Seite „Einbindung in Loxone“ sagte, das MQTT-Gateway lege die Virtuellen Texteingänge selbst an. Das ist nicht gemessen; jetzt steht dort, sie in Loxone Config mit genau dem Titel anzulegen – das Gateway ordnet nur über den Namen zu.
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul 1.1.0 und sind in allen Plugins dieser Reihe gleich.
+- **Gemeinsames Sicherungsmodul 1.2.0:** Das Modul kann jetzt, was einzelne Plugins dieser Reihe bisher selbst darum herum gebaut haben (Entscheidung „Einheitlichkeit“). Die Prüfung „die Datei trägt ein Sprechtoken“ liest den Block der Datei jetzt über das Modul statt über eine eigene Umgehung; am Verhalten ändert sich nichts.
+- **Gemeinsames Sicherungsmodul 1.2.1:** Ein Vermerk, der nie aus einer Sicherungsdatei kommt (etwa, dass ein Sprechtoken aus einem Nachbar-Plugin übernommen wurde), behält beim Zurückspielen seinen geltenden Wert. An diesem Plugin ändert sich dadurch nichts; es setzte den Vermerk schon bisher selbst wieder ein.
+- **Gemeinsames Sicherungsmodul 1.2.2:** Fehlt eine Einstellung in der Sicherung und setzt das Plugin ihren Wert nach einer eigenen Übergangsregel (etwa aus einer verwandten Einstellung derselben Sicherung), bleibt dieser Wert beim Zurückspielen, und die Meldung nennt ihn als nach einer Übergangsregel abgeleitet – nicht als Werkseinstellung und nicht als bisherigen Wert. An diesem Plugin ändert sich dadurch nichts.
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen aller 34 Vorfassungen von 0.9.10 bis 0.9.43; am Gerät nicht gemessen.
 
 ## Neu in 0.9.43
 
@@ -928,10 +942,19 @@ auf jeder Anlage neu und darf nicht wandern.
 * Jeder **Wert** wird geprüft, nicht nur der Schlüsselname — gegen dieselbe
   Liste, die auch das Formular benutzt. Eine Datei mit einem unzulässigen Wert
   wird abgelehnt, und dann ändert sich **gar nichts**.
-* Ein **unbekannter Schlüssel** ist eine Beanstandung, kein stiller Verlust.
-* Was in der Datei **fehlt**, behält seinen bisherigen Wert; die Zahl steht in
-  der Meldung. Eine Sicherung aus einer älteren Fassung setzt also nicht
-  stillschweigend alles auf Werk zurück.
+* Die Datei muss das **Kennzeichen** dieses Plugins tragen (`_plugin` =
+  `audiconnect`, seit 0.9.12 in jeder Sicherung). Eine Datei eines anderen
+  Plugins oder ganz ohne Kopf wird als Ganzes abgewiesen (seit 0.9.44, nach der
+  gemeinsamen Vorlage aller Plugins dieser Reihe).
+* Ein **unbekannter Schlüssel** wird nicht übernommen und mit seinem Namen
+  gemeldet, nie mit seinem Wert – oben, in `tts`, in `ansage_regeln` und in
+  `zugang`; die übrigen Einstellungen werden zurückgespielt (seit 0.9.44).
+* Ein **leerer Wert** überschreibt keinen bestehenden; der bisherige bleibt,
+  und die Meldung nennt den Namen (seit 0.9.44).
+* Was in der Datei **fehlt**, ist eine Beanstandung – ausgenommen die
+  Einstellungen, die eine ältere Fassung noch nicht kannte (Sprachausgabe seit
+  0.9.25, Haus-Themen und Kabel-Warnung seit 0.9.30/0.9.32); sie behalten
+  ihren bisherigen Wert, und die Meldung nennt sie.
 * Danach wird der **Dienst nachgezogen**, und die Meldung sagt, was mit ihm
   geschah — neu gestartet, oder er lief nicht und bleibt gestoppt.
 * Trägt diese Anlage einen Wert, den das Zurückspielen abweisen würde — etwa

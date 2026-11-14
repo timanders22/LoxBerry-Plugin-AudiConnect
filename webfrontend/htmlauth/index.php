@@ -858,82 +858,78 @@ if ($au_post && isset($_POST['signal_test'])) {
  * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
  * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
 if ($au_post && isset($_POST['au_zurueck'])) {
-    if (!isset($_FILES['au_sicherung']) || !is_array($_FILES['au_sicherung'])
-        || !isset($_FILES['au_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['au_sicherung']['tmp_name'])) {
-        $au_fehler[] = au_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['au_sicherung']['size'] > 262144) {
-        $au_fehler[] = au_t('EINST.SICH_ZU_GROSS');
+    /* 0.9.44: Haken, hochgeladene Datei und Groessengrenze prueft das gemeinsame Sicherungsmodul
+     * (sicherung_eingang(), Modul 1.1.0, Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich, und
+     * vor is_uploaded_file() steht der Haken zurueck_ok: ohne ihn wird nichts gelesen und nichts geaendert. */
+    list($au_roh, $au_ein_ab) = sicherung_eingang(au_sicherung_beschreibung(), $_POST, $_FILES, 'au_sicherung');
+    if ($au_ein_ab !== null) {
+        $au_ein_m = sicherung_meldungen(au_sicherung_beschreibung(), $au_ein_ab);
+        foreach ($au_ein_m['fehler'] as $au_ein_x) { $au_fehler[] = $au_ein_x; }
     } else {
-        list($au_neu, $au_zneu, $au_mangel, $au_n, $au_fehlend, $au_behalten, $au_spaet) = au_sicherung_lesen(
-            (string) @file_get_contents($_FILES['au_sicherung']['tmp_name']));
-        /* U4 (Durchgang 29.09.2026): Erfolg erst nach dem ZURUECKLESEN. Bis
-         * 0.9.21 hiess es "35 Werte uebernommen", waehrend der naechste
-         * au_config() im selben Seitenaufbau den Stand wieder verwarf. */
-        $au_gleich = false;
-        if ($au_neu !== null && au_config_speichern($au_neu)) {
-            $au_zurueck = au_inhalt_oder_null($au_p['config']);
-            $au_gleich = is_array($au_zurueck) && au_config_hat_inhalt($au_zurueck);
-            foreach ($au_neu as $au_k => $au_v) {
-                if (!$au_gleich || !array_key_exists($au_k, $au_zurueck)
-                    || json_encode($au_zurueck[$au_k]) !== json_encode($au_v)) {
-                    $au_gleich = false;
-                    break;
-                }
+        /* 0.9.44: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen(), Beschreibung
+         * au_sicherung_beschreibung()) liest, prueft, verwirft Unbekanntes mit Namen, laesst leere Werte
+         * den bisherigen stehen und aendert bei einer Beanstandung GAR NICHTS (alle Beanstandungen, nicht
+         * nur die erste). Die Schritte dieser Linie davor und danach stehen in den Rueckrufen - dieselben
+         * wie bis 0.9.43. */
+        $au_b = au_sicherung_beschreibung();
+        $au_spaet = array();
+        $au_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$au_spaet) {
+            list($neu, $au_spaet) = au_sicherung_vorbereiten($neu, $jetzt, $r);
+            return $neu;
+        };
+        /* U4 (Durchgang 29.09.2026): Erfolg erst nach dem ZURUECKLESEN. Bis 0.9.21 hiess es "35 Werte
+         * uebernommen", waehrend der naechste au_config() im selben Seitenaufbau den Stand wieder verwarf.
+         * au_config_speichern() zieht die Zweitschrift mit; das Modul misst danach, ob sie inhaltsgleich ist. */
+        $au_b['speichern'] = function ($neu) use ($au_p) {
+            if (!au_config_speichern($neu)) { return false; }
+            $zurueck = au_inhalt_oder_null($au_p['config']);
+            if (!is_array($zurueck) || !au_config_hat_inhalt($zurueck)) { return false; }
+            foreach ($neu as $k => $v) {
+                if (!array_key_exists($k, $zurueck) || json_encode($zurueck[$k]) !== json_encode($v)) { return false; }
             }
-        }
-        if ($au_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $au_fehler[] = au_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $au_mangel);
-        } elseif (!$au_gleich) {
-            $au_fehler[] = au_t('EINST.SICH_SCHREIBFEHLER');
-        } else {
-            /* Die Zugangsdaten liegen in ihrer eigenen Datei mit Rechten 0600
-             * und werden nur geschrieben, wenn die Sicherung sie traegt. Eine
-             * aeltere Sicherung ohne den Block laesst sie unberuehrt. Eine
-             * leere E-Mail heisst - wie im Formular - "unveraendert", nie
-             * "loeschen" (U5); zum Loeschen gibt es den eigenen Knopf. */
-            if ($au_zneu !== null
-                && !au_zugang_speichern($au_zneu['email'] !== '' ? $au_zneu['email'] : null,
-                                        $au_zneu['passwort'], $au_zneu['spin'])) {
+            return true;
+        };
+        $au_b['zweitschrift'] = function () use ($au_p) { return array($au_p['config'], $au_p['sicherung']); };
+        $au_b['nachziehen'] = function ($neu, $jetzt, $r) use (&$au_fehler, &$au_spaet) {
+            $h = array();
+            /* Die Zugangsdaten liegen in ihrer eigenen Datei mit Rechten 0600 und werden nur geschrieben, wenn
+             * die Sicherung sie traegt. Eine aeltere Sicherung ohne den Block laesst sie unberuehrt. Eine leere
+             * E-Mail heisst - wie im Formular - "unveraendert", nie "loeschen" (U5); zum Loeschen gibt es den
+             * eigenen Knopf. */
+            $zg = isset($r['teile']['zugang']) && is_array($r['teile']['zugang']) ? $r['teile']['zugang'] : null;
+            if ($zg !== null
+                && !au_zugang_speichern($zg['email'] !== '' ? $zg['email'] : null, $zg['passwort'], $zg['spin'])) {
                 $au_fehler[] = au_t('EINST.FEHLER_ZUGANG_SPEICHERN');
             }
-            $au_meldungen[] = sprintf(au_t('EINST.SICH_UEBERNOMMEN'), $au_n);
-            /* Nr. 36 b: eine Sicherung von 0.9.24 oder frueher kennt die Sprachausgabe nicht -
-             * deren Einstellungen bleiben, und die Seite sagt es. */
-            $au_sd = json_decode((string) @file_get_contents($_FILES['au_sicherung']['tmp_name']), true);
-            if (is_array($au_sd) && !array_key_exists('tts', $au_sd)) {
-                $au_hinweise[] = au_t('EINST.SICH_OHNE_ANSAGE');
+            /* Nr. 36 b: eine Sicherung von 0.9.24 oder frueher kennt die Sprachausgabe nicht - deren
+             * Einstellungen bleiben, und die Seite sagt es. */
+            if (in_array('tts', $r['fehlt_behalten'], true)) {
+                $h[] = au_t('EINST.SICH_OHNE_ANSAGE');
             }
-            if ($au_behalten) {
-                $au_hinweise[] = au_e(sprintf(au_t('EINST.SICH_TOKEN_BEHALTEN'),
-                    implode(', ', $au_behalten)));
-            }
-            /* Welle Mehrfach-Ziele (0.9.30): fehlte die Liste der weiteren Ziele in der Sicherung (aeltere Fassung),
-             * gelten die jetzigen weiteren Ziele - der Hinweis nennt sie (Spaetliste aus au_sicherung_lesen()). */
+            /* Welle Mehrfach-Ziele (0.9.30): fehlte die Liste der weiteren Ziele in der Sicherung (aeltere
+             * Fassung), gelten die jetzigen weiteren Ziele - der Hinweis nennt sie. */
             if ($au_spaet) {
-                $au_hinweise[] = au_e(sprintf(au_t('EINST.SICH_SPAET'), implode(', ', $au_spaet)));
+                $h[] = au_e(sprintf(au_t('EINST.SICH_SPAET'), implode(', ', $au_spaet)));
             }
             // M10: die Abodatei des Gateways folgt dem zurueckgespielten Praefix.
-            au_abo_datei_nachfuehren((string) $au_neu['mqtt_topic']);
-            /* Punkt 7 des Hausstandards: den Dienst nachziehen UND sagen, was
-             * mit ihm geschah. intervall, mqtt_topic und die Automatikwerte
-             * liest bin/audi.py beim Start; ein laufender Dienst arbeitete
-             * sonst mit dem alten Stand weiter, waehrend die Seite den neuen
-             * zeigt. */
+            au_abo_datei_nachfuehren((string) $neu['mqtt_topic']);
+            /* Punkt 7 des Hausstandards: den Dienst nachziehen UND sagen, was mit ihm geschah. intervall,
+             * mqtt_topic und die Automatikwerte liest bin/audi.py beim Start; ein laufender Dienst arbeitete
+             * sonst mit dem alten Stand weiter, waehrend die Seite den neuen zeigt. */
             if (au_dienst_pid() > 0) {
-                /* au_dienst() gibt array(ok, Ausgabe) zurueck - der
-                 * Rueckgabewert allein ist immer wahr. */
-                list($au_dok, $au_daus) = au_dienst('restart');
-                $au_meldungen[] = $au_dok
-                    ? au_t('EINST.SICH_DIENST_NEU')
-                    : au_t('EINST.SICH_DIENST_FEHL') . ' ' . au_e($au_daus);
+                /* au_dienst() gibt array(ok, Ausgabe) zurueck - der Rueckgabewert allein ist immer wahr. */
+                list($dok, $daus) = au_dienst('restart');
+                $h[] = $dok ? au_t('EINST.SICH_DIENST_NEU') : au_t('EINST.SICH_DIENST_FEHL') . ' ' . au_e($daus);
             } else {
-                $au_meldungen[] = au_t('EINST.SICH_DIENST_AUS');
+                $h[] = au_t('EINST.SICH_DIENST_AUS');
             }
-        }
+            return $h;
+        };
+        $au_b['log'] = 'au_log';
+        $au_r = sicherung_zurueckspielen($au_b, $au_roh);
+        $au_m = sicherung_meldungen($au_b, $au_r);
+        foreach ($au_m['fehler'] as $au_x) { $au_fehler[] = $au_x; }
+        foreach ($au_m['hinweise'] as $au_x) { $au_meldungen[] = $au_x; }
     }
     $au_tab = 'tab-settings';
 }
@@ -1759,6 +1755,7 @@ if ($au_sich_warn) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="formtoken" value="<?= au_e($au_ftoken) ?>">
     <input data-role="none" type="file" name="au_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(au_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="au_zurueck" value="1"><?= au_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>
