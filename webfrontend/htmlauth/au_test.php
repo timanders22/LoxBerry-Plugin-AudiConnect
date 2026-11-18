@@ -573,10 +573,12 @@ function au_ansage_zeile($offen)
     $html .= ' ' . sprintf(au_t('TEST.A_ANSAGE_ANLAESSE'), count($an),
                            $an ? implode('; ', $an) : au_e(au_t('TEST.A_ANSAGE_KEINE')));
     // -2 (aus, nicht gefragt) ist hier ein Hinweis, kein Haken.
-    /* Frage 46 (18.11.2026): ein verworfener unbekannter Eintrag im Block tts - nur der Name, nie der Wert. */
+    /* Frage 46 (18.11.2026): ein verworfener unbekannter Eintrag im Block tts - nur der Name, nie der Wert. Fragen 58/59:
+     * auch jeder ungueltige Eintrag, mit den Saetzen des Sprachmoduls 1.4.4; die Ausgabe gilt dann als aus. */
     au_tts(false);
-    if (au_tts_verworfen()) {
-        $html .= ' ' . sprintf(au_t('TEST.CFG_EINTRAG_VERWORFEN'), au_e(implode(', ', au_tts_verworfen())));
+    $au_tm = au_tts_saetze(au_tts_lage());
+    if ($au_tm) {
+        $html .= ' ' . au_e(implode(' ', $au_tm));
         $st = 0;
     }
     return au_pruefzeile($st === -2 ? -1 : $st, au_t('TEST.F_ANSAGE'), $html);

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.46 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.47 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,12 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.47
+
+- **Behoben – Takt lief während des Updates:** Während einer Aktualisierung ruht jetzt der Minutentakt, bevor irgendetwas angelegt wird. Bis 0.9.46 lief er in der Lücke zwischen dem Löschen der alten Fassung und `postinstall.sh` und legte im Datenordner `befehle/` neu an. Ist die Marke eine Stunde oder älter, liegt sie in der Zukunft oder enthält sie keine Unixzeit, gilt sie nicht, damit eine abgebrochene Aktualisierung den Takt nicht dauerhaft stilllegt. Alle Plugins dieser Reihe fragen die Marke mit demselben Block ab. Es wirkt schon beim Update auf diese Fassung, denn der Installer legt die Takte der neuen Fassung vor der Lücke an, und das `preupgrade.sh` der neuen Fassung legt die Marke an. Gemessen in einer Nachstellung des Update-Ablaufs auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Befehlsbrücke 1.0.3:** Während einer Aktualisierung legen Wächter und Start der Befehlsbrücke nichts mehr an. Bis 1.0.2 entstanden in der Lücke `befehle/`, die Optionsdateien und die Sperrdatei, bevor die Marke den Start abwies. Gemessen in einer Nachstellung auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Prüfung der Sprachausgabe über das gemeinsame Sprachmodul 1.4.4:** Das Lesen der Einstellungen und der Weg zur Laufzeit (Ansagen, Testansage, Prüfzeile) prüfen die Sprachausgabe jetzt gleich: unbekannte Einträge werden verworfen und genannt, eine ungültige Einstellung gilt in beiden Wegen als aus; bis 0.9.46 reichte der Weg zur Laufzeit sie ungeprüft weiter. Eine vorhandene, aber nicht als Feld gespeicherte Einstellung gilt jetzt auch zur Laufzeit als ungültig und damit als aus; bis 0.9.46 war die Sprachausgabe dort ab Werk an. Der Reiter „Test“ nennt die Lage mit den gemeinsamen Sätzen des Moduls, das Protokoll einmal je Änderung. Ein Sprachtext, den nur die frühere eigene Prüfung brauchte, ist entfallen. Gemessen mit Handproben auf dem Arbeitsrechner unter PHP 7.4 und 8.4 (gültiger Block, unbekannter Eintrag, ungültiger Wert, beides, ohne Block); am Gerät nicht gemessen.
 
 ## Neu in 0.9.46
 
