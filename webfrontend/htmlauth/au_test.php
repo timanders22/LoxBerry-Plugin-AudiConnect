@@ -324,6 +324,13 @@ function au_pruefungen($oberflaeche = array())
 
     // Nr. 36 b (seit 0.9.25): die Sprachausgabe. Alexa-NG/Chromecast werden nur gefragt, wenn der
     // Reiter Test der offene ist (selftest=1, spricht nicht); der Music Server nie.
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Kopfzeile Date der Cloud - nur melden. */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => $p['datadir'], 'dienst' => 'Audi', 't' => 'au_t'));
+    $uhr_z = au_pruefzeile($uhr_s === 1 ? 1 : -1, htmlspecialchars(uhr_frage(array('t' => 'au_t')), ENT_QUOTES, 'UTF-8'),
+        htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8'));
+    $uhr_z['uhr'] = $uhr_s;
+    $zeilen[] = $uhr_z;
+
     $zeilen[] = au_ansage_zeile(isset($GLOBALS['au_tab']) && $GLOBALS['au_tab'] === 'tab-test');
 
     return $zeilen;

@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uhrabgleich  # gemeinsames Uhrmodul (Frage 95), Abschrift bin/uhrabgleich.py
 import logging
 import math
 import os
@@ -4584,6 +4585,10 @@ def dienst(einmal: bool = False) -> int:
         # stuende ein gueltiges Zugangstoken des myAudi-Kontos weltlesbar da.
         _alte_umask = os.umask(0o077)
         try:
+            # Uhrmodul (Frage 95, Entscheidung 104): requests.Session.send nur lesend umhuellen; Hosts gemessen
+            # 19.11.2026 in carconnectivity-connector-audi 0.3.2.
+            uhrabgleich.uhr_requests_ueberall(str(PDATA), ("vwgroup.io", "cariad.digital", "vwg-connect.com",
+                                                           "vwapps.io", "audi.com"))
             cc = CarConnectivity(config=bibliothek_config(z, cfg),
                                  tokenstore_file=str(DATEI_TOKEN),
                                  cache_file=str(DATEI_ZWISCHEN))

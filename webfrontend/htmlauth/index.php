@@ -2424,7 +2424,8 @@ if ($au_fahrzeuge) {
 <?php foreach (au_pruefungen(array('quelle' => (string) @file_get_contents(__FILE__),
                                    'liste' => array_keys($au_reiter))) as $au_z) { ?>
 <tr><td style="text-align:center;"><?php
-    if ($au_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
+    if (isset($au_z['uhr'])) { echo uhr_zeichen($au_z['uhr']); }
+    elseif ($au_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($au_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
     else { echo '<span style="color:#888;">&#9679;</span>'; }
 ?></td><td><?= $au_z['frage'] ?></td><td><?= $au_z['antwort'] ?></td></tr>

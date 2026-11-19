@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.47 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.48 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,10 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.48
+
+- **Neu – Prüfzeile „Ist die Systemuhr synchron?“ (gemeinsames Uhrmodul):** Der Reiter „Test“ vergleicht die Systemuhr des LoxBerry mit der Kopfzeile Date der Antworten von der Audi-Cloud und meldet nur: Haken bis 30 s Abweichung, gelber Punkt darüber, ohne Messung „nicht feststellbar“. `timedatectl` steht nur als Hinweis dabei. Die letzte Abweichung liegt in `data/plugins/audiconnect/uhr.json`; dafür liest das Plugin bei den Anfragen der Bibliothek carconnectivity an vwgroup.io, cariad.digital, vwg-connect.com, vwapps.io und audi.com (nur lesend mitgelesen) die Kopfzeile Date mit, am Abruf selbst ändert sich nichts. Ob eine falsche Uhr die Anmeldung bricht, ist nicht gemessen. Gemessen auf dem Arbeitsrechner: Selbsttest des Moduls unter PHP 7.4, 8.4 und 8.5 und mit Python, Kreuzprobe PHP/Python, Syntax aller geänderten Dateien; der Weg über die Bibliothek gegen einen Gegenserver in WSL (carconnectivity 0.11.10, Connector Audi 0.3.2); die Messung gegen die echte Cloud und am Gerät ist nicht gemessen.
 
 ## Neu in 0.9.47
 
