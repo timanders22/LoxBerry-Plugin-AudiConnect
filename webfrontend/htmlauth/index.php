@@ -1014,7 +1014,8 @@ if ($au_post && isset($_POST['au_sichern'])) {
 }
 
 if ($au_rahmen) {
-    LBWeb::lbheader('Audi Connect', 'https://wiki.loxberry.de/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Audi Connect', __DIR__), 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
