@@ -94,6 +94,16 @@ require_once $au_lib;
 
 $au_roh = stream_get_contents(STDIN);
 $au_d = is_string($au_roh) && strlen($au_roh) <= 4096 ? json_decode($au_roh, true) : null;
+/* 0.9.51 (Entscheidung des Hausherrn 22.11.2026, Sprachmodul 1.5.0): die Frage des Dienstes nach der Nachtruhe fuer heute (Kabelwarnung) - der
+ * gemeinsame Weg ueber diese Bruecke und das Sprachmodul, kein Nachbau in Python. Antwort EINE Zeile
+ * REGELN;AN=0|1;VON=HH:MM;BIS=HH:MM;NACHT=0|1 (an Nicht-Schultagen mit dem spaeteren Ende), Rueckgabe 0. */
+if (is_array($au_d) && isset($au_d['frage']) && $au_d['frage'] === 'regeln_heute') {
+    $au_rg = au_ansage_regeln(au_config(false));
+    if (function_exists('ansage_regeln_heute_lesen')) { list($au_rg) = ansage_regeln_heute_lesen($au_rg, au_ansage_k()); }
+    echo 'REGELN;AN=' . (empty($au_rg['nachtruhe']) ? 0 : 1) . ';VON=' . $au_rg['von'] . ';BIS=' . $au_rg['bis']
+        . ';NACHT=' . (ansage_nachtruhe($au_rg, time()) ? 1 : 0) . "\n";
+    exit(0);
+}
 $au_anlaesse = au_ansage_anlaesse();
 $au_zahl = function ($w) {
     if ($w === null) { return null; }

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.50 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.51 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,13 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.51
+
+- Gemeinsames Sprachmodul 1.5.0 (Entscheidung des Hausherrn 22.11.2026): Die Nachtruhe der Ansagen kann an Nicht-Schultagen (Samstag, Sonntag, Feiertage, Ferien) später enden. Neues Feld „Nachtruhe an Nicht-Schultagen bis“ bei „Wann gesprochen wird“, ab Werk leer: Dann gilt die Zeit, die im Plugin Ferien und Feiertage eingestellt ist (MQTT-Thema `haus/ansage/nachtruhe_frei_bis`); ohne sie endet die Nachtruhe wie an Schultagen. Ob heute ein Schultag ist, sagt `haus/kalender/heute/frei` (nur bei `haus/kalender/datum` = heute); ohne diese Aussage zählen nur Samstag und Sonntag. Dringende Ansagen übergehen die Nachtruhe wie bisher. Ohne Vorgabe und ohne eigene Zeit ändert sich nichts.
+- Reiter Test: neue Zeile zum Ende der Nachtruhe an Nicht-Schultagen (Quelle der Zeit, Art des heutigen Tages).
+- Die Warnung „Kabel vergessen“ am Morgen kommt an Nicht-Schultagen erst nach dem späteren Ende der Nachtruhe und wird bis dahin nicht verbraucht. Die Regeln für heute fragt das Plugin nur am Vormittag und nur, wenn es sonst warnen würde (über die Brücke bin/au_ansage.php und das Sprachmodul).
+- Meldung bei abgewiesener Anmeldung (wie Skoda Connect NG 0.9.53 und BYD-Autos 0.9.48): Statt bestimmt „Benutzername oder Passwort stimmen nicht“ nennt das Plugin jetzt den Text des Fehlers (AuthenticationError der Bibliothek carconnectivity-connector-audi; E-Mail-Adressen unkenntlich, der Teil einer Adresse hinter `?` oder `#` entfernt, eine Zeile, höchstens 200 Zeichen) und das Passwort des myAudi-Kontos als einen möglichen Grund unter mehreren. Ob die Anmeldung an den Zugangsdaten oder an einer Änderung bei Audi scheitert, lässt sich aus dem Fehler allein nicht unterscheiden. Wann die Bibliothek diesen Fehler wirft, ist nicht gemessen.
 
 ## Neu in 0.9.50
 
