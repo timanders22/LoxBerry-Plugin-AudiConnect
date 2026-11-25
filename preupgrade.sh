@@ -5,6 +5,10 @@
 # Vor dem Upgrade: laufenden Dienst anhalten und die Konfiguration ausserhalb
 # des Plugin-Ordners sichern. Die Zugangsdaten liegen in einer eigenen Datei
 # und werden getrennt gesichert (Rechte 0600 bleiben erhalten).
+# [upgrade_daten] Argumente des Installers festhalten - unten sichert der gemeinsame Baustein
+# [upgrade_daten] upgrade_daten.sh (neben diesem Skript) den ganzen Datenordner.
+UPGD_ORDNER="$3"; UPGD_WURZEL="$5"
+
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-audiconnect}"
@@ -445,4 +449,17 @@ if [ "$FEHLER" -ne 0 ]; then
     exit 2
 fi
 echo "<OK> preupgrade abgeschlossen."
+# befehle/ und antworten/ ueberleben das Update bewusst nicht: die Befehlsbruecke legt befehle/ samt
+# Optionsdatei beim Start neu an, postinstall.sh beide Ordner leer (Regeln/06, Entscheidung des Hausherrn
+# 15.11.2026). Alles andere im Datenordner traegt der Baustein unten ueber das Update.
+UPGD_OHNE="befehle antworten"
+# [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): den ganzen Datenordner
+# [upgrade_daten] neben den Ordner sichern; misslingt das, bricht die Aktualisierung mit Rueckgabe 2 ab.
+if [ -f "$(dirname "$0")/upgrade_daten.sh" ] && . "$(dirname "$0")/upgrade_daten.sh"; then
+    upgrade_daten_sichern "$UPGD_ORDNER" "$UPGD_WURZEL" || exit 2
+else
+    echo "<FAIL> Der Baustein upgrade_daten.sh fehlt neben $(basename "$0") - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt installiert."
+    exit 2
+fi
 exit 0
