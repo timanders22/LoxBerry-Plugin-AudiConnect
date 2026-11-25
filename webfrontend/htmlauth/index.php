@@ -109,8 +109,7 @@ function au_eingabe_felder($formular)
                              'haus_abfahrt_ein', 'vorklima_anwesend_ein', 'vorklima_wetter_ein', 'ankunft_ein',
                              'haus_strompreis_ein', 'signal_ein', 'signal_laden_fertig', 'signal_laden_abbruch',
                              'signal_offen', 'signal_ausfall', 'signal_vorklima',
-                             'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle', 'ladeempf_quelle',
-                             'signal_praefix'),
+                             'vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle', 'ladeempf_quelle'),     // 0.9.52: ohne signal_praefix
         'mqtt'      => array('mqtt_ein', 'mqtt_topic', 'haus_fahrzeug_ein'),
     );
     /* Nr. 36 b: die Sprachausgabe und die Anlass-Haken - nie die Sprechtoken (ansage_x2_felder()). */
@@ -497,7 +496,7 @@ if ($au_post && isset($_POST['save_automatik'])) {
         $au_acfg[$au_feld] = isset($_POST[$au_feld]) ? 1 : 0;
     }
     foreach (array('vorklima_kalt_unter', 'vorklima_heiss_ueber', 'ankunft_quelle', 'ladeempf_quelle',
-                   'signal_praefix', 'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc') as $au_feld) {
+                   'kabel_soc', 'kabel_uhr', 'kabel_abfahrt_min', 'vorklima_min_soc') as $au_feld) {     // 0.9.52: ohne signal_praefix (haus/meldung)
         $au_roh = (isset($_POST[$au_feld]) && is_string($_POST[$au_feld])) ? $_POST[$au_feld] : '';
         $au_neu = au_wert_g41($au_feld, $au_roh);
         if ($au_neu === null) {
@@ -637,6 +636,13 @@ if ($au_post && isset($_POST['save_mqtt'])) {
         ? trim($_POST['mqtt_topic']) : '';
     if (!au_thema_gueltig($au_mtopic, 64, false)) {
         $au_fehler[] = au_t('EINST.FEHLER_TOPIC');
+        au_bean('mqtt_topic');     // X-2
+    } elseif (hb_bereich($au_mtopic) !== '' && $au_mtopic !== (string) $au_mcfg['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 0.9.52 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $au_fehler[] = sprintf(au_t('HAUSBEREICH.FEHLER'), au_e($au_mtopic), au_e(hb_bereich($au_mtopic)));
         au_bean('mqtt_topic');     // X-2
     } else {
         $au_mcfg['mqtt_topic'] = $au_mtopic;
@@ -1643,11 +1649,7 @@ if ($au_rahmen) {
   </label>
   <div class="sm-hilfe"><?= au_t('EINST.H_SIGNAL_EIN') ?></div>
 </div>
-<div class="sm-feld">
-  <label for="signal_praefix"><?= au_e(au_t('EINST.L_SIGNAL_PRAEFIX')) ?></label>
-  <input data-role="none" type="text" id="signal_praefix" name="signal_praefix" value="<?= au_e(au_ein_w('signal_praefix', $au_cfg['signal_praefix'])) ?>"<?= au_ein_m('signal_praefix') ?> placeholder="signalbot">
-  <div class="sm-hilfe"><?= au_t('EINST.H_SIGNAL_PRAEFIX') ?></div>
-</div>
+<?php /* 0.9.52: das Feld Praefix entfaellt - Meldungen gehen unter haus/meldung/<ordner> (gemeinsames Modul) */ ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="signal_laden_fertig" value="1" <?= au_ein_h('signal_laden_fertig', !empty($au_cfg['signal_laden_fertig'])) ? 'checked' : '' ?>>

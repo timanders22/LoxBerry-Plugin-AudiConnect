@@ -202,6 +202,9 @@ function au_pruefungen($oberflaeche = array())
      * lief, 35 s Mithoeren am Broker bei 30 s Takt - keine einzige Nachricht.
      *
      * Grau statt rot: ausgeschaltet ist eine Entscheidung, kein Fehler. */
+    // 0.9.52: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $au_hb = au_pruef_praefix_haus($cfg);
+    $zeilen[] = au_pruefzeile($au_hb[0], au_e(au_t('HAUSBEREICH.F_TEST')), $au_hb[1]);
     $mqttEin = !empty($cfg['mqtt_ein']);
     $zeilen[] = au_pruefzeile($mqttEin ? 1 : -1, au_t('TEST.F_MQTT_EIN'),
         au_t($mqttEin ? 'TEST.A_MQTT_EIN_JA' : 'TEST.A_MQTT_EIN_NEIN'));

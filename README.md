@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Audi Connect
 
-Version 0.9.51 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
+Version 0.9.52 · LoxBerry ab 3.0 · PHP 7.4 und 8.4
 
 Bindet **Audi-Fahrzeuge** über das myAudi-Konto an Loxone an: Ladezustand,
 Tankfüllstand, Reichweite (elektrisch und Verbrenner getrennt), Kilometerstand,
@@ -22,6 +22,12 @@ Plugin beide Antriebe getrennt.
 > es — und zwar gegen den **Quelltext der festgenagelten Bibliotheksfassung**.
 > Der zweite Vorbehalt steht weiter unten. Schreibende Befehle sind ab Werk
 > gesperrt, eingreifende noch einmal gesondert.
+
+## Neu in 0.9.52
+
+- **Themen-Präfix auf einem gemeinsamen Bereich (Entscheidung des Hausherrn 23.11.2026 „Nur gemeinsame Bereiche“):** Ein MQTT-Präfix, das einer der gemeinsamen Bereiche unter `haus/` ist oder darin beginnt (`haus/<bereich>` bzw. `haus/<bereich>/…` für abfahrt, abfuhr, alarm, ansage, anwesenheit, energie, fahrzeug, kalender, klima, pv, raumklima, sonne, speicher, strompreis, szene, tag, tuer, usv, wetter), weisen Speichern im Reiter *MQTT* und das Zurückspielen einer Sicherung jetzt mit Namen ab: Dort liefern die Plugins einander Zustände ohne eigenes Präfix. `haus` allein und andere Präfixe unter `haus/` (etwa `haus/fenster`) bleiben erlaubt; Groß und Klein zählen wie bei MQTT. Ist ein solches Präfix schon gespeichert, ändert sich am Betrieb nichts – das Plugin sendet weiter darunter, nennt es einmal im Protokoll, und der Reiter *Test* zeigt die Zeile „Liegt das Themen-Präfix außerhalb der gemeinsamen Bereiche unter haus/?“ rot. Liste und Texte kommen aus dem gemeinsamen Modul `haus_bereiche.php` bzw. `haus_bereiche.py` im Dienst.
+- **Meldungen an SignalBot über das gemeinsame Modul (Entscheidung des Hausherrn 24.11.2026):** Die Haken unter *Meldungen an SignalBot* bleiben, wie sie gespeichert sind. Die Nachricht geht jetzt unter `haus/meldung/audiconnect` an SignalBot (Dienst → Brücke `bin/au_ansage.php` → `meldung.php`) und nicht mehr über `<präfix>/befehl/plugin/audiconnect`. Nötig ist SignalBot ab 0.9.44 mit „Meldungen unter haus/meldung annehmen“; nach einem Update schaltet SignalBot das selbst ein, wenn dort schon ein Plugin freigegeben ist. Das Feld *MQTT-Thema von SignalBot* entfällt. Je Ereignis und Fahrzeug höchstens eine Meldung je Stunde, insgesamt höchstens 10 je Stunde, darüber eine Sammelzeile. Die Testmeldung läuft über das Modul.
+- Gemeinsames Sicherungsmodul auf 1.3.0 nachgezogen (Einheitlichkeit, wie in der Welle Lade-Beanstandungen); am Verhalten von „Einstellungen sichern“ und „Einstellungen zurückspielen“ ändert sich nichts.
 
 ## Neu in 0.9.51
 
